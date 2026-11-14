@@ -629,7 +629,12 @@ function Find-Beside([string[]]$candidates) {
 $lang = Get-Lang
 $M = Get-Messages $lang
 $entryName = $env:OPREASON_ENTRY_NAME
-if (-not $entryName) { $entryName = [System.IO.Path]::GetFileNameWithoutExtension([string]$MyInvocation.InvocationName) }
+if (-not $entryName) {
+  # The name it was called by (an alias such as op counts); "&" and "." (call and dot-source) fall back to the file name
+  $invoked = [string]$MyInvocation.InvocationName
+  if (-not $invoked -or $invoked -eq '&' -or $invoked -eq '.') { $invoked = [string]$MyInvocation.MyCommand.Name }
+  $entryName = [System.IO.Path]::GetFileNameWithoutExtension($invoked)
+}
 if ($entryName) { $entryName = $entryName.ToLowerInvariant() } else { $entryName = 'op-reason' }
 $fromShim = ($env:OPREASON_ENTRY -eq 'cmd')
 if ($fromShim) {

@@ -118,11 +118,20 @@ for ($k = 0; $k -lt 256 * 40; $k++) { $bytes[$k] = [byte]($k % 256) }
 [Array]::Copy([byte[]](13, 10, 0, 101, 110, 100), 0, $bytes, 256 * 40, 6)
 [System.IO.File]::WriteAllBytes($bin, $bytes)
 $outFile = Join-Path $work 'shim.out'
-$rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check" document get x < "' + $bin + '" > "' + $outFile + '"')
-Check 'binary stdin and stdout pass byte for byte through the shim' ($rc -eq 0 -and (Test-SameBytes $bin $outFile)) ("rc=$rc out=" + (Get-Item $outFile).Length)
+$errFile = Join-Path $work 'shim.err'
+$rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check" document get x < "' + $bin + '" > "' + $outFile + '" 2> "' + $errFile + '"')
+Check 'binary stdin and stdout pass byte for byte through the shim' ($rc -eq 0 -and (Test-SameBytes $bin $outFile)) ("rc=$rc out=" + (Get-Item $outFile).Length + " err=" + [System.IO.File]::ReadAllText($errFile) + " calls=" + (@(Get-Calls) | ConvertTo-Json -Compress))
 Reset-Fake
 $env:FAKE_NO_STDIN = '1'
-$rc = Invoke-Cmd ('"' + $shim + '" --reason "args check" run -- child "" "a b" "q\"z" < NUL > NUL')
+$env:FAKE_OUT = 'stdout through the shim'
+$outFile = Join-Path $work 'shim2.out'
+$rc = Invoke-Cmd ('"' + $shim + '" --reason "stdout check" item get x < NUL > "' + $outFile + '"')
+$outText = [System.IO.File]::ReadAllText($outFile)
+Check "op's stdout reaches a redirection through the shim" ($rc -eq 0 -and $outText -ceq 'stdout through the shim') "rc=$rc out=[$outText]"
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+# "q""z" (a doubled quote inside quotes) keeps cmd.exe's own count of quotes even; "q\"z" would not
+$rc = Invoke-Cmd ('"' + $shim + '" --reason "args check" run -- child "" "a b" "q""z" < NUL > NUL')
 $calls = @(Get-Calls)
 $got = ''
 if ($calls.Count -gt 0) { $got = @($calls[0].args) -join '|' }
