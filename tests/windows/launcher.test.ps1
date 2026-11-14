@@ -111,18 +111,45 @@ function Test-SameBytes([string]$a, [string]$b) {
 }
 
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
-# Save the top right of the work area (where the window opens) as a PNG.
-function Save-WindowShot([string]$path) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WindowRect
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindow(string className, string title);
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+}
+'@
+# Save the window with this title as a PNG (only the window: nothing of the runner's screen around it). Falls back to
+# the top right of the work area, where the window opens, when the window cannot be found.
+function Save-WindowShot([string]$path, [string]$title) {
   $screen = [System.Windows.Forms.Screen]::PrimaryScreen
   $b = $screen.Bounds
   $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
   $g.Dispose()
-  $wa = $screen.WorkingArea
-  $w = [Math]::Min(620, $wa.Width)
-  $h = [Math]::Min(460, $wa.Height)
-  $rect = New-Object System.Drawing.Rectangle ($wa.Right - $w), $wa.Top, $w, $h
+  $rect = $null
+  $h = [WindowRect]::FindWindow($null, $title)
+  $r = New-Object WindowRect+RECT
+  if ($h -ne [IntPtr]::Zero -and [WindowRect]::GetWindowRect($h, [ref]$r)) {
+    $x = [Math]::Max(0, $r.Left)
+    $y = [Math]::Max(0, $r.Top)
+    $w = [Math]::Min($b.Width, $r.Right) - $x
+    $hh = [Math]::Min($b.Height, $r.Bottom) - $y
+    if ($w -gt 0 -and $hh -gt 0) { $rect = New-Object System.Drawing.Rectangle $x, $y, $w, $hh }
+  }
+  if ($null -eq $rect) {
+    $wa = $screen.WorkingArea
+    $w = [Math]::Min(620, $wa.Width)
+    $hh = [Math]::Min(460, $wa.Height)
+    $rect = New-Object System.Drawing.Rectangle ($wa.Right - $w), $wa.Top, $w, $hh
+    Write-Host "       (window not found by its title; saved the top right of the screen)"
+  }
   $crop = $bmp.Clone($rect, $bmp.PixelFormat)
   $crop.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
   $crop.Dispose()
@@ -224,8 +251,8 @@ Check 'service passes the token and runs neither whoami nor signout' ($calls.Cou
 
 Write-Host '== Screenshots'
 $shotCases = @(
-  @{ file = '01-window-ja.png'; lang = 'ja'; facts = (New-Facts 'claude' 'staging の VM を作るのに Proxmox の API の token を読む' 'op read op://Private/proxmox/token' ([ordered]@{ workspace = 'w1'; label = 'op-reason の作業'; pane = 'w1:p2' }) @([ordered]@{ kind = 'shared-cleared' })) },
-  @{ file = '02-window-en.png'; lang = 'en'; facts = (New-Facts 'human' 'read the Proxmox API token to create the staging VM' 'op read op://Private/proxmox/token') }
+  @{ file = '01-window-ja.png'; lang = 'ja'; title = '1Password CLI の承認の依頼'; facts = (New-Facts 'claude' 'staging の VM を作るのに Proxmox の API の token を読む' 'op read op://Private/proxmox/token' ([ordered]@{ workspace = 'w1'; label = 'op-reason の作業'; pane = 'w1:p2' }) @([ordered]@{ kind = 'shared-cleared' })) },
+  @{ file = '02-window-en.png'; lang = 'en'; title = '1Password CLI approval request'; facts = (New-Facts 'human' 'read the Proxmox API token to create the staging VM' 'op read op://Private/proxmox/token') }
 )
 foreach ($c in $shotCases) {
   Reset-Fake
@@ -236,7 +263,7 @@ foreach ($c in $shotCases) {
   Remove-Item Env:OPREASON_PAYLOAD -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 4
   $path = Join-Path $shots $c.file
-  try { Save-WindowShot $path } catch { Write-Host ('       screenshot failed: ' + $_.Exception.Message) }
+  try { Save-WindowShot $path $c.title } catch { Write-Host ('       screenshot failed: ' + $_.Exception.Message) }
   $proc.WaitForExit()
   $st = Get-Status
   Check ("window for the screenshot " + $c.file) ((Test-Path -LiteralPath $path) -and $null -ne $st -and $st.window -eq 'shown') ("status=" + ($st | ConvertTo-Json -Compress))
