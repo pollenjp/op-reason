@@ -122,6 +122,9 @@ public static class WindowRect
     public static extern IntPtr FindWindow(string className, string title);
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    // DWMWA_EXTENDED_FRAME_BOUNDS (9): the visible frame, without the invisible resize borders around it
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out RECT rect, int size);
 }
 '@
 # Save the window with this title as a PNG (only the window: nothing of the runner's screen around it). Falls back to
@@ -137,7 +140,12 @@ function Save-WindowShot([string]$path, [string]$title) {
   # [NullString]::Value: PowerShell would pass $null to a string parameter as an empty string
   $h = [WindowRect]::FindWindow([NullString]::Value, $title)
   $r = New-Object WindowRect+RECT
-  if ($h -ne [IntPtr]::Zero -and [WindowRect]::GetWindowRect($h, [ref]$r)) {
+  $found = $false
+  if ($h -ne [IntPtr]::Zero) {
+    $found = ([WindowRect]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -eq 0)
+    if (-not $found) { $found = [WindowRect]::GetWindowRect($h, [ref]$r) }
+  }
+  if ($found) {
     $x = [Math]::Max(0, $r.Left)
     $y = [Math]::Max(0, $r.Top)
     $w = [Math]::Min($b.Width, $r.Right) - $x

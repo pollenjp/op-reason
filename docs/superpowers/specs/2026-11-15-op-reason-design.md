@@ -500,6 +500,10 @@ completion fish`, which the wrapper would refuse). Install it as `~/.config/fish
 - Arguments: from PowerShell they come from PowerShell (`$args`); PowerShell takes an unquoted `--` for itself, so the
   README says to write `'--'`. Through the shim the entry splits the process command line itself with the C runtime's
   rules (PowerShell's `-File` binding drops empty arguments and `--`).
+- Pipeline input from PowerShell is read through `$ExecutionContext.SessionState.PSVariable.GetValue('input')`. The
+  entry must never name the automatic input variable: a script that names it (even in a branch that never runs) makes
+  `powershell.exe -File` read all of a redirected stdin before the script starts, so the shim's stdin would never reach
+  `op.exe` (found on the Windows runner; a test keeps the name out).
 - The `.cmd` shim goes through cmd.exe, which re-parses the arguments: unquoted `&`, `|`, `%` and similar characters
   can break (the root of "BatBadBut"). The README says so, and says that shells whose execution policy allows scripts
   (such as Claude Code's tool shell, which runs with `Bypass`) can call `op-reason.ps1` directly.
