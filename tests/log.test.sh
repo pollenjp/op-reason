@@ -62,7 +62,7 @@ rec() {
   jq -cn --argjson now "${now}" "$@" "${expr}"
 }
 
-claude='{type: "claude", claude_pid: 9, herdr: {workspace: "wX", label: "TKT-1 テスト", pane: "wX:p1"}, cwd: "/w", repo: "o/r", branch: "b"}'
+claude='{type: "claude", claude_pid: 9, herdr: {workspace: "wX", label: "作業 1 テスト", pane: "wX:p1"}, cwd: "/w", repo: "o/r", branch: "b"}'
 human='{type: "human", claude_pid: null, herdr: null, cwd: "/w", repo: null, branch: null}'
 {
   rec "{v: 1, id: \"a\", event: \"start\", epoch: (\$now - 600), kind: \"desktop\", caller: ${claude}, reason: \"設定を読む\", args: [\"item\", \"get\", \"x\"]}"
@@ -125,7 +125,7 @@ fi
 
 echo "== Rows"
 a=$(row default 設定を読む)
-if [[ ${a} == *許可* && ${a} == *" 10 "* && ${a} == *"Claude TKT-1 テスト wX:p1"* && ${a} == *"op item get x"* &&
+if [[ ${a} == *許可* && ${a} == *" 10 "* && ${a} == *"Claude 作業 1 テスト wX:p1"* && ${a} == *"op item get x"* &&
   ${a} == "07:50:00 "* ]]; then
   ok "start and end in one row: result, seconds, caller, reason, command, today's time (HH:MM:SS)"
 else
@@ -216,7 +216,7 @@ en_out=$(<"${work}/en.out")
 if [[ $(head -n 1 "${work}/en.out") == Time* && $(row en 設定を読む) == *approved* &&
 $(row en "op item get y") == *"refused (no reason)"* && $(row en 止めた) == *"running or interrupted"* &&
 $(row en CI) == *"ok (SA)"* && $(row en 窓が出ない) == *"approved (no window)"* &&
-$(row en "Claude TKT-1") == *Claude* ]]; then
+$(row en "Claude 作業 1") == *Claude* ]]; then
   ok "English headers, results and refusals"
 else
   ng "English headers, results and refusals" "${en_out}"

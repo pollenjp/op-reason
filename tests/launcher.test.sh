@@ -145,7 +145,7 @@ done >"${in_bin}"
 printf '\r\n\0end\n' >>"${in_bin}"
 
 claude_facts='{"time":"2026-11-15 12:34:56","caller":{"type":"claude","pid":999,"session":"s1","detail":null},
-  "herdr":{"workspace":"wX","label":"TKT-1 テスト","pane":"wX:p1"},
+  "herdr":{"workspace":"wX","label":"作業 1 テスト","pane":"wX:p1"},
   "place":{"repo":"o/r","branch":"feat/x","cwd":"~/w"},"reason":"設定を読む","command":"op item get x",
   "notes":[{"kind":"shared-cleared"},{"kind":"lock-skipped","holderReason":"受ける"}]}'
 human_facts='{"time":"2026-11-15 12:34:56","caller":{"type":"human","pid":null,"session":null,"detail":null},
@@ -253,10 +253,10 @@ check "Japanese labels" test "${labels}" == "時刻,呼び手,herdr,場所,理�
 line_of() {
   status_field ".ui.lines[] | select(.[0] == \"$1\") | .[1]" | head -n 1
 }
-if [[ $(line_of 呼び手) == "Claude Code (pid 999)" && $(line_of herdr) == "workspace「TKT-1 テスト」 · pane wX:p1" &&
+if [[ $(line_of 呼び手) == "Claude Code (pid 999)" && $(line_of herdr) == "workspace「作業 1 テスト」 · pane wX:p1" &&
 $(line_of 場所) == "o/r (feat/x) · ~/w" && $(line_of 理由) == 設定を読む && $(line_of コマンド) == "op item get x" &&
 $(status_field '.ui.footer') == *この窓が出ていない* && $(status_field '.ui.toast | length') == 3 &&
-$(status_field '.ui.toast[2]') == "Claude Code · TKT-1 テスト · op item get x" &&
+$(status_field '.ui.toast[2]') == "Claude Code · 作業 1 テスト · op item get x" &&
 $(status_field '[.ui.lines[] | select(.[0] == "注意") | .[1]] | last') == *「受ける」* ]]; then
   ok "Japanese caller, herdr, place, reason, command, footer, toast and notes"
 else

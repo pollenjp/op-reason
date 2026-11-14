@@ -179,7 +179,7 @@ export OPREASON_OP_EXE=${op_exe}
 
 fake "${fake_bin}/herdr" <<'EOF'
 case "$1 $2" in
-  "workspace get") printf "%s\n" "{\"result\":{\"workspace\":{\"workspace_id\":\"$3\",\"label\":\"TKT-1 テスト\"}}}" ;;
+  "workspace get") printf "%s\n" "{\"result\":{\"workspace\":{\"workspace_id\":\"$3\",\"label\":\"作業 1 テスト\"}}}" ;;
   "notification show") printf "%s\n" "$*" >>"${FAKE_DIR}/herdr.notify" ;;
   *) exit 1 ;;
 esac
@@ -511,14 +511,14 @@ git -C "${work}/repo" remote add origin git@github.com:o/r.git
 unset HERDR_ENV HERDR_WORKSPACE_ID HERDR_PANE_ID CLAUDE_CODE_SESSION_ID
 start=$(last start)
 if [[ $(jq -r '.caller.type' <<<"${start}") == claude && $(jq -r '.caller.claude_pid' <<<"${start}") == 999 &&
-$(jq -r '.caller.herdr.label' <<<"${start}") == "TKT-1 テスト" && $(jq -r '.caller.herdr.pane' <<<"${start}") == wX:p1 &&
+$(jq -r '.caller.herdr.label' <<<"${start}") == "作業 1 テスト" && $(jq -r '.caller.herdr.pane' <<<"${start}") == wX:p1 &&
 $(jq -r '.caller.repo' <<<"${start}") == o/r && $(jq -r '.caller.branch' <<<"${start}") == feat/x &&
 $(jq -r '.session' <<<"${start}") == s1 && $(last_field end '.session') == s1 ]]; then
   ok "claude ancestor, herdr label and pane, git repo and branch, session"
 else
   ng "claude ancestor, herdr label and pane, git repo and branch, session" "${start}"
 fi
-if [[ $(payload_field '.facts.herdr.label') == "TKT-1 テスト" && $(payload_field '.facts.herdr.pane') == wX:p1 &&
+if [[ $(payload_field '.facts.herdr.label') == "作業 1 テスト" && $(payload_field '.facts.herdr.pane') == wX:p1 &&
 $(payload_field '.facts.caller.type') == claude && $(payload_field '.facts.caller.pid') == 999 &&
 $(payload_field '.facts.caller.session') == s1 && $(payload_field '.facts.place.repo') == o/r &&
 $(payload_field '.facts.place.branch') == feat/x ]]; then

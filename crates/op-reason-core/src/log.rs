@@ -216,7 +216,7 @@ mod tests {
             claude_pid: Some(999),
             herdr: Some(Herdr {
                 workspace: "wX".into(),
-                label: "TKT-1 テスト".into(),
+                label: "作業 1 テスト".into(),
                 pane: "wX:p1".into(),
             }),
             cwd: "/w".into(),
@@ -245,7 +245,7 @@ mod tests {
         });
         assert_eq!(
             s,
-            r#"{"v":1,"id":"i","event":"start","time":"t","epoch":5,"session":null,"mode":"desktop","kind":"desktop","lock":"held","caller":{"type":"claude","claude_pid":999,"herdr":{"workspace":"wX","label":"TKT-1 テスト","pane":"wX:p1"},"cwd":"/w","repo":"o/r","branch":"feat/x"},"reason":"r","args":["item","get"]}"#
+            r#"{"v":1,"id":"i","event":"start","time":"t","epoch":5,"session":null,"mode":"desktop","kind":"desktop","lock":"held","caller":{"type":"claude","claude_pid":999,"herdr":{"workspace":"wX","label":"作業 1 テスト","pane":"wX:p1"},"cwd":"/w","repo":"o/r","branch":"feat/x"},"reason":"r","args":["item","get"]}"#
         );
         let e = line(&End {
             v: 1,
