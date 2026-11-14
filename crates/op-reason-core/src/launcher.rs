@@ -19,9 +19,10 @@ try {
 . $b
 ";
 
-/// The launcher source as it travels: the byte order mark, comment lines and blank lines removed (they make up a large
-/// part of the file, and an environment variable holds at most 32767 characters). The launcher has no multi-line
-/// strings, so a line that starts with `#` is always a comment.
+/// The launcher source as it travels: the byte order mark, comment lines, blank lines and indentation removed (they
+/// make up a large part of the file, and an environment variable holds at most 32767 characters). The launcher has no
+/// multi-line strings or here-strings (a test keeps it so), so a line that starts with `#` is always a comment and
+/// indentation never matters.
 pub fn script_text() -> String {
     let text = String::from_utf8_lossy(SOURCE);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
@@ -31,7 +32,7 @@ pub fn script_text() -> String {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        out.push_str(line.trim_end());
+        out.push_str(line.trim());
         out.push('\n');
     }
     out
@@ -80,6 +81,19 @@ mod tests {
         assert!(!text.starts_with('\u{feff}'));
         assert!(text.lines().all(|l| !l.trim_start().starts_with('#')));
         assert!(text.contains("OPREASON_PAYLOAD"));
+    }
+
+    #[test]
+    fn launcher_has_no_here_strings() {
+        // Stripping indentation and comment lines is safe only without multi-line string literals
+        let text = String::from_utf8_lossy(SOURCE);
+        for line in text.lines() {
+            let t = line.trim_end();
+            assert!(
+                !(t.ends_with("@'") || t.ends_with("@\"")),
+                "here-string in the launcher: {line}"
+            );
+        }
     }
 
     #[test]
