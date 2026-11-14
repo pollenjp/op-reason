@@ -39,6 +39,8 @@ function Reset-Fake {
   }
 }
 
+# Callers wrap the result in @(): Windows PowerShell 5.1 unrolls a one-element array returned from a function, and a
+# single PSCustomObject has no Count there.
 function Get-Calls {
   $f = Join-Path $fakeDir 'calls.jsonl'
   if (-not (Test-Path -LiteralPath $f)) { return @() }
@@ -139,7 +141,7 @@ Reset-Fake
 $tricky = @('', 'a b', 'x"y', 'tr\\', 'q\"z', '&|<>^%PATH%!', '日本語 の 引数', '  lead', 'trail  ', "new`nline", "tab`there", '"', '\', [char]::ConvertFromUtf32(0x1F600))
 $env:FAKE_RC = '42'
 $r = Invoke-Launcher (New-Payload 'desktop' $tricky 'ja' 'held' 90 'inherit' (New-Facts 'human' 'read the settings' 'op item get x')) 'desktop' $bin
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $st = Get-Status
 $gotArgs = @()
 if ($calls.Count -gt 0) { $gotArgs = @($calls[0].args) }
@@ -157,7 +159,7 @@ Reset-Fake
 $env:FAKE_WHOAMI_RC = '0'
 $env:FAKE_NO_STDIN = '1'
 $r = Invoke-Launcher (New-Payload 'desktop' @('item', 'get', 'x') 'en' 'held' 90 'inherit' (New-Facts 'human' 'r' 'op item get x')) 'closes'
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $st = Get-Status
 $seq = @($calls | ForEach-Object { @($_.args) -join ' ' }) -join ','
 Check 'desktop runs whoami after op and signout --all when signed in' ($seq -ceq 'item get x,whoami,signout --all' -and $st.signout -eq 'ok') "calls=$seq signout=$($st.signout)"
@@ -185,13 +187,13 @@ $st = Get-Status
 $errText = [System.IO.File]::ReadAllText($r.err)
 Check 'a held mutex: wait, then exit 75, lock timeout, the holder, nothing started, one waiting line' (
   $r.rc -eq 75 -and $st.lock -eq 'timeout' -and $st.error -eq 'lock-timeout' -and $st.started -eq $false -and
-  ([string]$st.holder).Contains('the earlier call') -and (Get-Calls).Count -eq 0 -and $errText.Contains('waiting for another op-reason call')) ("rc=$($r.rc) err=$errText status=" + ($st | ConvertTo-Json -Compress))
+  ([string]$st.holder).Contains('the earlier call') -and @(Get-Calls).Count -eq 0 -and $errText.Contains('waiting for another op-reason call')) ("rc=$($r.rc) err=$errText status=" + ($st | ConvertTo-Json -Compress))
 Reset-Fake
 $env:FAKE_NO_STDIN = '1'
 $env:FAKE_WHOAMI_RC = '0'
 $r = Invoke-Launcher (New-Payload 'desktop' @('item', 'list') 'en' 'skipped' 2 'inherit' (New-Facts 'human' 'r' 'op item list')) 'lockskipped'
 $st = Get-Status
-Check 'lock skipped: runs while the mutex is held and does not sign out' ($r.rc -eq 0 -and $st.lock -eq 'skipped' -and (Get-Calls).Count -eq 1) ("rc=$($r.rc) status=" + ($st | ConvertTo-Json -Compress))
+Check 'lock skipped: runs while the mutex is held and does not sign out' ($r.rc -eq 0 -and $st.lock -eq 'skipped' -and @(Get-Calls).Count -eq 1) ("rc=$($r.rc) status=" + ($st | ConvertTo-Json -Compress))
 Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -Force -ErrorAction SilentlyContinue $holderFile
 Reset-Fake
@@ -216,7 +218,7 @@ $env:FAKE_NO_STDIN = '1'
 $env:FAKE_WHOAMI_RC = '0'
 $env:OP_SERVICE_ACCOUNT_TOKEN = 'tok-test'
 $r = Invoke-Launcher (New-Payload 'service' @('vault', 'list') 'en') 'service'
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $st = Get-Status
 Check 'service passes the token and runs neither whoami nor signout' ($calls.Count -eq 1 -and $calls[0].sa -eq 'tok-test' -and $st.signout -eq 'skipped') ("calls=$($calls.Count) status=" + ($st | ConvertTo-Json -Compress))
 

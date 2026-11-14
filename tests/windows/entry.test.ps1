@@ -41,6 +41,8 @@ function Reset-Fake {
   }
 }
 
+# Callers wrap the result in @(): Windows PowerShell 5.1 unrolls a one-element array returned from a function, and a
+# single PSCustomObject has no Count there.
 function Get-Calls {
   $f = Join-Path $fakeDir 'calls.jsonl'
   if (-not (Test-Path -LiteralPath $f)) { return @() }
@@ -86,7 +88,7 @@ Push-Location $repo
 $out = & $entry --reason 'read the settings' item get 'a b' password=hunter2
 $rc = $LASTEXITCODE
 Pop-Location
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $start = @(Get-Records 'start') | Select-Object -Last 1
 $end = @(Get-Records 'end') | Select-Object -Last 1
 Check "op gets the arguments; its output can be captured; the exit code is op's" (
@@ -106,7 +108,7 @@ $errFile = Join-Path $work 'refuse.err'
 $rc = Invoke-Cmd ('"' + $shim + '" item get a 2> "' + $errFile + '"')
 $refused = @(Get-Records 'refused') | Select-Object -Last 1
 $errText = [System.IO.File]::ReadAllText($errFile)
-Check 'no reason: exit 2, usage with the hint for agents, a refused record' ($rc -eq 2 -and $errText.Contains('op-reason --skill') -and $null -ne $refused -and $refused.why -eq 'no-reason' -and (Get-Calls).Count -eq 0) ("rc=$rc err=$errText")
+Check 'no reason: exit 2, usage with the hint for agents, a refused record' ($rc -eq 2 -and $errText.Contains('op-reason --skill') -and $null -ne $refused -and $refused.why -eq 'no-reason' -and @(Get-Calls).Count -eq 0) ("rc=$rc err=$errText")
 
 Write-Host '== Through op-reason.cmd'
 Reset-Fake
@@ -121,7 +123,7 @@ Check 'binary stdin and stdout pass byte for byte through the shim' ($rc -eq 0 -
 Reset-Fake
 $env:FAKE_NO_STDIN = '1'
 $rc = Invoke-Cmd ('"' + $shim + '" --reason "args check" run -- child "" "a b" "q\"z" < NUL > NUL')
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $got = ''
 if ($calls.Count -gt 0) { $got = @($calls[0].args) -join '|' }
 Check 'empty arguments, quotes and -- arrive unchanged through the shim' ($rc -eq 0 -and $got -ceq 'run|--|child||a b|q"z') "rc=$rc got=$got"
@@ -154,7 +156,7 @@ $errFile = Join-Path $work 'mutex.err'
 $rc = Invoke-Cmd ('"' + $shim + '" --reason "mutex check" item get x < NUL > NUL 2> "' + $errFile + '"')
 $end = @(Get-Records 'end') | Select-Object -Last 1
 $errText = [System.IO.File]::ReadAllText($errFile)
-Check 'a held mutex: exit 75, end lock-timeout, the message names the wait' ($rc -eq 75 -and $end.result -eq 'lock-timeout' -and $end.exit -eq 75 -and $errText.Contains('still waiting') -and (Get-Calls).Count -eq 0) ("rc=$rc err=$errText end=" + ($end | ConvertTo-Json -Compress))
+Check 'a held mutex: exit 75, end lock-timeout, the message names the wait' ($rc -eq 75 -and $end.result -eq 'lock-timeout' -and $end.exit -eq 75 -and $errText.Contains('still waiting') -and @(Get-Calls).Count -eq 0) ("rc=$rc err=$errText end=" + ($end | ConvertTo-Json -Compress))
 Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
 
 Write-Host '== Service account'
@@ -163,7 +165,7 @@ $env:FAKE_NO_STDIN = '1'
 $env:OP_SERVICE_ACCOUNT_TOKEN = 'tok-SECRET'
 $out = & $entry --reason 'CI reads' vault list
 $rc = $LASTEXITCODE
-$calls = Get-Calls
+$calls = @(Get-Calls)
 $start = @(Get-Records 'start') | Select-Object -Last 1
 $logText = [System.IO.File]::ReadAllText($log)
 Check 'service account: op gets the token and OP_BIOMETRIC_UNLOCK_ENABLED=false; kind service-account; no token in the log' (

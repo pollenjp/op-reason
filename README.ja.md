@@ -5,7 +5,7 @@ English: [README.md](README.md)
 > **非公式の道具です。** op-reason は個人の project で、1Password (AgileBits Inc.) が作ったもの・認めたもの・
 > 支えるものではありません。1Password は AgileBits Inc. の商標です。
 
-op-reason は、WSL で使う [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) の wrapper です。呼ぶたびに
+op-reason は、WSL と Windows で使う [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) の wrapper です。呼ぶたびに
 
 1. 理由が要ります: `op --reason "<なぜ>" <op の引数…>`
 2. 1Password のデスクトップアプリの承認を、その 1 回の呼び出しに閉じ込めます
@@ -14,8 +14,6 @@ op-reason は、WSL で使う [1Password CLI](https://developer.1password.com/do
 
 AI のコーディングエージェント (Claude Code など) に `op` を打たせるために作りました。承認する前に何のための依頼かが分かり、
 1 回の承認が後の依頼に届かず、後からすべての呼び出しを見返せます。
-
-Windows 自身から呼ぶための PowerShell の入口も足しているところです (下の launcher を共有します)。
 
 ## なぜ wrapper が要るのか
 
@@ -32,14 +30,15 @@ Windows 自身から呼ぶための PowerShell の入口も足しているとこ
 
 ![op-reason の部品](docs/architecture/plantuml/out/01_overview.svg)
 
-WSL の実行ファイルは、呼び出しごとに理由を確かめ、呼び手を集め、lock を取り (承認の画面は一度に 1 つ)、新しい
-`powershell.exe` で launcher (実行ファイルに埋め込んだ PowerShell の script) を起こします。launcher は画面の右上に窓を出し、
-あなたの stdin・stdout・stderr のまま `op.exe` を起こし、`op` が終わると `op.exe whoami` を打ち、session があれば
-`op.exe signout --all` を打ちます。詳しくは [docs/architecture/README.md](docs/architecture/README.md) (英語)。
+入口 (WSL の実行ファイルか、Windows の `op-reason.ps1`) は、呼び出しごとに理由を確かめ、呼び手を集め、新しい
+`powershell.exe` で launcher (PowerShell の script。WSL の実行ファイルは埋め込んでいる) を起こします。launcher は WSL と
+Windows で共通の lock を取り (承認の画面は一度に 1 つ)、画面の右上に窓を出し、あなたの stdin・stdout・stderr のまま
+`op.exe` を起こし、`op` が終わると `op.exe whoami` を打ち、session があれば `op.exe signout --all` を打ちます。詳しくは
+[docs/architecture/README.md](docs/architecture/README.md) (英語)。
 
 ## 要るもの
 
-- Windows の interop が使える WSL 2 (Windows の `PATH` が WSL の `PATH` に入っていて、`op.exe`・`powershell.exe`・
+- WSL の側: Windows の interop が使える WSL 2 (Windows の `PATH` が WSL の `PATH` に入っていて、`op.exe`・`powershell.exe`・
   `wslpath` が見つかること)
 - Windows に、**設定 → 開発者 → 1Password CLI と連携** を入れた 1Password のデスクトップアプリと、1Password CLI
   (`op.exe`。たとえば `winget install AgileBits.1Password.CLI`)
@@ -71,6 +70,28 @@ nix profile install github:pollenjp/op-reason#op   # 同じものに `op` を足
 ```
 
 flake の input にもできます: `packages.<system>.default` と `packages.<system>.op`。
+
+### Windows で
+
+各 Release に `op-reason-windows.zip` (と `.sha256`) があります。中身は `op-reason.ps1` (入口)・`op-reason.cmd`
+(cmd.exe やほかの program 向けの shim)・`launcher.ps1`・`SKILL.md` です。展開してファイルをまとめて置き、そのフォルダーを
+`PATH` に足します。
+
+- **PowerShell から**は、`op-reason` で `op-reason.ps1` が走ります。script を許す必要があります: 既定の実行の方針
+  (Restricted) は script を断り、インターネットから来たファイルには Mark of the Web が付きます。
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` と `Unblock-File <フォルダー>\*.ps1` を打つか、代わりに
+  `op-reason.cmd` を呼んでください。`-ExecutionPolicy Bypass` で動いている shell (Claude Code の tool の shell など) は、
+  `op-reason.ps1` をそのまま呼べます。
+- **cmd.exe やほかの program から**は `op-reason.cmd` を呼びます。cmd.exe は引数を読み直すので、空白の無い引数に `&`・`|`・
+  `<`・`>`・`^`・`%` があると崩れることがあります (「BatBadBut」と呼ばれる問題)。そうした引数は引用符で囲むか、PowerShell
+  から `op-reason.ps1` を呼んでください。
+- **PowerShell の `--`**: 引用符で囲まない `--` は PowerShell が取ります。`op run` の子のコマンドの前には `'--'` と書いて
+  ください: `op-reason --reason "…" run '--' my-command`。
+- **PowerShell での出力**: `$x = op-reason …` は `op` の出力を文字 (UTF-8) として受け取ります。binary の出力は `op` の
+  `--out-file` か、cmd.exe でリダイレクトした `op-reason.cmd` で受けてください。
+- **記録**は `%LOCALAPPDATA%\op-reason\log.jsonl` です (WSL と同じ形)。Windows にはまだ記録を見るコマンドがありません:
+  `Get-Content $env:LOCALAPPDATA\op-reason\log.jsonl | ConvertFrom-Json | Format-Table time, event, reason`
+- WSL と Windows の呼び出しは一度に 1 つずつ走ります (launcher が呼び出しの間、mutex `Local\op-reason` を持ちます)。
 
 ### fish の補完
 
@@ -132,10 +153,10 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
 | --- | --- |
 | `op` の終了コード | 呼び出しが走った |
 | 2 | 理由が無い・理由が空・引数が Windows に渡せないほど長い・wrapper の option の誤り |
-| 75 | ほかの呼び出しの承認待ちが終わらない (lock を待つ上限を超えた) |
+| 75 | ほかの呼び出し (WSL か Windows) の承認待ちが終わらない (lock を待つ上限を超えた) |
 | 127 | `op.exe`・`powershell.exe`・`wslpath` が見つからない |
 | 1 | launcher が `op.exe` を起こせなかった |
-| 129・130・143 | SIGHUP・SIGINT・SIGTERM で止められた |
+| 129・130・143 | SIGHUP・SIGINT・SIGTERM で止められた (WSL)。Windows は Ctrl+C を 130 と記録 |
 
 ### 環境変数
 
@@ -164,6 +185,12 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
   付いたまま 1Password の 10 分の期限まで残ります)。
 - **共有の承認。** op-reason は各呼び出しの前と後に、WSL から直に `op.exe whoami` を打ちます。通れば、どの端末からも使える
   承認がある (窓の出ていない画面を許可したか、道具が `op.exe` を直に打った) ので、sign out して記録し、通知を出します。
+- **Windows の Ctrl+C**: Ctrl+C で止めた呼び出しは、PowerShell が入口の後始末を走らせれば `中断` (終了コード 130) として
+  記録します。PowerShell のプロセス自身の終了コードは PowerShell が決めます。
+- **Windows のパイプ**: Windows では op-reason どうしのパイプ (`op-reason … | op-reason …`) を見分けません。2 つ目の呼び出しは
+  `OPREASON_LOCK_WAIT` が尽きるまで lock を待つことがあります。1 つ目の出力は変数に入れてください。
+- WSL の見張りは Windows の lock の外で `op.exe signout --all` を打つので、共有の承認を見つけたときに、その時動いている
+  Windows の呼び出しの session を閉じることがあります (まれ)。
 - まだ確かめていないこと: `--all` の無い `op signout` が、1 つのプロセスの session だけを閉じるか。
 
 ## 開発
