@@ -1,0 +1,26 @@
+# Deletes the screenshot branch of plan C' (windows-exe-screenshots/pr-<number>) when its pull request closes
+# (merged or not). windows-exe.yml creates the branch; keep the two together, or the branches pile up.
+name: windows-exe cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  delete-screenshots-branch:
+    runs-on: ubuntu-24.04
+    steps:
+      # A pull request that never got screenshots has no branch: that is not a failure.
+      - name: Delete the screenshot branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: heads/windows-exe-screenshots/pr-${{ github.event.pull_request.number }}
+        run: |
+          if gh api -X DELETE "repos/${{ github.repository }}/git/refs/${REF}"; then
+            echo "deleted ${REF}"
+          else
+            echo "no branch (nothing to do): ${REF}"
+          fi
