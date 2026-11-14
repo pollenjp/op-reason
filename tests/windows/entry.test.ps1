@@ -127,6 +127,16 @@ $outFile = Join-Path $work 'shim-inherit.out'
 $rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check, stderr inherited" document get x < "' + $bin + '" > "' + $outFile + '"')
 Remove-Item Env:OPREASON_STDERR_MODE
 Write-Host ("       diagnostic: binary through the shim with stderr inherited: out=" + (Get-Item $outFile).Length + " (want " + (Get-Item $bin).Length + ")")
+# Diagnostic: does a powershell -File script that only mentions $input (in a branch that does not run) keep its
+# redirected stdin from a child?
+Reset-Fake
+foreach ($v in @(@{ name = 'no-input'; extra = '' }, @{ name = 'input-mentioned'; extra = 'if ($false) { $input | Out-Null }' })) {
+  $script = Join-Path $work ("stdin-" + $v.name + '.ps1')
+  [System.IO.File]::WriteAllText($script, ($v.extra + "`n" + '$psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName = $env:OPREASON_OP_EXE; $psi.Arguments = ''document get x''; $psi.UseShellExecute = $false; $p = [System.Diagnostics.Process]::Start($psi); $p.WaitForExit(); exit $p.ExitCode'))
+  $outFile = Join-Path $work ("stdin-" + $v.name + '.out')
+  $rc = Invoke-Cmd ('"' + $ps + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $script + '" < "' + $bin + '" > "' + $outFile + '"')
+  Write-Host ("       diagnostic: powershell -File, " + $v.name + ": child got " + (Get-Item $outFile).Length + " bytes of stdin (want " + (Get-Item $bin).Length + "), rc=$rc")
+}
 Reset-Fake
 $env:FAKE_NO_STDIN = '1'
 $env:FAKE_OUT = 'stdout through the shim'
