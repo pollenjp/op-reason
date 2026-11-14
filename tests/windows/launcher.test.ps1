@@ -134,7 +134,8 @@ function Save-WindowShot([string]$path, [string]$title) {
   $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
   $g.Dispose()
   $rect = $null
-  $h = [WindowRect]::FindWindow($null, $title)
+  # [NullString]::Value: PowerShell would pass $null to a string parameter as an empty string
+  $h = [WindowRect]::FindWindow([NullString]::Value, $title)
   $r = New-Object WindowRect+RECT
   if ($h -ne [IntPtr]::Zero -and [WindowRect]::GetWindowRect($h, [ref]$r)) {
     $x = [Math]::Max(0, $r.Left)
@@ -238,6 +239,10 @@ $r = Invoke-Launcher (New-Payload 'desktop' @('item', 'get', 'x') 'en' 'held' 90
 $st = Get-Status
 $errText = [System.IO.File]::ReadAllText($r.err)
 Check "scan: op's stderr is relayed and a denial is reported" ($r.rc -eq 1 -and $st.stderrMatch -eq 'denied' -and $errText.Contains('authorization prompt dismissed')) ("rc=$($r.rc) err=$errText status=" + ($st | ConvertTo-Json -Compress))
+
+Reset-Fake
+$r = Invoke-Launcher (New-Payload 'desktop' @('document', 'get', 'x') 'en' 'held' 90 'scan' (New-Facts 'human' 'r' 'op document get x')) 'scanbin' $bin
+Check 'scan: binary stdin still comes out on stdout unchanged' (Test-SameBytes $bin $r.out) ("out bytes: " + (Get-Item $r.out).Length)
 
 Write-Host '== service'
 Reset-Fake

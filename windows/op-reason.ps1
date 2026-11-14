@@ -765,6 +765,8 @@ $payload = [ordered]@{
   v = 1; mode = $plan.mode; op = $opExe; args64 = $args64; status = $statusFile; lang = $lang
   lock = 'held'; lockWait = $lockWait; stderr = 'scan'
 }
+# For tests only: OPREASON_STDERR_MODE=inherit lets op.exe write to stderr directly (no denial/timeout detection)
+if ($env:OPREASON_STDERR_MODE -eq 'inherit') { $payload.stderr = 'inherit' }
 if ($null -ne $facts) { $payload.facts = $facts }
 $payloadJson = ConvertTo-AsciiJson (ConvertTo-Json -InputObject $payload -Compress -Depth 6)
 if ($payloadJson.Length -gt 32000) { Stop-Refused 'too-long' 2 @(($M.payloadLong -f $payloadJson.Length), $M.longHint) $false }

@@ -45,7 +45,7 @@ render_body() {
   if [ "$count" -eq 0 ]; then
     echo "(no screenshots yet)"
   else
-    render_entry "$(jq -c '.[0]' <<<"$entries")"
+    render_entry "$(jq -c '.[0]' <<<"$entries")" open
     if [ "$count" -gt 1 ]; then
       echo "<details>"
       echo "<summary>archived ($((count - 1)) earlier)</summary>"
@@ -62,7 +62,7 @@ render_body() {
   echo "<!-- ${STATE_PREFIX} $(jq -c . <<<"$entries") -->"
 }
 
-# $1: entry JSON {sha, result, time, files[]}
+# $1: entry JSON {sha, result, time, files[]}; $2: "open" to show it unfolded (the latest run)
 render_entry() {
   local entry="$1" sha result time short emoji
   sha=$(jq -r '.sha' <<<"$entry")
@@ -72,7 +72,11 @@ render_entry() {
   emoji="✅"
   [ "$result" = "success" ] || emoji="❌"
 
-  echo "<details>"
+  if [ "${2:-}" = "open" ]; then
+    echo "<details open>"
+  else
+    echo "<details>"
+  fi
   echo "<summary><code>${short}</code> ${emoji} ${time}</summary>"
   echo
   render_grid "$sha" "$entry"

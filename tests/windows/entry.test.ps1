@@ -122,6 +122,12 @@ $errFile = Join-Path $work 'shim.err'
 $rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check" document get x < "' + $bin + '" > "' + $outFile + '" 2> "' + $errFile + '"')
 Check 'binary stdin and stdout pass byte for byte through the shim' ($rc -eq 0 -and (Test-SameBytes $bin $outFile)) ("rc=$rc out=" + (Get-Item $outFile).Length + " err=" + [System.IO.File]::ReadAllText($errFile) + " calls=" + (@(Get-Calls) | ConvertTo-Json -Compress))
 Reset-Fake
+$env:OPREASON_STDERR_MODE = 'inherit'
+$outFile = Join-Path $work 'shim-inherit.out'
+$rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check, stderr inherited" document get x < "' + $bin + '" > "' + $outFile + '"')
+Remove-Item Env:OPREASON_STDERR_MODE
+Write-Host ("       diagnostic: binary through the shim with stderr inherited: out=" + (Get-Item $outFile).Length + " (want " + (Get-Item $bin).Length + ")")
+Reset-Fake
 $env:FAKE_NO_STDIN = '1'
 $env:FAKE_OUT = 'stdout through the shim'
 $outFile = Join-Path $work 'shim2.out'
