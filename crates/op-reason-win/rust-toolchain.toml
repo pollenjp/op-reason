@@ -1,0 +1,6 @@
+# rustup reads this when cargo runs in this directory (the Windows CI job does). A stable release at least 7 days
+# old, so that clippy's lints do not change under the build.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
