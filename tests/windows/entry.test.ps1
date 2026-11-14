@@ -102,6 +102,10 @@ Check 'start record: mode, kind, masked args, reason, caller with repository and
 Check 'end record: approved, same id, window shown' ($null -ne $end -and $end.id -eq $start.id -and $end.result -eq 'approved' -and $end.window -eq 'shown') ($end | ConvertTo-Json -Compress -Depth 5)
 Check "the caller's environment and console encoding are put back" ($env:OP_CONNECT_HOST -eq 'https://connect.example' -and [Console]::OutputEncoding.CodePage -eq $encBefore -and -not $env:OPREASON_PAYLOAD) "OP_CONNECT_HOST=$env:OP_CONNECT_HOST codepage=$([Console]::OutputEncoding.CodePage) before=$encBefore"
 
+Reset-Fake
+$piped = ('{"title":"piped"}' | & $entry --reason 'pipe a template' item create --dry-run -)
+Check 'from PowerShell, pipeline input reaches op on stdin' ((@($piped) -join "`n") -ceq '{"title":"piped"}') ("got: " + (@($piped) -join '|'))
+
 Write-Host '== Refusal'
 Reset-Fake
 $errFile = Join-Path $work 'refuse.err'
@@ -121,22 +125,6 @@ $outFile = Join-Path $work 'shim.out'
 $errFile = Join-Path $work 'shim.err'
 $rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check" document get x < "' + $bin + '" > "' + $outFile + '" 2> "' + $errFile + '"')
 Check 'binary stdin and stdout pass byte for byte through the shim' ($rc -eq 0 -and (Test-SameBytes $bin $outFile)) ("rc=$rc out=" + (Get-Item $outFile).Length + " err=" + [System.IO.File]::ReadAllText($errFile) + " calls=" + (@(Get-Calls) | ConvertTo-Json -Compress))
-Reset-Fake
-$env:OPREASON_STDERR_MODE = 'inherit'
-$outFile = Join-Path $work 'shim-inherit.out'
-$rc = Invoke-Cmd ('"' + $shim + '" --reason "binary check, stderr inherited" document get x < "' + $bin + '" > "' + $outFile + '"')
-Remove-Item Env:OPREASON_STDERR_MODE
-Write-Host ("       diagnostic: binary through the shim with stderr inherited: out=" + (Get-Item $outFile).Length + " (want " + (Get-Item $bin).Length + ")")
-# Diagnostic: does a powershell -File script that only mentions $input (in a branch that does not run) keep its
-# redirected stdin from a child?
-Reset-Fake
-foreach ($v in @(@{ name = 'no-input'; extra = '' }, @{ name = 'input-mentioned'; extra = 'if ($false) { $input | Out-Null }' })) {
-  $script = Join-Path $work ("stdin-" + $v.name + '.ps1')
-  [System.IO.File]::WriteAllText($script, ($v.extra + "`n" + '$psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName = $env:OPREASON_OP_EXE; $psi.Arguments = ''document get x''; $psi.UseShellExecute = $false; $p = [System.Diagnostics.Process]::Start($psi); $p.WaitForExit(); exit $p.ExitCode'))
-  $outFile = Join-Path $work ("stdin-" + $v.name + '.out')
-  $rc = Invoke-Cmd ('"' + $ps + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $script + '" < "' + $bin + '" > "' + $outFile + '"')
-  Write-Host ("       diagnostic: powershell -File, " + $v.name + ": child got " + (Get-Item $outFile).Length + " bytes of stdin (want " + (Get-Item $bin).Length + "), rc=$rc")
-}
 Reset-Fake
 $env:FAKE_NO_STDIN = '1'
 $env:FAKE_OUT = 'stdout through the shim'

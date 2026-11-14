@@ -41,4 +41,9 @@ foreach ($case in $table.cases) {
 }
 foreach ($e in $envNames) { [Environment]::SetEnvironmentVariable($e, $null, 'Process') }
 Remove-Item Env:OPREASON_ENTRY_PLAN_ONLY, Env:OPREASON_ENTRY_NAME -ErrorAction SilentlyContinue
+
+# A script that names the automatic input variable makes powershell.exe -File read all of a redirected stdin before the
+# script runs (seen on Windows PowerShell 5.1), so the shim's stdin would never reach op.exe
+$named = Select-String -LiteralPath $entry -Pattern ('\$' + 'input\b')
+Check 'op-reason.ps1 never names the automatic input variable' ($null -eq $named) ($named | Out-String)
 Complete-Tests

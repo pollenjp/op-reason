@@ -765,8 +765,6 @@ $payload = [ordered]@{
   v = 1; mode = $plan.mode; op = $opExe; args64 = $args64; status = $statusFile; lang = $lang
   lock = 'held'; lockWait = $lockWait; stderr = 'scan'
 }
-# For tests only: OPREASON_STDERR_MODE=inherit lets op.exe write to stderr directly (no denial/timeout detection)
-if ($env:OPREASON_STDERR_MODE -eq 'inherit') { $payload.stderr = 'inherit' }
 if ($null -ne $facts) { $payload.facts = $facts }
 $payloadJson = ConvertTo-AsciiJson (ConvertTo-Json -InputObject $payload -Compress -Depth 6)
 if ($payloadJson.Length -gt 32000) { Stop-Refused 'too-long' 2 @(($M.payloadLong -f $payloadJson.Length), $M.longHint) $false }
@@ -823,7 +821,11 @@ try {
     $savedPsOutEnc = $OutputEncoding
     $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
     if ($MyInvocation.ExpectingInput) {
-      $input | & $psExe @psArgs
+      # Pipeline input is read through the session state, never through the automatic input variable by name: a
+      # script that names it makes powershell.exe -File read all of a redirected stdin before the script runs, and the
+      # shim's binary stdin would never reach op.exe (tests/windows/entry-plan.test.ps1 keeps the name out)
+      $pipelineInput = $ExecutionContext.SessionState.PSVariable.GetValue('input')
+      $pipelineInput | & $psExe @psArgs
     } else {
       & $psExe @psArgs
     }
