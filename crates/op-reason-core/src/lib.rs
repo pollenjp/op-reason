@@ -15,6 +15,7 @@ pub mod json;
 pub mod lang;
 pub mod launcher;
 pub mod log;
+pub mod logview;
 pub mod messages;
 pub mod place;
 pub mod result;

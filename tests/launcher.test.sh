@@ -42,6 +42,7 @@
 # FAKE_WHOAMI_RC (default 1); signout writes SIGNOUT-OUT / SIGNOUT-ERR and exits 0; anything else copies stdin to stdout,
 # writes "FAKE-ERR 日本語" to stderr and exits with FAKE_RC (default 0).
 
+# No -e: a failed check must not stop the checks after it.
 set -u -o pipefail
 
 here=$(
@@ -278,7 +279,7 @@ title=$(status_field '.ui.toast[0]')
 body=$(status_field '.ui.toast[1]')
 run notify-ja "$(notify_payload ja start true)"
 if [[ ${title} == "Could not clear a shared 1Password CLI approval" && ${body} == *"after the call"* &&
-$(status_field '.ui.toast[0]') == 共有の\ 1Password\ CLI\ の承認を消しました && $(status_field '.ui.toast[1]') == *"op を打つ前"* ]]; then
+  $(status_field '.ui.toast[0]') == 共有の\ 1Password\ CLI\ の承認を消しました && $(status_field '.ui.toast[1]') == *"op を打つ前"* ]]; then
   ok "notify toast texts for cleared / not cleared, before / after the call"
 else
   ng "notify toast texts for cleared / not cleared, before / after the call" "en=${title} / ${body} ja=$(status_field '.ui')"
