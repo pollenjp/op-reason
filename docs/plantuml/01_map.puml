@@ -1,0 +1,32 @@
+@startuml
+!theme plain
+left to right direction
+skinparam defaultFontName "Noto Sans CJK JP"
+skinparam ArrowColor #555555
+skinparam rectangle {
+  BackgroundColor #FFF8DC
+  BorderColor #B8860B
+}
+skinparam file {
+  BackgroundColor #E8F1FB
+  BorderColor #3A6EA5
+}
+
+rectangle "How should an AI agent call op?" as Q4
+rectangle "How do I check it with\nthe real 1Password app?" as Q3
+rectangle "How does it work now?\nWhat do the entries and the launcher exchange?" as Q2
+rectangle "日本語で読みたい\n(Japanese)" as Q5
+rectangle "What is op-reason?\nHow do I install and use it?" as Q1
+
+file "skill/SKILL.md\n(op-reason --skill)" as P4
+file "docs/manual-verification.md\ndocs/manual-verification.ja.md" as P3
+file "docs/architecture/README.md" as P2
+file "README.ja.md" as P5
+file "README.md" as P1
+
+Q4 --> P4
+Q3 --> P3
+Q2 --> P2
+Q5 --> P5
+Q1 --> P1
+@enduml

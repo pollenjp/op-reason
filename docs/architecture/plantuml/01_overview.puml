@@ -1,0 +1,27 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Noto Sans CJK JP"
+skinparam ArrowColor #555555
+skinparam componentStyle rectangle
+
+package "WSL" {
+  component "op (symlink)\nop-reason" as WSLBIN #E8F1FB
+  file "~~/.local/state/op-reason/\nlog.jsonl" as WSLLOG
+}
+package "Windows" {
+  component "op-reason.cmd\nop-reason.ps1\n(PR 2)" as WINENTRY #F2F2F2
+  component "powershell.exe\nlauncher.ps1\n(fresh process per call)" as LAUNCHER #FFF8DC
+  component "op.exe\n(1Password CLI)" as OPEXE
+  component "1Password app\n(approval prompt)" as APP
+  component "window + toast\n(caller, place, reason, command)" as WIN #FFE4E1
+  file "%LOCALAPPDATA%\\op-reason\\\nlog.jsonl" as WINLOG
+}
+
+WSLBIN --> LAUNCHER : payload (env)\nstdin / stdout / stderr
+WINENTRY --> LAUNCHER : payload (env)
+LAUNCHER --> WIN : shows
+LAUNCHER --> OPEXE : starts, then\nwhoami + signout --all
+OPEXE --> APP : asks
+WSLBIN --> WSLLOG : start / end / refused
+WINENTRY --> WINLOG : same format
+@enduml

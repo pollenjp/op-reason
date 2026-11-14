@@ -63,7 +63,17 @@ pub fn local_parts(epoch: i64) -> (String, String, String) {
 mod tests {
     use super::*;
 
-    // chrono reads TZ when it is set; the tests that depend on it run in one test so that they do not race.
+    #[test]
+    fn formats_have_the_expected_shapes() {
+        let n = now();
+        assert_eq!(n.iso.len(), "2027-01-15T08:00:00+00:00".len());
+        assert_eq!(n.id_stamp.len(), "20270115T080000".len());
+        assert_eq!(n.ymd_hms.len(), "2027-01-15 08:00:00".len());
+        assert_eq!(n.hms.len(), "08:00:00".len());
+    }
+
+    // chrono reads TZ on Unix (Windows uses the system's zone); the test that sets it is the only one that reads it.
+    #[cfg(unix)]
     #[test]
     fn formats_in_the_local_zone() {
         // SAFETY: tests in this crate do not read TZ concurrently except here.
