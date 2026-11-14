@@ -97,6 +97,7 @@ op-reason {0} は非公式の道具です (1Password の製品ではありませ
       answerFirst   = 'その承認の画面に応えてから (窓の出ていない画面なら拒否してから)、打ち直してください。'
       unknown       = '(分からない)'
       completion    = 'fish の補完は WSL の op-reason (op-reason --completion fish) が出します。'
+      completionUsage = '--completion は fish だけです: --completion fish [<コマンド>] (渡されたもの: {0})'
       logInfo       = 'Windows の記録は {0} にあります (1 行 1 件の JSON)。PowerShell なら: Get-Content {0} | ConvertFrom-Json | Format-Table time, event, reason'
       helpReason    = '(理由なし: help)'
     }
@@ -153,6 +154,7 @@ Usage: op-reason --reason "<why you call op>" <op arguments...>
     answerFirst   = 'Answer that approval prompt first (deny it if it came without the window), then run this again.'
     unknown       = '(unknown)'
     completion    = 'The fish completion comes from op-reason on WSL (op-reason --completion fish).'
+    completionUsage = '--completion supports only fish: --completion fish [<command>] (got: {0})'
     logInfo       = 'The Windows log is {0} (one JSON object per line). In PowerShell: Get-Content {0} | ConvertFrom-Json | Format-Table time, event, reason'
     helpReason    = '(no reason: help)'
   }
@@ -290,7 +292,10 @@ function Get-Display([string[]]$masked) {
   $sb = New-Object System.Text.StringBuilder
   [void]$sb.Append('op')
   foreach ($a in $masked) {
-    $t = $a.Replace("`n", ' ').Replace("`r", ' ').Replace("`t", ' ')
+    # Control characters (newline, tab, escape, ...) become spaces
+    $chars = $a.ToCharArray()
+    for ($k = 0; $k -lt $chars.Length; $k++) { if ([char]::IsControl($chars[$k])) { $chars[$k] = ' ' } }
+    $t = New-Object string (, $chars)
     [void]$sb.Append(' ')
     if ($t.Length -gt 0 -and $t -cmatch '^[A-Za-z0-9_./:=@%+,*?-]+$') {
       [void]$sb.Append($t)
@@ -317,7 +322,7 @@ function Get-Plan([string]$name, [string[]]$argv) {
         if ($rest.Length -eq 2) { $plan.command = $rest[1] }
       } else {
         $plan.action = 'error'
-        $plan.message = '--completion supports only fish: --completion fish [<command>] (got: ' + ($rest -join ' ') + ')'
+        $plan.message = ($M.completionUsage -f ($rest -join ' '))
       }
       return $plan
     }
@@ -445,6 +450,7 @@ function Get-CallerInfo([string]$lang) {
         if ($json) {
           try { $label = [string](($json | ConvertFrom-Json).result.workspace.label) } catch { $label = '' }
           if ($null -eq $label) { $label = '' }
+          $label = -join @($label.ToCharArray() | ForEach-Object { if ([char]::IsControl($_)) { ' ' } else { $_ } })
         }
       }
     }

@@ -43,6 +43,22 @@ export OPREASON_LANG=ja  # 英語なら en
 | 13 | `op item get x` (理由なし) | 終了コード 2、AI エージェント向けの案内つきの使い方。`op-reason-log` に `断った (理由なし)` |
 | 14 (任意) | service account があれば、token を表示せずに `OP_SERVICE_ACCOUNT_TOKEN` に入れ、`op --reason "確認 14: service account" vault list >/dev/null` | 窓も画面も出ず、終了コード 0。`op-reason-log` に `成功 (SA)` |
 
+## Windows で確かめること
+
+Release の zip (か、repo の `windows/op-reason.ps1`・`windows/op-reason.cmd`・`launcher/launcher.ps1` を `PATH` の 1 つの
+フォルダーに並べたもの) を使います。
+
+| # | すること | 見込み |
+| --- | --- | --- |
+| W1 | PowerShell で `op-reason --reason "確認 W1: vault の一覧" vault list > $null`、許可 | 窓と toast、画面は 1 回、終了コード 0。`%LOCALAPPDATA%\op-reason\log.jsonl` に `start` と `end` (`approved`) |
+| W2 | W1 をもう一度 | 画面がまた出る |
+| W3 | cmd.exe で `op-reason.cmd --reason "確認 W3: cmd から" whoami`、許可 | shim を通しても同じく動く |
+| W4 | 端末 A (WSL): `op --reason "確認 W4 WSL" vault list >/dev/null`、まだ応えない。端末 B (PowerShell): `op-reason --reason "確認 W4 Windows" vault list > $null` | B はほかの op-reason の呼び出しを待つと出す。A に応えると B の窓と画面が出る |
+| W5 | W4 と同じで、B に `$env:OPREASON_LOCK_WAIT = 10` を付け、A に 15 秒応えず、そのあと A を拒否 | B は A の理由を出して 75 で終わる。B の `end` は `lock-timeout` |
+| W6 | `op-reason --reason "確認 W6: 拒否" vault list`、**拒否** | 終了コードは 0 以外で、op の誤りが stderr に出る。`end` は `denied` |
+| W7 | `$x = op-reason --reason "確認 W7: 受け取る" whoami --format json`、許可 | `$x` に JSON の文字が入る |
+| W8 | `op-reason --reason "確認 W8: 止める" vault list` の画面が出ている間に Ctrl+C | 窓が消える。画面は拒否する。`end` は `interrupted` |
+
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
 
 op-reason は呼び出しの終わりに `op.exe signout --all` を打ち、これはほかのプロセスの session (別のタブで手で打った `op`

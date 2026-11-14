@@ -495,7 +495,11 @@ completion fish`, which the wrapper would refuse). Install it as `~/.config/fish
 ## 7. Windows entry (PR 2)
 
 - `op-reason.ps1` (UTF-8 with byte order mark: Windows PowerShell 5.1 reads files without one in the ANSI code page) and
-  `op-reason.cmd` (`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0op-reason.ps1" %*`).
+  `op-reason.cmd` (`powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0op-reason.ps1" %*`,
+  with `OPREASON_ENTRY=cmd` and `OPREASON_ENTRY_NAME=%~n0` set for the entry).
+- Arguments: from PowerShell they come from PowerShell (`$args`); PowerShell takes an unquoted `--` for itself, so the
+  README says to write `'--'`. Through the shim the entry splits the process command line itself with the C runtime's
+  rules (PowerShell's `-File` binding drops empty arguments and `--`).
 - The `.cmd` shim goes through cmd.exe, which re-parses the arguments: unquoted `&`, `|`, `%` and similar characters
   can break (the root of "BatBadBut"). The README says so, and says that shells whose execution policy allows scripts
   (such as Claude Code's tool shell, which runs with `Bypass`) can call `op-reason.ps1` directly.
@@ -506,8 +510,13 @@ completion fish`, which the wrapper would refuse). Install it as `~/.config/fish
 - Each call starts a fresh `powershell.exe` with the launcher (`-File`), payload `lock: held`, `lockWait` =
   `OPREASON_LOCK_WAIT` (default 90), `stderr: scan` (the entry cannot tee stderr itself).
 - When started from a PowerShell session, the launcher runs as a native command so that output can be captured
-  (`$x = op-reason …`); when started by the `.cmd` shim, standard handles are inherited (binary-safe). Which one is
-  binary-safe in practice is checked in the Windows CI.
+  (`$x = op-reason …`, decoded as UTF-8; the console encoding and the environment are put back afterwards); when
+  started by the `.cmd` shim, standard handles are inherited (binary-safe, checked in the Windows CI).
+- A call stopped by Ctrl+C (or a closed console) is logged as `end` `interrupted` with exit 130 when PowerShell runs
+  the entry's cleanup (`finally`); the PowerShell process's own exit code is PowerShell's. (The Windows executable of
+  C' returns 130 for Ctrl+C and 129 for a closed console.)
+- The holder of the mutex is shown from `holder.json` in the call's language; a timeout prints "Another op-reason call
+  (from Windows or WSL) is still waiting for its approval" with the holder and exits 75.
 - No shared-approval watchdog (there is no shared parent process on Windows).
 - `op-reason … | op-reason …` is not detected on Windows (no `/proc`): the second call may wait for the mutex until
   `lockWait` runs out. The README says so (store the first output in a variable instead).
