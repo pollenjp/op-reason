@@ -165,7 +165,22 @@ pub fn open_append(path: &Path) -> std::io::Result<File> {
     opts.open(path)
 }
 
-/// Takes an exclusive lock on `file`, waiting up to `wait`. Returns whether the lock was taken.
+/// Opens (creating, never truncating) a file used only for locking, with read and write access (mode 0600 on Unix).
+/// Windows refuses `LockFileEx` on a handle opened for appending only, so a lock file must not be opened with
+/// [`open_append`].
+pub fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+}
+
+/// Takes an exclusive lock on `file`, waiting up to `wait`. Returns whether the lock was taken (false also when the
+/// system refuses the lock).
 pub fn lock_with_timeout(file: &File, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
@@ -188,7 +203,7 @@ pub fn append(state_dir: &Path, record_line: &str) {
     if ensure_dir(state_dir).is_err() {
         return;
     }
-    let lock = open_append(&state_dir.join("log.lock")).ok();
+    let lock = open_lock_file(&state_dir.join("log.lock")).ok();
     let locked = lock
         .as_ref()
         .is_some_and(|f| lock_with_timeout(f, LOG_LOCK_WAIT));
@@ -324,6 +339,31 @@ mod tests {
             fs::metadata(dir.join("log.1.jsonl")).unwrap().len(),
             LOG_MAX
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn append_waits_for_the_log_lock() {
+        let dir = std::env::temp_dir().join(format!("op-reason-log-lock-test-{}", random_u64()));
+        ensure_dir(&dir).unwrap();
+        let holder = open_lock_file(&dir.join("log.lock")).unwrap();
+        assert!(lock_with_timeout(&holder, Duration::from_secs(1)), "the lock file can be locked");
+        let writer = {
+            let dir = dir.clone();
+            thread::spawn(move || append(&dir, r#"{"late":1}"#))
+        };
+        thread::sleep(Duration::from_millis(400));
+        assert!(
+            !dir.join("log.jsonl").exists(),
+            "append must wait while another handle holds log.lock"
+        );
+        holder.unlock().unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("log.jsonl")).unwrap(),
+            "{\"late\":1}\n"
+        );
+        drop(holder);
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -335,6 +335,9 @@ Files: `<state>/log.jsonl` (WSL: `${XDG_STATE_HOME:-~/.local/state}/op-reason/`;
 rotating take an exclusive lock on `<state>/log.lock` (Linux: `flock`; Windows: `LockFileEx` on byte 0 or a wider
 range; Rust's `File::lock` does this on both), waiting up to 5 seconds and writing anyway after that.
 
+Lock files (`log.lock`, and `lock` on WSL) are opened for reading and writing, never for appending only: Windows refuses
+`LockFileEx` on an append-only handle.
+
 Records (one JSON object per line, `v: 1`; `time` is local ISO 8601 with offset, `epoch` is UNIX seconds; `id` is
 `YYYYmmddTHHMMSS-<pid>-<random>` and is shared by a call's `start` and `end`):
 
@@ -515,6 +518,8 @@ Changes from the dotfiles version:
 - texts built from `facts` in English or Japanese (`lang`); the file is UTF-8 with a byte order mark and may contain
   Japanese text (the WSL path decodes it as UTF-8; `-File` reads the byte order mark);
 - `ui` in the status (the texts built), so that tests on Linux can check them;
+- the texts live in `Get-Texts`, one `key = 'value'` per line for each language (C' reads this table to check that
+  its own texts match; a change of this shape is a contract change);
 - PR 2: the named mutex and `holder.json`, `stderr: scan`.
 
 Kept: Windows PowerShell 5.1 syntax (no `??`, `?.`, ternary, pipeline chains, `$IsWindows`), arguments quoted the way

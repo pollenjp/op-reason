@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use op_reason_core::lang::Lang;
-use op_reason_core::log::{lock_with_timeout, open_append};
+use op_reason_core::log::{lock_with_timeout, open_lock_file};
 use op_reason_core::messages;
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +87,7 @@ pub fn acquire(
     drained: &mut Option<Vec<u8>>,
     on_wait: impl FnOnce(),
 ) -> std::io::Result<(Outcome, u64)> {
-    let file = open_append(&state_dir.join("lock"))?;
+    let file = open_lock_file(&state_dir.join("lock"))?;
     let started = Instant::now();
     match file.try_lock() {
         Ok(()) => return Ok((Outcome::Held(file), 0)),
