@@ -7,6 +7,31 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// A `Command` whose child starts with an empty signal mask. The wrapper blocks SIGINT, SIGTERM and SIGHUP in its own
+/// threads (they are handled on a dedicated thread), and the standard library does not reset the mask of a child, so
+/// without this a child (the launcher's relay, `op.exe`) would ignore TERM and HUP and outlive a stopped wrapper.
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(program);
+    // SAFETY: sigset_t is plain data; the empty set is prepared here, and the closure only calls sigprocmask, which is
+    // async-signal-safe, between fork and exec.
+    let empty = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        set
+    };
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    cmd
+}
+
 /// Finds a command: a name with `/` must be an executable file; other names are looked up in `PATH`.
 pub fn which(cmd: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -75,7 +100,7 @@ pub fn output_timeout(cmd: &mut Command, limit: Duration) -> Option<(ExitStatus,
 /// `wslpath -w <path>`: the Windows form of a Linux path (empty when wslpath fails).
 pub fn wslpath_w(path: &Path) -> String {
     output_timeout(
-        Command::new("wslpath").arg("-w").arg(path),
+        command("wslpath").arg("-w").arg(path),
         Duration::from_secs(10),
     )
     .filter(|(s, _)| s.success())
@@ -139,6 +164,31 @@ pub fn print_stderr(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn children_start_with_an_empty_signal_mask() {
+        // Block TERM here, as the wrapper does, and look at the child's mask
+        let set = unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            set
+        };
+        let out = output_timeout(
+            command("sh").args(["-c", "grep '^SigBlk' /proc/self/status"]),
+            Duration::from_secs(5),
+        )
+        .expect("sh runs");
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        }
+        let line = String::from_utf8_lossy(&out.1);
+        assert!(
+            line.trim_end().ends_with("0000000000000000"),
+            "the child's blocked signals: {line}"
+        );
+    }
 
     #[test]
     fn times_out() {

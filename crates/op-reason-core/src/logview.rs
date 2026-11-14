@@ -180,6 +180,25 @@ fn cell(v: &str) -> String {
     }
 }
 
+/// Control characters (newline, tab, escape, ...) as visible escapes, so that a logged value cannot move the cursor,
+/// rewrite the screen or break the table.
+pub fn visible(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            let u = c as u32;
+            if u < 0x100 {
+                out.push_str(&format!("\\x{u:02x}"));
+            } else {
+                out.push_str(&format!("\\u{{{u:x}}}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn who(lang: Lang, rec: &Value) -> String {
     let caller = &rec["caller"];
     if caller.is_null() {
@@ -325,7 +344,12 @@ pub fn run(
         i += 1;
     }
     let since = {
-        let (num, unit) = since_arg.split_at(since_arg.len().saturating_sub(1));
+        let cut = since_arg
+            .char_indices()
+            .last()
+            .map(|(at, _)| at)
+            .unwrap_or(0);
+        let (num, unit) = since_arg.split_at(cut);
         let factor = match unit {
             "s" => Some(1),
             "m" => Some(60),
@@ -422,7 +446,10 @@ pub fn run(
 
     let (today, _, _) = local_parts(now);
     let mut table: Vec<[String; 6]> = vec![l.header.map(str::to_string)];
-    table.extend(rows.iter().map(|r| row(lang, r, &today)));
+    table.extend(
+        rows.iter()
+            .map(|r| row(lang, r, &today).map(|c| visible(&c))),
+    );
     let mut widths = [0usize; 6];
     for r in &table {
         for (w, c) in widths.iter_mut().zip(r.iter()) {
@@ -447,6 +474,30 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn since_with_multibyte_text_is_a_usage_error() {
+        let dir = std::env::temp_dir();
+        for bad in ["--since=5分", "--since=1あ", "--since=分"] {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = run(
+                &[OsString::from(bad)],
+                &dir,
+                0,
+                Lang::En,
+                &mut out,
+                &mut err,
+            );
+            assert_eq!(code, 2, "{bad}");
+        }
+    }
+
+    #[test]
+    fn control_characters_are_made_visible() {
+        assert_eq!(visible("a\u{1b}[2Jb\tc\nd"), "a\\x1b[2Jb\\x09c\\x0ad");
+        assert_eq!(visible("日本\u{85}"), "日本\\x85");
+    }
 
     #[test]
     fn widths() {

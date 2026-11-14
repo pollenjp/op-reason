@@ -1,8 +1,9 @@
 //! SIGINT, SIGTERM and SIGHUP, handled on a dedicated thread.
 //!
 //! The signals are blocked in the calling thread (and so in every thread started later) and a thread waits for them
-//! with `sigwait`. Child processes start with an empty signal mask (the standard library resets it), so a Ctrl+C
-//! still reaches them.
+//! with `sigwait`. The standard library does not reset the signal mask of a child, so every child is started with
+//! `launch::command`, which empties the mask between fork and exec; a Ctrl+C or a TERM to the process group still
+//! reaches the children, and the handler forwards TERM and HUP to the launcher's relay.
 
 use std::thread;
 

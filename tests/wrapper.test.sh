@@ -56,7 +56,9 @@
 #   Shared approval watchdog: a direct op.exe whoami that succeeds → signout --all, shared-approval logged, notify (launcher
 #     notify mode and herdr); otherwise no signout
 #   op.exe or powershell.exe missing → 127 (refused)
-#   TERM → end interrupted, exit 143
+#   TERM → end interrupted, exit 143; a TERM to the wrapper alone is forwarded to the launcher; the launcher starts
+#     with no blocked signals (so a TERM or HUP to the process group reaches it); a powershell.exe that cannot be started
+#     gives 127 with a message
 #   Closed stdin: nothing extra on stderr
 #   Log rotation at 1 MiB; nothing left under the state directory after a call (no run/ entries, no current.json, no
 #     temporary files); run/ entries older than an hour are removed
@@ -132,6 +134,10 @@ if printf '%s' "${OPREASON_SCRIPT-}" | base64 -d 2>/dev/null | grep -q OPREASON_
   echo "CH=${OP_CONNECT_HOST-<unset>}"
   echo "CT=${OP_CONNECT_TOKEN-<unset>}"
 } >"${d}/ps.${n}.env"
+echo "$$" >"${d}/ps.${n}.pid"
+# The mask this script inherited, read by a child (bash blocks SIGCHLD in itself while it waits, and passes its
+# original mask to its children)
+grep '^SigBlk' /proc/self/status >"${d}/ps.${n}.sigblk"
 args=()
 while IFS= read -r b; do
   a=$(printf '%s' "${b}" | base64 -d; printf x)
@@ -400,6 +406,8 @@ if [[ ${argv} == $'-NoProfile\n-NonInteractive\n-ExecutionPolicy\nBypass\n-Outpu
 else
   ng "powershell gets -NoProfile … -EncodedCommand <bootstrap>, the launcher in OPREASON_SCRIPT" "$(head -n 8 "${FAKE_DIR}/ps.1.argv") $(env_of)"
 fi
+detail="$(cat "${FAKE_DIR}/ps.1.sigblk" 2>&1)"
+check "the launcher starts with no blocked signals (a TERM or HUP to the group reaches it)" grep -qE '^SigBlk:[[:space:]]+0+$' "${FAKE_DIR}/ps.1.sigblk"
 
 echo "== desktop"
 reset
@@ -612,6 +620,15 @@ if [[ ${rc} == 127 && $(last_field refused '.why') == no-powershell ]]; then
 else
   ng "powershell.exe missing → 127 (refused no-powershell)" "rc=${rc} err=$(cat "${work}/nops.err")"
 fi
+reset
+printf '#!/nonexistent/interpreter\n' >"${work}/broken-powershell.exe"
+chmod +x "${work}/broken-powershell.exe"
+OPREASON_POWERSHELL=${work}/broken-powershell.exe run_op cannotstart --reason "起こせない" item get a
+if [[ ${rc} == 127 && $(<"${work}/cannotstart.err") == *起こせません* && $(last_field end '.result') == launcher-failed ]]; then
+  ok "powershell.exe that cannot be started → 127 with a message, end launcher-failed"
+else
+  ng "powershell.exe that cannot be started → 127 with a message, end launcher-failed" "rc=${rc} err=$(cat "${work}/cannotstart.err") log=$(cat "${log}" 2>&1)"
+fi
 
 echo "== TERM"
 reset
@@ -630,6 +647,18 @@ if [[ ${rc} == 143 && $(last_field end '.result') == interrupted && $(last_field
   ok "TERM → end interrupted, exit 143"
 else
   ng "TERM → end interrupted, exit 143" "rc=${rc} log=$(cat "${log}" 2>&1)"
+fi
+ps_pid=$(cat "${FAKE_DIR}/ps.1.pid" 2>/dev/null)
+for _ in $(seq 40); do
+  if [[ -z ${ps_pid} ]] || ! kill -0 "${ps_pid}" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -n ${ps_pid} ]] && ! kill -0 "${ps_pid}" 2>/dev/null; then
+  ok "TERM to the wrapper alone is forwarded to the launcher (the window closes)"
+else
+  ng "TERM to the wrapper alone is forwarded to the launcher (the window closes)" "the fake powershell ${ps_pid} still runs"
 fi
 sleep 2.5
 

@@ -30,6 +30,8 @@ This page describes op-reason as it is now. Why it is built this way is in the d
    another op-reason starts feeding it; skip the lock if the holder reads our output. `<state>/current.json` names the
    holder.
 6. **Watchdog**: `op.exe whoami` straight from WSL. Success means a shared approval: `signout --all`, log, notify.
+   A call that skipped the lock leaves the watchdog to the lock holder. The payload is built and its size checked
+   here, after the lock (exit 2 when it is over 32000 characters).
 7. **Start** record, then the launcher: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
    -OutputFormat Text -EncodedCommand <bootstrap>`, the launcher in `OPREASON_SCRIPT`, the payload in
    `OPREASON_PAYLOAD`. stdin and stdout are the caller's; stderr is relayed while its tail is kept.
@@ -37,6 +39,8 @@ This page describes op-reason as it is now. Why it is built this way is in the d
    `op`'s code.
 
 Signals (INT, TERM, HUP) log `interrupted` (an `end` after the start, a `refused` before it) and exit 130, 143, 129.
+Children start with an empty signal mask, and a TERM or HUP to the wrapper alone is forwarded to the launcher, so the
+window closes with the call.
 
 ## The launcher contract
 

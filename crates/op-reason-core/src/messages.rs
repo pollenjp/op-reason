@@ -146,6 +146,30 @@ pub fn no_powershell(lang: Lang, cmd: &str) -> String {
     }
 }
 
+/// `powershell.exe` was found but could not be started (for example, WSL interop is broken).
+pub fn cannot_start(lang: Lang, cmd: &str, error: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "Could not start {cmd}: {error}. Check that WSL can run Windows programs (interop)."
+        ),
+        Lang::Ja => format!(
+            "{cmd} を起こせません: {error}。WSL から Windows のプログラムを起こせるか (interop) を確かめてください。"
+        ),
+    }
+}
+
+/// `--completion` with a shell other than fish.
+pub fn completion_usage(lang: Lang, got: &str) -> String {
+    match lang {
+        Lang::En => {
+            format!("--completion supports only fish: --completion fish [<command>] (got: {got})")
+        }
+        Lang::Ja => format!(
+            "--completion は fish だけです: --completion fish [<コマンド>] (渡されたもの: {got})"
+        ),
+    }
+}
+
 /// `wslpath` was not found.
 pub fn no_wslpath(lang: Lang) -> String {
     match lang {

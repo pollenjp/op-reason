@@ -166,7 +166,7 @@ Under the name `op`, `op --help` and `op --version` pass through to 1Password's 
 - The reason is normalized: control characters (including newline and tab) become spaces, runs of spaces become one,
   leading and trailing spaces are removed. An empty result is refused.
 - Lengths (in characters): 500 in the log, 200 in the window, 100 in the toast and in the lock holder file. Longer text
-  is cut and gets `…` (the launcher uses `...`).
+  is cut and gets `…`.
 
 ### 4.4 Mode
 
@@ -191,7 +191,9 @@ The log, the window and the toast show arguments masked; `op` receives them unch
   everything else becomes `***`.
 
 The command is displayed as `op <masked arguments>`; an argument made only of `[A-Za-z0-9_./:=@%+,*?-]` is shown as is,
-others are quoted with `"` (and `\`/`"` escaped); newline, carriage return and tab become spaces.
+others are quoted with `"` (and `\`/`"` escaped); control characters (newline, tab, escape, …) become spaces, so that
+an argument cannot move the cursor or rewrite a terminal, the window or the toast. The log viewer also shows control
+characters of logged values as escapes (`\x1b`).
 
 ### 4.6 The call table
 
@@ -285,8 +287,9 @@ used account.
 
 A call with `lock: skipped` (the sender of a pipe whose receiver holds the lock) does not close sessions (status
 `signout: "skipped"`): `signout --all` would also close the receiver's session while the receiver's `op.exe` is still
-running, and the receiver always ends later (it reads the sender's output to the end) and its own `signout --all`
-closes the sender's session too. The sender's approval is bound to its launcher, which has exited by then.
+running. The receiver normally ends later (it reads the sender's output to the end) and its own `signout --all` closes
+the sender's session too. If the receiver ends first (it did not read its input), the sender's session stays bound to
+the sender's launcher, which has exited; it is not usable by other processes and expires with 1Password's time limit.
 
 ### 5.4 Launcher → entry: status and exit code
 
@@ -295,6 +298,8 @@ The launcher writes the status JSON (UTF-8 without byte order mark) at the end, 
 ```json
 {"started":true,"exit":0,"error":"","window":"shown","toast":"shown","others":0,"signout":"ok","lock":"held","ui":{…}}
 ```
+
+(`lock`, `holder` and `stderrMatch` are written from PR 2 on; a missing field reads as null.)
 
 | Field | Values |
 | --- | --- |
@@ -306,7 +311,7 @@ The launcher writes the status JSON (UTF-8 without byte order mark) at the end, 
 | `others` | the largest number of other `op.exe` processes seen while the window was open |
 | `signout` | `ok`, `not-signed-in`, `skipped`, `failed: …` |
 | `lock` | `held`, `skipped`, `timeout` (PR 2) |
-| `holder` | PR 2, on `lock-timeout`: who holds the mutex (time, caller, reason, command) |
+| `holder` | PR 2, on `lock-timeout`: who holds the mutex, as one line of text (time, caller, reason, command) |
 | `stderrMatch` | PR 2, `stderr: "scan"` only: `denied`, `timeout` or null |
 | `ui` | the texts the launcher built (title, lines, footer, others, toast), for tests |
 
@@ -369,7 +374,7 @@ Records (one JSON object per line, `v: 1`; `time` is local ISO 8601 with offset,
 | `op`'s code | the call ran |
 | 2 | no reason, empty reason, arguments too long (base64 of the arguments over 28000 characters, or a payload over 32000), unknown shell for `--completion` |
 | 75 | the lock wait timed out (another call is waiting for its approval) |
-| 127 | `op.exe`, `powershell.exe` or `wslpath` not found |
+| 127 | `op.exe`, `powershell.exe` or `wslpath` not found, or `powershell.exe` could not be started (a message says why) |
 | 1 | the launcher failed before `op.exe` started |
 | 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL) |
 
@@ -394,8 +399,11 @@ it to the launcher as `lang`.
 5. Tools: `op.exe` (`OPREASON_OP_EXE`, or `op.exe` in `PATH`; must be a file), `powershell.exe` (`OPREASON_POWERSHELL`,
    or `powershell.exe` in `PATH`), `wslpath`. Missing → refused, exit 127.
 6. Too long: base64 of the arguments over 28000 characters → refused (`too-long`), exit 2.
-7. Signals (SIGINT, SIGTERM, SIGHUP) are handled from here: after `start`, an `end` with `interrupted`; before, a
-   `refused` with `interrupted`; exit 130/143/129. Temporary files are removed.
+7. Signals (SIGINT, SIGTERM, SIGHUP) are handled from here, on a dedicated thread: after `start`, an `end` with
+   `interrupted`; before, a `refused` with `interrupted`; exit 130/143/129. Temporary files are removed. Every child
+   starts with an empty signal mask (the standard library does not reset it), so a TERM or HUP to the process group
+   reaches the launcher; a TERM or HUP to the wrapper alone is forwarded to the launcher. A signal after the `end`
+   record only exits.
 8. Pipes (6.4): if another op-reason feeds our stdin, read stdin to the end first.
 9. Lock (5.5). Timeout → refused (`lock-timeout`) with the holder from `current.json`, exit 75.
 10. Remove leftovers of calls killed by SIGKILL (`<state>/run/*` older than an hour). Write `current.json` when holding

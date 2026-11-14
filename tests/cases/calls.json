@@ -5,248 +5,609 @@
       "name": "no arguments prints the wrapper usage",
       "invokedAs": "op",
       "argv": [],
-      "expect": { "action": "usage" }
+      "expect": {
+        "action": "usage"
+      }
     },
     {
       "name": "only a reason prints the wrapper usage",
       "invokedAs": "op",
-      "argv": ["--reason", "only a reason"],
-      "expect": { "action": "usage" }
+      "argv": [
+        "--reason",
+        "only a reason"
+      ],
+      "expect": {
+        "action": "usage"
+      }
     },
     {
       "name": "reason in front",
       "invokedAs": "op",
-      "argv": ["--reason", "X", "a", "b"],
-      "expect": { "action": "run", "mode": "desktop", "kind": "desktop", "opArgs": ["a", "b"], "reason": "X" }
+      "argv": [
+        "--reason",
+        "X",
+        "a",
+        "b"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "desktop",
+        "kind": "desktop",
+        "opArgs": [
+          "a",
+          "b"
+        ],
+        "reason": "X"
+      }
     },
     {
       "name": "reason in the middle",
       "invokedAs": "op",
-      "argv": ["a", "--reason", "X", "b"],
-      "expect": { "action": "run", "mode": "desktop", "opArgs": ["a", "b"], "reason": "X" }
+      "argv": [
+        "a",
+        "--reason",
+        "X",
+        "b"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "desktop",
+        "opArgs": [
+          "a",
+          "b"
+        ],
+        "reason": "X"
+      }
     },
     {
       "name": "reason with an equals sign at the end",
       "invokedAs": "op",
-      "argv": ["a", "b", "--reason=X"],
-      "expect": { "action": "run", "mode": "desktop", "opArgs": ["a", "b"], "reason": "X" }
+      "argv": [
+        "a",
+        "b",
+        "--reason=X"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "desktop",
+        "opArgs": [
+          "a",
+          "b"
+        ],
+        "reason": "X"
+      }
     },
     {
       "name": "a reason after -- belongs to op",
       "invokedAs": "op",
-      "argv": ["a", "--", "b", "--reason", "X"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "a",
+        "--",
+        "b",
+        "--reason",
+        "X"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "no reason is refused",
       "invokedAs": "op",
-      "argv": ["item", "get", "a"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "item",
+        "get",
+        "a"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "an empty reason is refused",
       "invokedAs": "op",
-      "argv": ["--reason", "", "item", "get", "a"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "--reason",
+        "",
+        "item",
+        "get",
+        "a"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "a reason of only spaces and tabs is refused",
       "invokedAs": "op",
-      "argv": ["--reason", "  \t ", "item", "get", "a"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "--reason",
+        "  \t ",
+        "item",
+        "get",
+        "a"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "--reason as the last argument is an empty reason",
       "invokedAs": "op",
-      "argv": ["item", "get", "a", "--reason"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "item",
+        "get",
+        "a",
+        "--reason"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "the reason is folded into one line",
       "invokedAs": "op",
-      "argv": ["--reason", "  直す\tため\nに\u0001読む  ", "item", "get", "a"],
-      "expect": { "action": "run", "reason": "直す ため に 読む" }
+      "argv": [
+        "--reason",
+        "  直す\tため\nに\u0001読む  ",
+        "item",
+        "get",
+        "a"
+      ],
+      "expect": {
+        "action": "run",
+        "reason": "直す ため に 読む"
+      }
     },
     {
       "name": "op --version without a reason is a help call",
       "invokedAs": "op",
-      "argv": ["--version"],
-      "expect": { "action": "run", "mode": "help", "kind": "help", "opArgs": ["--version"] }
+      "argv": [
+        "--version"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help",
+        "kind": "help",
+        "opArgs": [
+          "--version"
+        ]
+      }
     },
     {
       "name": "op --help without a reason is a help call",
       "invokedAs": "op",
-      "argv": ["--help"],
-      "expect": { "action": "run", "mode": "help", "kind": "help" }
+      "argv": [
+        "--help"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help",
+        "kind": "help"
+      }
     },
     {
       "name": "op -v without a reason is a help call",
       "invokedAs": "op",
-      "argv": ["-v"],
-      "expect": { "action": "run", "mode": "help", "kind": "help" }
+      "argv": [
+        "-v"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help",
+        "kind": "help"
+      }
     },
     {
       "name": "a command's --help is a help call",
       "invokedAs": "op",
-      "argv": ["item", "get", "--help"],
-      "expect": { "action": "run", "mode": "help", "kind": "help" }
+      "argv": [
+        "item",
+        "get",
+        "--help"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help",
+        "kind": "help"
+      }
     },
     {
       "name": "op help <command> is a help call",
       "invokedAs": "op",
-      "argv": ["help", "item"],
-      "expect": { "action": "run", "mode": "help", "kind": "help" }
+      "argv": [
+        "help",
+        "item"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help",
+        "kind": "help"
+      }
     },
     {
       "name": "--help after -- is not a help call",
       "invokedAs": "op",
-      "argv": ["run", "--", "curl", "--help"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "run",
+        "--",
+        "curl",
+        "--help"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "a help call with a reason is a desktop call",
       "invokedAs": "op",
-      "argv": ["--reason", "look", "--help"],
-      "expect": { "action": "run", "mode": "desktop" }
+      "argv": [
+        "--reason",
+        "look",
+        "--help"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "desktop"
+      }
     },
     {
       "name": "op-reason --help is the wrapper's help",
       "invokedAs": "op-reason",
-      "argv": ["--help"],
-      "expect": { "action": "usage" }
+      "argv": [
+        "--help"
+      ],
+      "expect": {
+        "action": "usage"
+      }
     },
     {
       "name": "op-reason -h is the wrapper's help",
       "invokedAs": "op-reason",
-      "argv": ["-h"],
-      "expect": { "action": "usage" }
+      "argv": [
+        "-h"
+      ],
+      "expect": {
+        "action": "usage"
+      }
     },
     {
       "name": "op-reason --version is the wrapper's version",
       "invokedAs": "op-reason",
-      "argv": ["--version"],
-      "expect": { "action": "version" }
+      "argv": [
+        "--version"
+      ],
+      "expect": {
+        "action": "version"
+      }
     },
     {
       "name": "op-reason -V is the wrapper's version",
       "invokedAs": "op-reason",
-      "argv": ["-V"],
-      "expect": { "action": "version" }
+      "argv": [
+        "-V"
+      ],
+      "expect": {
+        "action": "version"
+      }
     },
     {
       "name": "op-reason --help with more arguments goes to op",
       "invokedAs": "op-reason",
-      "argv": ["--help", "item"],
-      "expect": { "action": "run", "mode": "help" }
+      "argv": [
+        "--help",
+        "item"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help"
+      }
     },
     {
       "name": "op-reason help <command> goes to op",
       "invokedAs": "op-reason",
-      "argv": ["help", "item"],
-      "expect": { "action": "run", "mode": "help" }
+      "argv": [
+        "help",
+        "item"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "help"
+      }
     },
     {
       "name": "--skill prints the skill",
       "invokedAs": "op",
-      "argv": ["--skill"],
-      "expect": { "action": "skill" }
+      "argv": [
+        "--skill"
+      ],
+      "expect": {
+        "action": "skill"
+      }
     },
     {
       "name": "--skill with more arguments is not the wrapper's option",
       "invokedAs": "op-reason",
-      "argv": ["--skill", "x"],
-      "expect": { "action": "refuse", "why": "no-reason", "exit": 2 }
+      "argv": [
+        "--skill",
+        "x"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
     },
     {
       "name": "--completion fish is for op",
       "invokedAs": "op-reason",
-      "argv": ["--completion", "fish"],
-      "expect": { "action": "completion", "shell": "fish", "completionCommand": "op" }
+      "argv": [
+        "--completion",
+        "fish"
+      ],
+      "expect": {
+        "action": "completion",
+        "shell": "fish",
+        "completionCommand": "op"
+      }
     },
     {
       "name": "--completion fish op-reason is for op-reason",
       "invokedAs": "op-reason",
-      "argv": ["--completion", "fish", "op-reason"],
-      "expect": { "action": "completion", "shell": "fish", "completionCommand": "op-reason" }
+      "argv": [
+        "--completion",
+        "fish",
+        "op-reason"
+      ],
+      "expect": {
+        "action": "completion",
+        "shell": "fish",
+        "completionCommand": "op-reason"
+      }
     },
     {
       "name": "--completion of another shell is a usage error",
       "invokedAs": "op-reason",
-      "argv": ["--completion", "zsh"],
-      "expect": { "action": "error", "exit": 2 }
+      "argv": [
+        "--completion",
+        "zsh"
+      ],
+      "expect": {
+        "action": "error",
+        "exit": 2
+      }
     },
     {
       "name": "--log runs the log viewer",
       "invokedAs": "op",
-      "argv": ["--log", "--all"],
-      "expect": { "action": "log", "logArgs": ["--all"] }
+      "argv": [
+        "--log",
+        "--all"
+      ],
+      "expect": {
+        "action": "log",
+        "logArgs": [
+          "--all"
+        ]
+      }
     },
     {
       "name": "a service account token makes a service call",
       "invokedAs": "op",
-      "argv": ["--reason", "CI reads", "vault", "list"],
-      "env": { "OP_SERVICE_ACCOUNT_TOKEN": "tok-SECRET" },
-      "expect": { "action": "run", "mode": "service", "kind": "service-account" }
+      "argv": [
+        "--reason",
+        "CI reads",
+        "vault",
+        "list"
+      ],
+      "env": {
+        "OP_SERVICE_ACCOUNT_TOKEN": "tok-SECRET"
+      },
+      "expect": {
+        "action": "run",
+        "mode": "service",
+        "kind": "service-account"
+      }
     },
     {
       "name": "Connect needs both variables",
       "invokedAs": "op",
-      "argv": ["--reason", "Connect reads", "item", "get", "a"],
-      "env": { "OP_CONNECT_HOST": "https://connect.example", "OP_CONNECT_TOKEN": "ctok-SECRET" },
-      "expect": { "action": "run", "mode": "service", "kind": "connect" }
+      "argv": [
+        "--reason",
+        "Connect reads",
+        "item",
+        "get",
+        "a"
+      ],
+      "env": {
+        "OP_CONNECT_HOST": "https://connect.example",
+        "OP_CONNECT_TOKEN": "ctok-SECRET"
+      },
+      "expect": {
+        "action": "run",
+        "mode": "service",
+        "kind": "connect"
+      }
     },
     {
       "name": "Connect with only the host is a desktop call",
       "invokedAs": "op",
-      "argv": ["--reason", "Connect reads", "item", "get", "a"],
-      "env": { "OP_CONNECT_HOST": "https://connect.example" },
-      "expect": { "action": "run", "mode": "desktop", "kind": "desktop" }
+      "argv": [
+        "--reason",
+        "Connect reads",
+        "item",
+        "get",
+        "a"
+      ],
+      "env": {
+        "OP_CONNECT_HOST": "https://connect.example"
+      },
+      "expect": {
+        "action": "run",
+        "mode": "desktop",
+        "kind": "desktop"
+      }
     },
     {
       "name": "an empty service account token does not count",
       "invokedAs": "op",
-      "argv": ["--reason", "reads", "vault", "list"],
-      "env": { "OP_SERVICE_ACCOUNT_TOKEN": "" },
-      "expect": { "action": "run", "mode": "desktop" }
+      "argv": [
+        "--reason",
+        "reads",
+        "vault",
+        "list"
+      ],
+      "env": {
+        "OP_SERVICE_ACCOUNT_TOKEN": ""
+      },
+      "expect": {
+        "action": "run",
+        "mode": "desktop"
+      }
     },
     {
       "name": "secret values are masked, op gets them unchanged",
       "invokedAs": "op",
-      "argv": ["--reason", "create an item", "item", "create", "password=hunter2", "--session", "sess1", "--secret-key=A3-XYZ", "op://v/i/f?attribute=otp"],
+      "argv": [
+        "--reason",
+        "create an item",
+        "item",
+        "create",
+        "password=hunter2",
+        "--session",
+        "sess1",
+        "--secret-key=A3-XYZ",
+        "op://v/i/f?attribute=otp"
+      ],
       "expect": {
         "action": "run",
-        "opArgs": ["item", "create", "password=hunter2", "--session", "sess1", "--secret-key=A3-XYZ", "op://v/i/f?attribute=otp"],
-        "masked": ["item", "create", "password=***", "--session", "***", "--secret-key=***", "op://v/i/f?attribute=otp"],
+        "opArgs": [
+          "item",
+          "create",
+          "password=hunter2",
+          "--session",
+          "sess1",
+          "--secret-key=A3-XYZ",
+          "op://v/i/f?attribute=otp"
+        ],
+        "masked": [
+          "item",
+          "create",
+          "password=***",
+          "--session",
+          "***",
+          "--secret-key=***",
+          "op://v/i/f?attribute=otp"
+        ],
         "command": "op item create password=*** --session *** --secret-key=*** op://v/i/f?attribute=otp"
       }
     },
     {
       "name": "after -- only the command name and value-less flags are shown",
       "invokedAs": "op",
-      "argv": ["--reason", "child command", "run", "--", "curl", "-s", "-H", "Authorization: Bearer tok-RUN", "https://example.com/?k=v"],
+      "argv": [
+        "--reason",
+        "child command",
+        "run",
+        "--",
+        "curl",
+        "-s",
+        "-H",
+        "Authorization: Bearer tok-RUN",
+        "https://example.com/?k=v"
+      ],
       "expect": {
         "action": "run",
-        "masked": ["run", "--", "curl", "-s", "-H", "***", "***"],
+        "masked": [
+          "run",
+          "--",
+          "curl",
+          "-s",
+          "-H",
+          "***",
+          "***"
+        ],
         "command": "op run -- curl -s -H *** ***"
       }
     },
     {
       "name": "arguments with spaces are quoted in the command",
       "invokedAs": "op",
-      "argv": ["--reason", "read settings", "item", "get", "a b"],
-      "expect": { "action": "run", "command": "op item get \"a b\"" }
+      "argv": [
+        "--reason",
+        "read settings",
+        "item",
+        "get",
+        "a b"
+      ],
+      "expect": {
+        "action": "run",
+        "command": "op item get \"a b\""
+      }
     },
     {
       "name": "quotes, backslashes, newlines and empty arguments in the command",
       "invokedAs": "op",
-      "argv": ["--reason", "show", "item", "get", "x\"y", "tr\\", "new\nline", ""],
-      "expect": { "action": "run", "command": "op item get \"x\\\"y\" \"tr\\\\\" \"new line\" \"\"" }
+      "argv": [
+        "--reason",
+        "show",
+        "item",
+        "get",
+        "x\"y",
+        "tr\\",
+        "new\nline",
+        ""
+      ],
+      "expect": {
+        "action": "run",
+        "command": "op item get \"x\\\"y\" \"tr\\\\\" \"new line\" \"\""
+      }
     },
     {
       "name": "the --session value is masked in the equals form too",
       "invokedAs": "op",
-      "argv": ["--reason", "list", "vault", "list", "--session=abc"],
-      "expect": { "action": "run", "masked": ["vault", "list", "--session=***"] }
+      "argv": [
+        "--reason",
+        "list",
+        "vault",
+        "list",
+        "--session=abc"
+      ],
+      "expect": {
+        "action": "run",
+        "masked": [
+          "vault",
+          "list",
+          "--session=***"
+        ]
+      }
+    },
+    {
+      "name": "control characters in an argument become spaces in the command",
+      "invokedAs": "op",
+      "argv": [
+        "--reason",
+        "show",
+        "item",
+        "get",
+        "a\u001b[2Jb\u0007"
+      ],
+      "expect": {
+        "action": "run",
+        "command": "op item get \"a [2Jb \""
+      }
     }
   ]
 }
