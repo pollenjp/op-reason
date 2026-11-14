@@ -24,6 +24,8 @@ for t in wrapper e2e log completion launcher; do
     bash "${here}/${t}.test.sh" "${bin}" || failed+=("${t}")
   fi
 done
+echo "### entry-plan (the call table against the Windows entry, on PowerShell 7)"
+pwsh -NoProfile -NonInteractive -File "${here}/windows/entry-plan.test.ps1" || failed+=(entry-plan)
 if ((${#failed[@]} > 0)); then
   echo "failed: ${failed[*]}"
   exit 1
