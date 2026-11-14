@@ -347,7 +347,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("op-reason-log-lock-test-{}", random_u64()));
         ensure_dir(&dir).unwrap();
         let holder = open_lock_file(&dir.join("log.lock")).unwrap();
-        assert!(lock_with_timeout(&holder, Duration::from_secs(1)), "the lock file can be locked");
+        assert!(
+            lock_with_timeout(&holder, Duration::from_secs(1)),
+            "the lock file can be locked"
+        );
         let writer = {
             let dir = dir.clone();
             thread::spawn(move || append(&dir, r#"{"late":1}"#))

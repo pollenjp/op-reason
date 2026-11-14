@@ -155,7 +155,7 @@ reason and what to do when a call is denied or times out (do not retry; ask the 
 | `op`'s code | the call ran |
 | 2 | no reason, an empty reason, arguments too long for Windows, or a wrong wrapper option |
 | 75 | another call (WSL or Windows) is still waiting for its approval (the lock wait timed out) |
-| 127 | `op.exe`, `powershell.exe` or `wslpath` was not found |
+| 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or `powershell.exe` could not be started |
 | 1 | the launcher could not start `op.exe` |
 | 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL); Windows logs 130 for Ctrl+C |
 

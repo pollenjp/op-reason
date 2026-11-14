@@ -204,19 +204,14 @@ fn is_bare_flag(a: &str) -> bool {
 }
 
 /// The command as shown: `op` and the masked arguments; arguments made only of `[A-Za-z0-9_./:=@%+,*?-]` as they are,
-/// others in double quotes with `\` and `"` escaped. Newline, carriage return and tab become spaces.
+/// others in double quotes with `\` and `"` escaped. Control characters (newline, tab, escape, …) become spaces, so
+/// that an argument cannot move the cursor or rewrite a terminal, the window or the toast.
 pub fn display(masked: &[String]) -> String {
     let mut out = String::from("op");
     for a in masked {
         let a: String = a
             .chars()
-            .map(|c| {
-                if matches!(c, '\n' | '\r' | '\t') {
-                    ' '
-                } else {
-                    c
-                }
-            })
+            .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         out.push(' ');
         if !a.is_empty()
@@ -327,7 +322,7 @@ pub enum Plan {
         /// The command name the completion is for.
         command: String,
     },
-    /// A wrapper option used wrongly: message on stderr, exit 2, nothing logged.
+    /// `--completion` with a shell other than fish (the arguments given): message on stderr, exit 2, nothing logged.
     UsageError(String),
     /// Run the log viewer with these arguments.
     Log(Vec<OsString>),
@@ -365,13 +360,12 @@ pub fn plan(name: Name, args: &[OsString], env: &dyn Fn(&str) -> Option<String>)
                     .unwrap_or_else(|| "op".to_string());
                 Plan::Completion { shell, command }
             } else {
-                Plan::UsageError(format!(
-                    "--completion supports only fish: --completion fish [<command>] (got: {})",
+                Plan::UsageError(
                     rest.iter()
                         .map(|s| s.to_string_lossy().into_owned())
                         .collect::<Vec<_>>()
-                        .join(" ")
-                ))
+                        .join(" "),
+                )
             };
             return (Parsed::default(), plan);
         }

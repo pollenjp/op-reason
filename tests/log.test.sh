@@ -210,6 +210,21 @@ else
   ng "-h prints the usage on stdout, exit 0" "rc=${rc}"
 fi
 
+echo "== Control characters and unusual --since"
+esc=$(printf '\033')
+# The log ends with a broken line on purpose (above): start a new line first
+printf '\n' >>"${dir}/log.jsonl"
+rec "{v: 1, id: \"x\", event: \"start\", epoch: (\$now - 30), kind: \"desktop\", caller: ${human}, reason: \"制御\", args: [\"item\", \"get\", \"a\u001b[2Jb\tc\"]}" >>"${dir}/log.jsonl"
+run ctrl
+if [[ $(row ctrl 制御) == *'a\x1b[2Jb\x09c'* ]] && ! grep -q "${esc}" "${work}/ctrl.out"; then
+  ok "control characters in a logged value are shown as escapes, never sent to the terminal"
+else
+  ng "control characters in a logged value are shown as escapes, never sent to the terminal" "$(od -c "${work}/ctrl.out" | head)"
+fi
+run since-mb --since=5分
+detail="rc=${rc} err=$(cat "${work}/since-mb.err")"
+check "--since with a Japanese unit is a usage error (exit 2), not a crash" test "${rc}" == 2
+
 echo "== English"
 OPREASON_LANG=en run en
 en_out=$(<"${work}/en.out")

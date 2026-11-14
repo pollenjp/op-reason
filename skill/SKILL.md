@@ -44,7 +44,7 @@ op --reason "read the staging DB password to run the migration" read "op://Priva
 | op's `[ERROR] … authorization prompt dismissed` | the person denied the prompt | do **not** call again; ask the user with options (retry now, skip, they run it themselves) |
 | op's `[ERROR] … authorization timeout` | nobody answered the prompt | the same: ask, do not call again |
 | exit 75, "Another op call is still waiting for its approval" | another call holds the lock while its prompt is open | tell the user; call again after that prompt is answered |
-| exit 127 | `op.exe`, `powershell.exe` or `wslpath` was not found | tell the user; do not work around it with another op |
+| exit 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or could not be started (the message says which) | tell the user; do not work around it with another op |
 | exit 1 with an `op-reason: launcher:` line | the launcher could not start op | report the line |
 
 Do not retry denied or timed-out calls: every retry shows another prompt, and people who see many prompts start

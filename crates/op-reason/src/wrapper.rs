@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -149,13 +149,20 @@ struct Progress {
     watch_start: Option<String>,
     run_dir: Option<PathBuf>,
     wrote_current: bool,
+    /// The launcher's relay while it runs (TERM and HUP are forwarded to it).
+    child: Option<u32>,
+    /// The `end` record is written: a late signal only exits.
+    ended: bool,
 }
 
 fn clean_up(state_dir: &Path, progress: &Progress) {
     if let Some(dir) = &progress.run_dir {
         let _ = fs::remove_dir_all(dir);
     }
-    if progress.wrote_current {
+    // Only our own holder record: the lock may already belong to the next call
+    if progress.wrote_current
+        && Holder::read(state_dir).and_then(|h| h.pid) == Some(std::process::id())
+    {
         let _ = fs::remove_file(state_dir.join("current.json"));
     }
 }
@@ -196,8 +203,8 @@ pub fn run(name: Name, argv: Vec<OsString>) -> i32 {
             print_stdout(completion(&command));
             return 0;
         }
-        Plan::UsageError(message) => {
-            say(&[message]);
+        Plan::UsageError(got) => {
+            say(&[messages::completion_usage(lang, &got)]);
             return contract::EXIT_USAGE;
         }
         Plan::Log(rest) => return log_viewer(&rest),
@@ -253,7 +260,10 @@ fn collect(lang: Lang, parsed: &Parsed) -> Call {
     let herdr = if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
         let workspace = std::env::var("HERDR_WORKSPACE_ID").unwrap_or_default();
         if !workspace.is_empty() && launch::which("herdr").is_some() {
-            herdr_label = herdr_workspace_label(&workspace);
+            herdr_label = herdr_workspace_label(&workspace)
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
         }
         Some(Herdr {
             workspace,
@@ -317,7 +327,7 @@ fn current_dir_text() -> String {
 /// `herdr workspace get <id>` → `.result.workspace.label` (2-second timeout; empty on any failure).
 fn herdr_workspace_label(workspace: &str) -> String {
     launch::output_timeout(
-        Command::new("herdr").args(["workspace", "get", workspace]),
+        launch::command("herdr").args(["workspace", "get", workspace]),
         Duration::from_secs(2),
     )
     .filter(|(s, _)| s.success())
@@ -394,16 +404,27 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         let progress = Arc::clone(&progress);
         signals::install(move |code| {
             let p = progress.lock().unwrap_or_else(|e| e.into_inner());
-            match p.started_epoch {
-                Some(epoch) => call.write_end(
-                    epoch,
-                    "interrupted",
-                    code,
-                    None,
-                    p.watch_start.as_deref(),
-                    None,
-                ),
-                None => call.log_refused("interrupted"),
+            // Stop the launcher too when only this process got TERM or HUP (a Ctrl+C reaches the whole group)
+            if let Some(pid) = p.child
+                && code != 130
+            {
+                // SAFETY: kill only sends a signal; the pid is our child, not reaped yet.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, code - 128);
+                }
+            }
+            if !p.ended {
+                match p.started_epoch {
+                    Some(epoch) => call.write_end(
+                        epoch,
+                        "interrupted",
+                        code,
+                        None,
+                        p.watch_start.as_deref(),
+                        None,
+                    ),
+                    None => call.log_refused("interrupted"),
+                }
             }
             clean_up(&call.state_dir, &p);
             std::process::exit(code);
@@ -413,6 +434,8 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     let _ = log::ensure_dir(&call.state_dir);
     let _ = log::ensure_dir(&run_dir);
     progress.lock().unwrap().run_dir = Some(run_dir.clone());
+    // Declared before the clean-up guard so that it is dropped after it: current.json goes before the lock is released
+    let mut _lock_file: Option<File> = None;
     let _cleanup = CleanUp {
         state_dir: call.state_dir.clone(),
         progress: Arc::clone(&progress),
@@ -434,18 +457,17 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             }
         },
     );
-    let mut _lock_file: Option<File> = None;
     let mut holder_reason = None;
-    let mut waited = 0;
+    let mut remaining = wait;
     let lock_mode = match acquired {
-        Ok((Outcome::Held(f), w)) => {
+        Ok((Outcome::Held(f), left)) => {
             _lock_file = Some(f);
-            waited = w;
+            remaining = left;
             "held"
         }
-        Ok((Outcome::Skipped { holder_reason: r }, w)) => {
+        Ok((Outcome::Skipped { holder_reason: r }, left)) => {
             holder_reason = Some(r);
-            waited = w;
+            remaining = left;
             "skipped"
         }
         Ok((Outcome::Timeout { holder }, _)) => {
@@ -534,7 +556,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         status: Some(launch::wslpath_w(&status_file)),
         lang: lang.code().to_string(),
         lock: lock_mode.to_string(),
-        lock_wait: wait.saturating_sub(waited).max(1),
+        lock_wait: remaining.max(1),
         stderr: "inherit".to_string(),
         facts,
         notify: None,
@@ -549,7 +571,8 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         );
     }
 
-    // start
+    // start (marked first: from here on a signal logs an end, never a refusal)
+    progress.lock().unwrap().started_epoch = Some(start.epoch);
     log::append(
         &call.state_dir,
         &log::line(&log::Start {
@@ -567,10 +590,19 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             args: &call.masked,
         }),
     );
-    progress.lock().unwrap().started_epoch = Some(start.epoch);
 
     // Launcher
-    let (op_rc, stderr_tail) = start_launcher(&ps, &payload_json, kind, drained);
+    let (op_rc, stderr_tail) = match start_launcher(&ps, &payload_json, kind, drained, &progress) {
+        Ok(done) => done,
+        Err(e) => {
+            say(&[messages::cannot_start(
+                lang,
+                &ps.display().to_string(),
+                &e.to_string(),
+            )]);
+            (contract::EXIT_MISSING, Vec::new())
+        }
+    };
     let status = fs::read_to_string(&status_file)
         .ok()
         .and_then(|t| Status::parse(&t));
@@ -578,12 +610,13 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     if result == "lock-timeout" {
         let holder = status
             .as_ref()
-            .and_then(|s| s.holder.clone())
+            .and_then(Status::holder_text)
             .unwrap_or_else(|| messages::unknown(lang).to_string());
         say(&messages::mutex_timeout(lang, &holder));
     }
 
     let watch_end = held.then(|| watch_shared(&call, &op_exe, &ps, "end"));
+    let mut p = progress.lock().unwrap();
     call.write_end(
         start.epoch,
         result,
@@ -592,6 +625,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         watch_start.as_deref(),
         watch_end.as_deref(),
     );
+    p.ended = true;
     op_rc
 }
 
@@ -602,8 +636,9 @@ fn start_launcher(
     payload_json: &str,
     kind: Kind,
     drained: Option<Vec<u8>>,
-) -> (i32, Vec<u8>) {
-    let mut cmd = Command::new(ps);
+    progress: &Arc<Mutex<Progress>>,
+) -> std::io::Result<(i32, Vec<u8>)> {
+    let mut cmd = launch::command(ps);
     cmd.args(launcher::POWERSHELL_ARGS)
         .arg(launcher::encoded_command())
         .env(contract::ENV_SCRIPT, launcher::script_b64())
@@ -648,10 +683,8 @@ fn start_launcher(
     } else {
         Stdio::inherit()
     });
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => return (contract::EXIT_MISSING, Vec::new()),
-    };
+    let mut child = cmd.spawn()?;
+    progress.lock().unwrap().child = Some(child.id());
     let writer = match (drained, child.stdin.take()) {
         (Some(data), Some(mut stdin)) => Some(thread::spawn(move || {
             let _ = stdin.write_all(&data);
@@ -679,11 +712,12 @@ fn start_launcher(
         })
     });
     let rc = child.wait().map(launch::exit_code).unwrap_or(1);
+    progress.lock().unwrap().child = None;
     if let Some(w) = writer {
         let _ = w.join();
     }
     let tail = relay.and_then(|r| r.join().ok()).unwrap_or_default();
-    (rc, tail)
+    Ok((rc, tail))
 }
 
 /// Removes leftovers of calls killed by SIGKILL (`<state>/run/*` older than an hour).
@@ -714,7 +748,7 @@ fn remove_stale_runs(run_root: &Path, mine: &Path) {
 fn watch_shared(call: &Call, op_exe: &Path, ps: &Path, when: &str) -> String {
     let run = |args: &[&str]| {
         launch::status_timeout(
-            Command::new(op_exe)
+            launch::command(op_exe)
                 .args(args)
                 .env_remove("OP_SERVICE_ACCOUNT_TOKEN")
                 .env_remove("OP_CONNECT_HOST")
@@ -766,7 +800,7 @@ fn notify_shared(call: &Call, ps: &Path, when: &str, cleared: bool, hms: &str) {
             time: hms.into(),
         }),
     };
-    let _ = Command::new(ps)
+    let _ = launch::command(ps)
         .args(launcher::POWERSHELL_ARGS)
         .arg(launcher::encoded_command())
         .env(contract::ENV_SCRIPT, launcher::script_b64())
@@ -782,7 +816,7 @@ fn notify_shared(call: &Call, ps: &Path, when: &str, cleared: bool, hms: &str) {
     if std::env::var("HERDR_ENV").as_deref() == Ok("1") && launch::which("herdr").is_some() {
         let (title, body) = messages::shared_notice(call.lang, when, cleared);
         let _ = launch::status_timeout(
-            Command::new("herdr").args([
+            launch::command("herdr").args([
                 "notification",
                 "show",
                 &format!("🔑 {title}"),

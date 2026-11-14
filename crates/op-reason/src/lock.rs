@@ -79,7 +79,8 @@ pub fn drain_stdin() -> Vec<u8> {
 
 /// Takes the lock, waiting up to `wait`. While waiting it checks every second: if another op-reason feeds our stdin,
 /// stdin is read to the end first (`drained`) and the wait starts again; if the holder reads our output, the lock is
-/// skipped. `on_wait` is called once when the lock is busy. Returns the outcome and the seconds spent waiting.
+/// skipped. `on_wait` is called once when the lock is busy. Returns the outcome and the seconds left of the wait (what
+/// the launcher may still wait for the Windows mutex).
 pub fn acquire(
     state_dir: &Path,
     wait: Duration,
@@ -88,14 +89,14 @@ pub fn acquire(
     on_wait: impl FnOnce(),
 ) -> std::io::Result<(Outcome, u64)> {
     let file = open_lock_file(&state_dir.join("lock"))?;
-    let started = Instant::now();
     match file.try_lock() {
-        Ok(()) => return Ok((Outcome::Held(file), 0)),
+        Ok(()) => return Ok((Outcome::Held(file), wait.as_secs())),
         Err(fs::TryLockError::WouldBlock) => {}
         Err(fs::TryLockError::Error(e)) => return Err(e),
     }
     on_wait();
     let mut deadline = Instant::now() + wait;
+    let left = |deadline: Instant| deadline.saturating_duration_since(Instant::now()).as_secs();
     loop {
         if drained.is_none() && procfs::op_upstream() {
             *drained = Some(drain_stdin());
@@ -109,15 +110,15 @@ pub fn acquire(
                 Outcome::Skipped {
                     holder_reason: h.reason,
                 },
-                started.elapsed().as_secs(),
+                left(deadline),
             ));
         }
         if Instant::now() >= deadline {
             let holder = Holder::line(Holder::read(state_dir).as_ref(), lang);
-            return Ok((Outcome::Timeout { holder }, started.elapsed().as_secs()));
+            return Ok((Outcome::Timeout { holder }, 0));
         }
         if lock_with_timeout(&file, Duration::from_secs(1)) {
-            return Ok((Outcome::Held(file), started.elapsed().as_secs()));
+            return Ok((Outcome::Held(file), left(deadline)));
         }
     }
 }

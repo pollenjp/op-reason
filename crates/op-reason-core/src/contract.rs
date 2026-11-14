@@ -43,14 +43,17 @@ pub struct Payload {
     /// Where the launcher writes the status JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// `en` or `ja`.
+    /// `en` or `ja` (missing: `en`).
+    #[serde(default = "default_lang")]
     pub lang: String,
-    /// `held` (take the global lock) or `skipped` (do not).
+    /// `held` (take the global lock) or `skipped` (do not). Missing: `held`.
+    #[serde(default = "default_lock")]
     pub lock: String,
-    /// Seconds to wait for the global lock.
-    #[serde(rename = "lockWait")]
+    /// Seconds to wait for the global lock. Missing: 90.
+    #[serde(rename = "lockWait", default = "default_lock_wait")]
     pub lock_wait: u64,
-    /// `inherit` or `scan`.
+    /// `inherit` or `scan`. Missing: `inherit`.
+    #[serde(default = "default_stderr")]
     pub stderr: String,
     /// What the window shows (desktop mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +61,19 @@ pub struct Payload {
     /// What the toast tells (notify mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<Notify>,
+}
+
+fn default_lang() -> String {
+    "en".to_string()
+}
+fn default_lock() -> String {
+    "held".to_string()
+}
+fn default_lock_wait() -> u64 {
+    LOCK_WAIT_DEFAULT
+}
+fn default_stderr() -> String {
+    "inherit".to_string()
 }
 
 /// Facts the launcher builds the window and toast texts from.
@@ -170,15 +186,31 @@ pub struct Status {
     /// `held`, `skipped`, `timeout`.
     #[serde(default)]
     pub lock: Option<String>,
-    /// Who holds the mutex, on `lock-timeout`.
+    /// Who holds the mutex, on `lock-timeout`: one line of text (an object is accepted too).
     #[serde(default)]
-    pub holder: Option<String>,
+    pub holder: Option<Value>,
     /// `stderr: "scan"` only: `denied`, `timeout` or null.
     #[serde(default, rename = "stderrMatch")]
     pub stderr_match: Option<String>,
 }
 
 impl Status {
+    /// The holder as one line: the text, or the fields of an object joined by spaces.
+    pub fn holder_text(&self) -> Option<String> {
+        match self.holder.as_ref()? {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(m) => Some(
+                ["time", "caller", "reason", "command"]
+                    .iter()
+                    .filter_map(|k| m.get(*k).and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            Value::Null => None,
+            other => Some(other.to_string()),
+        }
+    }
+
     /// Parses a status file's content; anything that is not a JSON object gives `None`.
     pub fn parse(text: &str) -> Option<Status> {
         let value: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
@@ -212,6 +244,27 @@ mod tests {
         assert!(Status::parse("junk").is_none());
         assert!(Status::parse("").is_none());
         assert!(Status::parse("{\"started\":\"yes\"}").is_none());
+    }
+
+    #[test]
+    fn payload_fields_have_defaults() {
+        let p: Payload = serde_json::from_str(r#"{"v":1,"mode":"notify"}"#).unwrap();
+        assert_eq!(
+            (
+                p.lang.as_str(),
+                p.lock.as_str(),
+                p.lock_wait,
+                p.stderr.as_str()
+            ),
+            ("en", "held", 90, "inherit")
+        );
+        let st = Status::parse(
+            r#"{"started":false,"error":"lock-timeout","holder":{"time":"12:00:00","caller":"Human","reason":"r","command":"op x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(st.holder_text().as_deref(), Some("12:00:00 Human r op x"));
+        let st = Status::parse(r#"{"started":false,"holder":"one line"}"#).unwrap();
+        assert_eq!(st.holder_text().as_deref(), Some("one line"));
     }
 
     #[test]
