@@ -1,5 +1,5 @@
 {
-  description = "Development tools for op-reason (Rust toolchain, pwsh, fish and shell tools for the tests)";
+  description = "Development tools for op-reason (Rust toolchain, pwsh, fish and shell tools for the tests, Python for the README animations)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -43,6 +43,8 @@
               pkgs.util-linux
               pkgs.git
               pkgs.coreutils
+              # The animations of the READMEs: python3 docs/images/make_readme_svgs.py
+              pkgs.python3
             ];
             env = {
               POWERSHELL_TELEMETRY_OPTOUT = "1";

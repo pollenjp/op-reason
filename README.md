@@ -13,6 +13,8 @@ Every call
 3. shows a window with who calls, where, why and the command, next to 1Password's approval prompt, and
 4. is recorded in a log (`op-reason-log`).
 
+![Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the staging VM" read "op://Private/proxmox/token". op-reason's window opens at the top right of the screen with the time, the caller (Claude Code and its process id), the place, the reason and the command, next to the 1Password approval prompt (drawn as a plain box). After a click on Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, by Claude, with the reason and the command.](docs/images/readme-1-call.en.svg)
+
 It was written for AI coding agents (such as Claude Code) that run `op` on your behalf: you see what each request is
 for before you approve it, one approval never covers later requests, and you can review every call afterwards.
 
@@ -27,6 +29,8 @@ for before you approve it, one approval never covers later requests, and you can
   from WSL), whatever process asked. op-reason's window shows the caller (a person or Claude Code with its process id),
   the repository, branch and directory, the reason and the command.
 - **Nothing records what agents did.** op-reason logs every call, refusal and finding as JSON Lines.
+
+![Animation of two screens side by side. Left, op alone from WSL: terminal 1 calls op and you approve the 1Password prompt once; when terminal 2 calls op, the value comes out with no prompt at all. Right, op-reason: every call opens op-reason's window with the caller and the reason next to the prompt, so terminal 2 is asked again and you see who asks and why.](docs/images/readme-2-approval-leak.en.svg)
 
 ## How it works
 
@@ -178,6 +182,8 @@ op --reason "read the Proxmox API token to create the staging VM" read "op://Pri
 - `op` without arguments prints the wrapper's usage.
 - **Deny any 1Password CLI approval prompt that comes without the op-reason window.**
 
+![Animation: op read "op://Private/proxmox/token" without --reason is refused at once, before any window or approval prompt: op-reason prints its short usage and "op-reason: There is no reason (--reason). People need it too.", and echo $? shows the exit code 2.](docs/images/readme-3-no-reason.en.svg)
+
 The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves the same, except that `--help` and
 `--version` alone are the wrapper's own. On Windows, type `op-reason`.
 
@@ -199,6 +205,8 @@ op-reason-log --since 1d   # 30m, 2h, 1d, …
 op-reason-log --all        # everything kept
 op-reason-log --json       # one JSON object per call, reason and command not cut
 ```
+
+![Animation: op-reason-log prints one line per call: the time, the result (approved, refused (no reason), denied), the seconds, the caller (Claude or Human), the reason and the command. The Caller, Reason and Result columns light up in turn.](docs/images/readme-4-log.en.svg)
 
 The log is `${XDG_STATE_HOME:-~/.local/state}/op-reason/log.jsonl` on WSL and `%LOCALAPPDATA%\op-reason\log.jsonl` on
 Windows, where `op-reason --log` takes the same options (renamed to `log.1.jsonl` at 1 MiB). It never holds
@@ -265,14 +273,19 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 ## Development
 
 ```sh
-nix develop path:./nix                       # Rust, pwsh, fish, jq, shellcheck, shfmt
+nix develop path:./nix                       # Rust, pwsh, fish, jq, shellcheck, shfmt, python3
 cargo test --workspace                       # unit tests and the call table
 cargo build && bash tests/run-all.sh         # black-box tests with fake op-reason.exe, powershell.exe and op.exe
+python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (docs/images/*.svg)
 # op-reason.exe is a Cargo workspace of its own: in crates/op-reason-win, `cargo build -p fake-op` and then
 # `cargo test --workspace` on Windows (on Linux, the portable parts only)
 # On Windows (Windows PowerShell 5.1): tests\windows\launcher.test.ps1, entry.test.ps1, entry-plan.test.ps1
 ```
 
+- The animations of the READMEs are made by `docs/images/make_readme_svgs.py` (Python, standard library only). To
+  change a text or the layout, change the script, not the SVGs, and run it again in the development shell. Their
+  texts are copies of op-reason's (the window, the refusal, the log table): `--check`, which CI runs, fails when the
+  SVGs differ from the script's output or when a copied text is no longer in the Rust sources.
 - The checks with the real 1Password app are listed in [docs/manual-verification.md](docs/manual-verification.md).
 - The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md);
   `op-reason.exe`: [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md);

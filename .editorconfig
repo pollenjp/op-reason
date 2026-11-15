@@ -11,6 +11,9 @@ indent_size = 2
 [*.rs]
 indent_size = 4
 
+[*.py]
+indent_size = 4
+
 [*.ps1]
 # Windows PowerShell 5.1 reads a file without a byte order mark in the ANSI code page
 charset = utf-8-bom
