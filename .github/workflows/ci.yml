@@ -35,6 +35,8 @@ jobs:
         run: |
           nix develop path:./nix --command shellcheck -x tests/*.sh
           nix develop path:./nix --command shfmt -d tests/*.sh
+      - name: The README animations match their script (and its copies of the Rust texts)
+        run: nix develop path:./nix --command python3 docs/images/make_readme_svgs.py --check
 
   nix:
     name: Nix package and lock age
