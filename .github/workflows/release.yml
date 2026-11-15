@@ -1,0 +1,61 @@
+name: Release
+
+# Builds the release assets when a v* tag is pushed and attaches them to a draft release. The maintainer reviews the
+# draft and publishes it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Target
+        run: rustup target add "${{ matrix.target }}"
+      - name: Build (static, musl)
+        run: cargo build --locked --release --target "${{ matrix.target }}" --package op-reason
+      - name: Assets
+        run: |
+          mkdir dist
+          name="op-reason-${{ matrix.arch }}-linux"
+          cp "target/${{ matrix.target }}/release/op-reason" "dist/${name}"
+          "dist/${name}" --version
+          (cd dist && sha256sum "${name}" >"${name}.sha256")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
+            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. Each binary has a .sha256 file."

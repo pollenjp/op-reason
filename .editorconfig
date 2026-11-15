@@ -1,0 +1,28 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.rs]
+indent_size = 4
+
+[*.ps1]
+# Windows PowerShell 5.1 reads a file without a byte order mark in the ANSI code page
+charset = utf-8-bom
+
+[*.{cmd,bat}]
+end_of_line = crlf
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.sh]
+# shfmt reads these
+shell_variant = bash
+binary_next_line = true
+switch_case_indent = true

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (unit and black-box tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Development shell
+        run: nix develop path:./nix --command true
+      - name: Format
+        run: nix develop path:./nix --command cargo fmt --all --check
+      - name: Clippy
+        run: nix develop path:./nix --command cargo clippy --locked --all-targets -- -D warnings
+      - name: Unit tests
+        run: nix develop path:./nix --command cargo test --locked --workspace
+      - name: Build
+        run: nix develop path:./nix --command cargo build --locked --package op-reason
+      - name: Black-box tests (fake powershell.exe and op.exe, the launcher on PowerShell 7, fish)
+        run: nix develop path:./nix --command bash tests/run-all.sh target/debug/op-reason
+      - name: Shell lint
+        run: |
+          nix develop path:./nix --command shellcheck -x tests/*.sh
+          nix develop path:./nix --command shfmt -d tests/*.sh
+
+  nix:
+    name: Nix package and lock age
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Build the package (runs the unit tests)
+        run: nix build --print-build-logs .#default .#op
+      - name: The flake locks pin nixpkgs revisions published at least 7 days earlier
+        run: nix run 'github:pollenjp/dotfiles?dir=nix#flake-lock-age' -- check nix .
+
+  windows-core:
+    name: Windows (the core library builds and passes its tests)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - name: Core tests
+        run: cargo test --locked --package op-reason-core
+      - name: The workspace builds
+        run: cargo build --locked --workspace

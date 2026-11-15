@@ -1,0 +1,25 @@
+[package]
+name = "op-reason"
+description = "A wrapper for the 1Password CLI that requires a reason and confines each approval to one call (WSL)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "op-reason"
+path = "src/main.rs"
+
+[dependencies]
+op-reason-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
