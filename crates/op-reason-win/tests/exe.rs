@@ -413,7 +413,7 @@ fn refusals() {
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("Usage: op --reason")
+        err.contains("Usage: op-reason --reason")
             && err.contains("op-reason: There is no reason (--reason)"),
         "{err}"
     );
@@ -489,7 +489,7 @@ fn no_arguments_prints_usage_and_records_nothing() {
     let sb = Sandbox::new("usage");
     let out = sb.run(&[], &[], b"");
     assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("Usage: op --reason"));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("Usage: op-reason --reason"));
     assert_eq!(sb.log(), "");
     assert_eq!(sb.calls(), 0);
 }
@@ -621,4 +621,55 @@ fn installed_as_op_exe_does_not_count_itself() {
     let log = sb.log();
     let end = lines_with(&log, "end");
     assert!(end[0].contains(r#""others":0"#), "{}", end[0]);
+}
+
+/// From PowerShell the exe is a native command, so the `--` before `op run`'s command reaches op as typed, quoted or
+/// not (the PowerShell entry is a script, which takes an unquoted `--` for itself). Windows PowerShell 5.1, and pwsh
+/// when it is installed. Service-account calls: no window.
+#[test]
+fn powershell_passes_the_double_dash_to_op() {
+    let _g = serial();
+    let mut shells = vec![PathBuf::from("powershell.exe")];
+    if Command::new("pwsh.exe").arg("-Version").output().is_ok() {
+        shells.push(PathBuf::from("pwsh.exe"));
+    }
+    let script = "& $env:OPREASON_TEST_EXE --reason 'dash test' run -- a; \
+                  & $env:OPREASON_TEST_EXE --reason 'dash test' run '--' b";
+    for shell in shells {
+        let sb = Sandbox::new("psdash");
+        let out = sb
+            .command_of(
+                &shell,
+                &[
+                    s("-NoProfile"),
+                    s("-NonInteractive"),
+                    s("-Command"),
+                    s(script),
+                ],
+                &[
+                    ("OPREASON_TEST_EXE", exe().to_str().unwrap()),
+                    ("OP_SERVICE_ACCOUNT_TOKEN", "test-token"),
+                ],
+            )
+            .stdin(Stdio::null())
+            .output()
+            .expect("start PowerShell");
+        let shell = shell.display();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{shell}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            sb.call(1),
+            ["run", "--", "a"].map(OsString::from),
+            "{shell}, unquoted"
+        );
+        assert_eq!(
+            sb.call(2),
+            ["run", "--", "b"].map(OsString::from),
+            "{shell}, quoted"
+        );
+    }
 }

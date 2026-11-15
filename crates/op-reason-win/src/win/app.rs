@@ -92,7 +92,7 @@ pub fn run() -> i32 {
     let (parsed, plan) = args::plan(name, &rest, &env);
     let (mode, kind) = match plan {
         Plan::Usage => {
-            out(&messages::usage_full(lang, VERSION));
+            out(&crate::messages::usage_full(lang, VERSION));
             return 0;
         }
         Plan::Version => {
@@ -260,7 +260,7 @@ impl Ctx {
         if usage {
             let _ = std::io::stderr()
                 .lock()
-                .write_all(messages::usage_short(self.lang).as_bytes());
+                .write_all(crate::messages::usage_short(self.lang).as_bytes());
         }
         say(lines);
         code
