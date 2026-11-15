@@ -2,8 +2,10 @@
 //! (`launcher.ps1`, or `op-reason.exe --run`): the payload passed in `OPREASON_PAYLOAD` and the status the runner writes
 //! back. Section 5 of the design document is the reference; keep the two in step.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+use crate::lang::Lang;
 
 /// Environment variable that carries the payload JSON (ASCII only).
 pub const ENV_PAYLOAD: &str = "OPREASON_PAYLOAD";
@@ -43,7 +45,8 @@ pub struct Payload {
     /// Where the launcher writes the status JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// `en` or `ja` (missing: `en`).
+    /// `en` or `ja` (missing: `en`): the language the entry decided. The runner shows the language chosen in the window
+    /// (`settings.json`) instead when there is one.
     #[serde(default = "default_lang")]
     pub lang: String,
     /// `held` (take the global lock) or `skipped` (do not). Missing: `held`.
@@ -196,9 +199,33 @@ pub struct Status {
     /// `exe` when `op-reason.exe --run` wrote it (the launcher does not write it).
     #[serde(default)]
     pub runner: Option<String>,
+    /// The language chosen in the window (`settings.json`) when the runner wrote the status: `Some(Some(code))`,
+    /// `Some(None)` for null (nothing is chosen), `None` when the field is missing (an older runner, or one that could
+    /// not tell) or is neither text nor null. Use [`Status::chosen`].
+    #[serde(default, rename = "chosenLang", deserialize_with = "present")]
+    pub chosen_lang: Option<Option<String>>,
+}
+
+/// `chosenLang`: null → `Some(None)`, text → `Some(Some(text))`, anything else → `None` (a malformed field must not
+/// make the whole status unreadable: the status decides the result of the call).
+fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Null => Some(None),
+        Value::String(s) => Some(Some(s)),
+        _ => None,
+    })
 }
 
 impl Status {
+    /// What the runner said about the language chosen in the window: `Some(Some(lang))`, `Some(None)` when nothing is
+    /// chosen, `None` when it did not say (or said something else than `en`, `ja` or null).
+    pub fn chosen(&self) -> Option<Option<Lang>> {
+        match self.chosen_lang.as_ref()? {
+            None => Some(None),
+            Some(code) => Lang::parse(code).map(Some),
+        }
+    }
+
     /// The holder as one line: the text, or the fields of an object joined by spaces.
     pub fn holder_text(&self) -> Option<String> {
         match self.holder.as_ref()? {
@@ -253,6 +280,35 @@ mod tests {
             (first.started, first.runner.as_deref()),
             (false, Some("exe"))
         );
+    }
+
+    #[test]
+    fn chosen_lang_missing_null_text_or_malformed() {
+        let parse = |extra: &str| {
+            Status::parse(&format!(r#"{{"started":true,"exit":0{extra}}}"#)).expect("a status")
+        };
+        assert_eq!(parse("").chosen(), None, "an older runner says nothing");
+        assert_eq!(parse(r#","chosenLang":null"#).chosen(), Some(None));
+        assert_eq!(
+            parse(r#","chosenLang":"ja""#).chosen(),
+            Some(Some(Lang::Ja))
+        );
+        assert_eq!(
+            parse(r#","chosenLang":"en""#).chosen(),
+            Some(Some(Lang::En))
+        );
+        assert_eq!(
+            parse(r#","chosenLang":"fr""#).chosen(),
+            None,
+            "a language this version does not know"
+        );
+        let odd = parse(r#","chosenLang":3"#);
+        assert!(
+            odd.started,
+            "a malformed chosenLang keeps the status readable"
+        );
+        assert_eq!(odd.chosen(), None);
+        assert_eq!(parse(r#","chosenLang":{"x":1}"#).chosen(), None);
     }
 
     #[test]

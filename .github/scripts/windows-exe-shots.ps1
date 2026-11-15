@@ -8,8 +8,10 @@
 #     -Launcher launcher\launcher.ps1 -Entry windows\op-reason.ps1 -EntryCmd windows\op-reason.cmd -Out shots
 #
 # Writes <Out>\*.png (the window per scene, and the whole screen once), <Out>\timing.json and <Out>\timing.md, and
-# appends timing.md to the job summary. Timings are black-box: from starting the process until a visible window with
-# the expected title exists (FindWindow), and until the process exits.
+# appends timing.md to the job summary. Every window of the exe shows its language switch ("English | " and the
+# Japanese name); one scene clicks the Japanese name in an English window with the real mouse and shows the window
+# after the switch. Timings are black-box: from starting the process until a visible window with the expected title
+# exists (FindWindow), and until the process exits.
 #
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
 [CmdletBinding()]
@@ -35,7 +37,14 @@ public static class OpReasonShots {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
 '@
 [void][OpReasonShots]::SetProcessDPIAware()
@@ -219,6 +228,50 @@ foreach ($s in $scenes) {
   if ($other) { $other.Kill(); $other.WaitForExit() }
 }
 
+# Clicks the Japanese name at the right end of the window's language switch with the real mouse: 26 DIPs left of the client area's
+# right edge and 21 DIPs above its bottom (as crates/op-reason-win/tests/exe.rs does).
+function Invoke-SwitchClick([IntPtr] $Handle) {
+  $rc = [OpReasonShots+RECT]::new()
+  [void][OpReasonShots]::GetClientRect($Handle, [ref]$rc)
+  $k = [math]::Max(96, [OpReasonShots]::GetDpiForWindow($Handle)) / 96.0
+  $pt = [OpReasonShots+POINT]::new()
+  $pt.X = $rc.Right - [int][math]::Round(26 * $k)
+  $pt.Y = $rc.Bottom - [int][math]::Round(21 * $k)
+  [void][OpReasonShots]::ClientToScreen($Handle, [ref]$pt)
+  [void][OpReasonShots]::SetCursorPos($pt.X, $pt.Y)
+  [Threading.Thread]::Sleep(100)
+  [OpReasonShots]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
+  [Threading.Thread]::Sleep(60)
+  [OpReasonShots]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+# A call from WSL in English; a click on the Japanese name switches the window (its own LOCALAPPDATA: the choice is written there,
+# and the scenes and timings that follow stay English).
+$clickDir = Join-Path $work 'click'
+New-Item -ItemType Directory -Force -Path $clickDir | Out-Null
+$clickPayload = New-Payload $readArgs 'en' ([ordered]@{ type = 'human'; pid = $null; session = $null; detail = $null }) `
+  'Read the Proxmox API token to create a VM' 'op read op://Private/proxmox/token'
+$p = Start-Run $clickPayload @{ FAKE_SLEEP_MS = '6000'; LOCALAPPDATA = $clickDir }
+$h = Wait-Window $TitleEn
+if ($h -eq [IntPtr]::Zero) { throw 'no window for the click scene' }
+[Threading.Thread]::Sleep(800)
+Save-Window $h (Join-Path $Out '07-run-before-click-en.png')
+$before = [OpReasonShots]::GetForegroundWindow()
+Invoke-SwitchClick $h
+$hJa = Wait-Window $TitleJa 3000
+$after = [OpReasonShots]::GetForegroundWindow()
+[Threading.Thread]::Sleep(300)
+if ($hJa -ne [IntPtr]::Zero) {
+  Save-Window $hJa (Join-Path $Out '08-run-after-click-ja.png')
+} else {
+  Write-Warning 'the click on the language switch did not switch the window'
+  Save-Window $h (Join-Path $Out '08-run-after-click-not-switched.png')
+}
+$p.WaitForExit()
+$clickNote = "Click on the language switch: switched=$($hJa -ne [IntPtr]::Zero), foreground unchanged=$($before -eq $after), " +
+  "settings.json: $(Get-Content -Raw -ErrorAction SilentlyContinue (Join-Path $clickDir 'op-reason\settings.json'))"
+Write-Host $clickNote
+
 # --- timings
 
 function Measure-Runs([string] $Name, [scriptblock] $One) {
@@ -317,6 +370,8 @@ $md = @(
   '| --- | ---: | ---: | ---: |'
 )
 foreach ($r in $results) { $md += "| $($r.name) | $($r.min) | $($r.median) | $($r.max) |" }
+$md += ''
+$md += $clickNote
 $md += ''
 $md += "op-reason.exe (release): $([math]::Round($size / 1KB)) KiB"
 $md += ''

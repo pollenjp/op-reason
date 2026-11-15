@@ -77,6 +77,12 @@
 #   Log rotation at 1 MiB; nothing left under the state directory after a call (no run/ entries, no current.json, no
 #     temporary files); run/ entries older than an hour are removed, unless their call's process still runs
 #   Non-UTF-8 argument bytes reach op unchanged; a removed current directory still runs; a closed stdout does not panic
+#   The language (design 2026-11-15-language-toggle-design.md §2 and §5)
+#     - LANG / LC_ALL alone no longer choose Japanese
+#     - a status with chosenLang "en" writes <state>/lang.json, and the next call speaks English despite
+#       OPREASON_LANG=ja (its refusal, its payload's lang, op-reason-log); the launcher's status counts the same
+#     - no chosenLang, an unknown language or a malformed value leave lang.json as it is (and the call's result stays);
+#       null removes it, and OPREASON_LANG counts again
 #
 # ## How
 #
@@ -85,8 +91,8 @@
 # writes nothing and exits 1; marker: writes the status file and exits 1; die-after-op: exits 9 after op without the
 # final status; rundir-gone: removes the call's run directory and exits 1). A notify payload goes to FAKE_DIR/notify.<runner>.<pid>.payload (exit 0). Otherwise it writes its
 # arguments, its name, OPREASON_PAYLOAD, WSLENV and the token variables to FAKE_DIR/ps.<n>.*, decodes args64, runs the
-# fake op.exe (the payload's op through the fake wslpath) with stdio inherited, writes the status and exits with op's
-# code (FAKE_PS_NO_STATUS=1: no status, exit 1). The fake op.exe logs whoami (0 when FAKE_DIR/shared exists) and
+# fake op.exe (the payload's op through the fake wslpath) with stdio inherited, writes the status (with chosenLang set to
+# the JSON value FAKE_CHOSEN, when it is set) and exits with op's code (FAKE_PS_NO_STATUS=1: no status, exit 1). The fake op.exe logs whoami (0 when FAKE_DIR/shared exists) and
 # signout (removes it) to FAKE_DIR/op.direct; other calls add a line to FAKE_DIR/op.calls, write their arguments to
 # FAKE_DIR/op.args, copy FAKE_OUT, FAKE_OUT_FILE and stdin (unless FAKE_NO_STDIN=1) to stdout, write FAKE_STDERR to
 # stderr and exit with FAKE_RC. The fake wslpath maps /x/y to C:\fake\x\y and back. The fake proc tree is passed with
@@ -192,7 +198,7 @@ if [[ ${who} == powershell.exe && -n ${FAKE_PS_JUNK_STATUS:-} ]]; then
   printf 'not json' >"${status}"
   exit "${rc}"
 fi
-jq -cn --argjson rc "${rc}" --arg who "${who}" '{started: true, exit: $rc, error: "", window: "shown", toast: "shown", others: 0, signout: "ok"} + (if $who == "op-reason.exe" then {runner: "exe"} else {} end)' >"${status}"
+jq -cn --argjson rc "${rc}" --arg who "${who}" --arg chosen "${FAKE_CHOSEN-}" '{started: true, exit: $rc, error: "", window: "shown", toast: "shown", others: 0, signout: "ok"} + (if $who == "op-reason.exe" then {runner: "exe"} else {} end) + (if $chosen == "" then {} else {chosenLang: ($chosen | fromjson)} end)' >"${status}"
 exit "${rc}"
 EOF
 )
@@ -1115,6 +1121,52 @@ if [[ ! -e ${state}/run/old-call && -d ${state}/run/${live} && $(ls -A "${state}
 else
   ng "run/ entries older than an hour are removed (not one whose call still runs), and the call leaves none" "$(ls -lR "${state}" 2>&1)"
 fi
+
+echo "== The language chosen in the window"
+copy=${state}/lang.json
+reset
+OPREASON_LANG='' LC_ALL=ja_JP.UTF-8 LANG=ja_JP.UTF-8 run_op localeja item get a
+detail="rc=${rc} err=$(cat "${work}/localeja.err")"
+check "LANG and LC_ALL alone no longer choose Japanese" grep -q 'There is no reason (--reason)' "${work}/localeja.err"
+reset
+FAKE_CHOSEN='"en"' run_op chosen1 --reason "窓で English を選んだ" item get a
+first_lang=$(payload_field '.lang')
+copied=$(cat "${copy}" 2>/dev/null)
+run_op chosen2 item get a
+run_op chosen3 --reason "次の呼び出し" item get a
+next_lang=$(payload_field '.lang' 2)
+"${work}/names/op-reason-log" >"${work}/chosenlog.out" 2>&1
+if [[ ${first_lang} == ja && ${copied} == '{"v":1,"lang":"en"}' && $(<"${work}/chosen2.err") == *"There is no reason (--reason)"* &&
+${next_lang} == en ]] && grep -q '^Time ' "${work}/chosenlog.out"; then
+  ok "chosenLang en in the status → lang.json; the next call speaks English despite OPREASON_LANG=ja (refusal, payload, log viewer)"
+else
+  ng "chosenLang en in the status → lang.json; the next call speaks English despite OPREASON_LANG=ja (refusal, payload, log viewer)" \
+    "first=${first_lang} copy=${copied} next=${next_lang} err=$(cat "${work}/chosen2.err") log=$(head -n 1 "${work}/chosenlog.out")"
+fi
+run_op keep1 --reason "chosenLang の無い status" item get a
+keep1=$(cat "${copy}" 2>/dev/null)
+FAKE_CHOSEN='"fr"' run_op keep2 --reason "知らない言語" item get a
+keep2=$(cat "${copy}" 2>/dev/null)
+FAKE_CHOSEN=3 run_op keep3 --reason "形の違う chosenLang" item get a
+keep3=$(cat "${copy}" 2>/dev/null)
+if [[ ${keep1} == '{"v":1,"lang":"en"}' && ${keep2} == "${keep1}" && ${keep3} == "${keep1}" && ${rc} == 0 &&
+  $(last_field end '.result') == approved ]]; then
+  ok "no chosenLang, an unknown language or a malformed value leave lang.json (and the result)"
+else
+  ng "no chosenLang, an unknown language or a malformed value leave lang.json (and the result)" \
+    "copies=${keep1} | ${keep2} | ${keep3} rc=${rc} $(last end)"
+fi
+FAKE_CHOSEN=null run_op cleared --reason "選んだ言語を消した" item get a
+run_op cleared2 item get a
+if [[ ! -e ${copy} && $(<"${work}/cleared2.err") == *"理由 (--reason) がありません"* ]]; then
+  ok "chosenLang null removes lang.json, and OPREASON_LANG counts again"
+else
+  ng "chosenLang null removes lang.json, and OPREASON_LANG counts again" "copy=$(cat "${copy}" 2>&1) err=$(cat "${work}/cleared2.err")"
+fi
+reset
+OPREASON_RUNNER=launcher FAKE_CHOSEN='"en"' run_op chosenps --reason "launcher の status" item get a
+detail="runner=$(runner_of) copy=$(cat "${copy}" 2>&1)"
+check "the launcher's chosenLang counts the same" test "$(runner_of)" == powershell.exe -a "$(cat "${copy}" 2>/dev/null)" == '{"v":1,"lang":"en"}'
 
 echo "== Unusual inputs"
 reset

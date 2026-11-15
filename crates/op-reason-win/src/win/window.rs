@@ -2,10 +2,15 @@
 //! top right of the primary work area, always on top, never takes the focus, not in the taskbar, light yellow,
 //! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
 //! red. It asks nothing; the decision is made in the 1Password prompt.
+//!
+//! Its one control is the language switch `English | 日本語` at the right of the footer (design
+//! `2026-11-15-language-toggle-design.md` §4): a click on the other language lays the window out again in that
+//! language and hands the choice to the caller, without activating the window.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
+use op_reason_core::lang::Lang;
 use windows::Win32::Foundation::{
     HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
@@ -22,13 +27,14 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS,
-    DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory,
-    IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_LINE_METRICS,
+    DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, InvalidateRect, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint, PAINTSTRUCT,
+    ScreenToClient,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::WaitForSingleObject;
@@ -48,12 +54,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_SYSMENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EndMenu, SendMessageW, SetTimer, WM_CANCELMODE, WM_TIMER,
+    EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, SendMessageW, SetCursor, SetTimer, SetWindowTextW,
+    WM_CANCELMODE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
-use crate::ui::Texts;
+use crate::ui::{self, Both, Texts};
 
 // Layout in DIPs, as the launcher's WPF window.
 const OUTER_WIDTH: f32 = 520.0;
@@ -65,6 +72,13 @@ const LINE_GAP: f32 = 2.0;
 const SCREEN_MARGIN: f32 = 16.0;
 const TITLE_SIZE: f32 = 16.0;
 const BODY_SIZE: f32 = 12.0;
+// The language switch at the right of the footer: its size, the gap before it, and the room around the clickable word.
+const SWITCH_SIZE: f32 = 11.0;
+const SWITCH_GAP: f32 = 12.0;
+const SWITCH_HIT_X: f32 = 4.0;
+const SWITCH_HIT_Y: f32 = 3.0;
+/// The width of a switch part's layout: wide enough never to wrap.
+const NO_WRAP: f32 = 10_000.0;
 
 const CLASS_NAME: PCWSTR = w!("op-reason-approval");
 /// The timer of [`Window::watch`].
@@ -85,6 +99,8 @@ const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);
 const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);
 const DARK_ORANGE: D2D1_COLOR_F = rgb(0xFF, 0x8C, 0x00);
 const FIREBRICK: D2D1_COLOR_F = rgb(0xB2, 0x22, 0x22);
+const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);
+const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -99,12 +115,38 @@ struct Para {
     color: D2D1_COLOR_F,
     height: f32,
     role: Role,
+    /// The baseline of its last line, from its top (the switch sits on the footer's).
+    last_baseline: f32,
+}
+
+/// One part of the language switch: a language's name or the bar.
+struct Piece {
+    layout: IDWriteTextLayout,
+    color: D2D1_COLOR_F,
+    part: ui::SwitchPart,
+}
+
+/// The text formats, kept to lay the window out again in the other language.
+struct Fonts {
+    dw: IDWriteFactory,
+    title: IDWriteTextFormat,
+    body: IDWriteTextFormat,
+    bold: IDWriteTextFormat,
+    switch: IDWriteTextFormat,
+    switch_bold: IDWriteTextFormat,
 }
 
 struct State {
     d2d: ID2D1Factory,
     target: Option<ID2D1HwndRenderTarget>,
+    fonts: Fonts,
+    /// The width of the text area (DIPs).
+    width: f32,
+    texts: Both,
+    /// The language shown.
+    lang: Lang,
     paras: Vec<Para>,
+    switch: Vec<Piece>,
     show_others: bool,
     dpi: u32,
     destroyed: bool,
@@ -114,6 +156,10 @@ struct State {
     painted: bool,
     /// The op.exe whose end must break a modal loop (moving the window, its system menu).
     watched: Option<HANDLE>,
+    /// The language whose word the left button went down on (a click is a press and a release on the same word).
+    pressed: Option<Lang>,
+    /// Told the language chosen with the switch (taken out while it runs).
+    on_choose: Option<Box<dyn FnMut(Lang)>>,
 }
 
 impl State {
@@ -126,6 +172,63 @@ impl State {
                 .map(|p| p.height + 2.0 * LINE_GAP)
                 .sum::<f32>()
             + PAD_BOTTOM
+    }
+
+    /// The paragraphs shown, each with its top (DIPs).
+    fn tops(&self) -> Vec<(usize, f32)> {
+        let mut y = PAD_TOP;
+        let mut out = Vec::with_capacity(self.paras.len());
+        for (i, p) in self.paras.iter().enumerate() {
+            if p.role == Role::Others && !self.show_others {
+                continue;
+            }
+            y += LINE_GAP;
+            out.push((i, y));
+            y += p.height + LINE_GAP;
+        }
+        out
+    }
+
+    /// Where the switch ends and the baseline it sits on: the right of the text area, the footer's last line.
+    fn switch_anchor(&self) -> Option<(f32, f32)> {
+        let (i, top) = self
+            .tops()
+            .into_iter()
+            .find(|(i, _)| self.paras[*i].role == Role::Footer)?;
+        Some((PAD_LEFT + self.width, top + self.paras[i].last_baseline))
+    }
+
+    fn switch_parts(&self) -> Vec<ui::SwitchPart> {
+        self.switch.iter().map(|p| p.part).collect()
+    }
+
+    /// The language a click at the point (DIPs of the client area) chooses.
+    fn hit(&self, x: f32, y: f32) -> Option<Lang> {
+        let (right, baseline) = self.switch_anchor()?;
+        ui::switch_hit(
+            &self.switch_parts(),
+            right,
+            baseline,
+            self.lang,
+            (SWITCH_HIT_X, SWITCH_HIT_Y),
+            (x, y),
+        )
+    }
+
+    /// Lays the window out in `lang`. Everything is built before anything is replaced, so a failure keeps the old
+    /// layout.
+    fn relayout(&mut self, lang: Lang) -> Result<()> {
+        let switch = build_switch(&self.fonts, lang)?;
+        let paras = build_paras(
+            &self.fonts,
+            self.texts.get(lang),
+            self.width,
+            footer_width(self.width, &switch),
+        )?;
+        self.switch = switch;
+        self.paras = paras;
+        self.lang = lang;
+        Ok(())
     }
 
     fn render(&mut self, hwnd: HWND) -> Result<()> {
@@ -158,12 +261,22 @@ impl State {
         let Some(t) = self.target.as_ref() else {
             return Ok(());
         };
-        // Brushes first, so that nothing can return between BeginDraw and EndDraw.
+        // Brushes and positions first, so that nothing can return between BeginDraw and EndDraw.
         let mut brushes = Vec::with_capacity(self.paras.len());
         for p in &self.paras {
             // SAFETY: the color lives across the call.
             brushes.push(unsafe { t.CreateSolidColorBrush(&p.color, None)? });
         }
+        let mut switch_brushes = Vec::with_capacity(self.switch.len());
+        for p in &self.switch {
+            // SAFETY: the color lives across the call.
+            switch_brushes.push(unsafe { t.CreateSolidColorBrush(&p.color, None)? });
+        }
+        let tops = self.tops();
+        let origins = self
+            .switch_anchor()
+            .map(|(right, baseline)| ui::switch_origins(&self.switch_parts(), right, baseline))
+            .unwrap_or_default();
         let options = if self.color_fonts {
             D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT
         } else {
@@ -173,14 +286,19 @@ impl State {
         let r = unsafe {
             t.BeginDraw();
             t.Clear(Some(&LIGHT_YELLOW));
-            let mut y = PAD_TOP;
-            for (p, brush) in self.paras.iter().zip(&brushes) {
-                if p.role == Role::Others && !self.show_others {
-                    continue;
-                }
-                y += LINE_GAP;
-                t.DrawTextLayout(Vector2 { X: PAD_LEFT, Y: y }, &p.layout, brush, options);
-                y += p.height + LINE_GAP;
+            for (i, top) in &tops {
+                t.DrawTextLayout(
+                    Vector2 {
+                        X: PAD_LEFT,
+                        Y: *top,
+                    },
+                    &self.paras[*i].layout,
+                    &brushes[*i],
+                    options,
+                );
+            }
+            for ((p, brush), (x, y)) in self.switch.iter().zip(&switch_brushes).zip(&origins) {
+                t.DrawTextLayout(Vector2 { X: *x, Y: *y }, &p.layout, brush, options);
             }
             t.EndDraw(None, None)
         };
@@ -291,13 +409,134 @@ fn para(
         }
         let mut m = DWRITE_TEXT_METRICS::default();
         layout.GetMetrics(&mut m)?;
+        let last_baseline = last_baseline(&layout)?;
         Ok(Para {
             layout,
             color,
             height: m.height,
             role,
+            last_baseline,
         })
     }
+}
+
+/// The baseline of a layout's last line, from the layout's top.
+fn last_baseline(layout: &IDWriteTextLayout) -> Result<f32> {
+    let mut count = 0u32;
+    // SAFETY: valid layout and out parameters; the first call only counts the lines (it fails for want of room).
+    let lines = unsafe {
+        let _ = layout.GetLineMetrics(None, &mut count);
+        let mut lines = vec![DWRITE_LINE_METRICS::default(); count.max(1) as usize];
+        layout.GetLineMetrics(Some(&mut lines), &mut count)?;
+        lines.truncate(count as usize);
+        lines
+    };
+    Ok(match lines.split_last() {
+        Some((last, before)) => before.iter().map(|l| l.height).sum::<f32>() + last.baseline,
+        None => 0.0,
+    })
+}
+
+/// The title, the lines, the orange line and the footer (narrower, to leave room for the switch).
+fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Result<Vec<Para>> {
+    let dw = &fonts.dw;
+    let mut paras = vec![para(
+        dw,
+        &fonts.title,
+        &text.title,
+        0,
+        width,
+        BLACK,
+        Role::Title,
+    )?];
+    for (label, value) in &text.lines {
+        let head = format!("{label}: ");
+        let line = format!("{head}{value}");
+        paras.push(para(
+            dw,
+            &fonts.body,
+            &line,
+            head.encode_utf16().count(),
+            width,
+            BLACK,
+            Role::Line,
+        )?);
+    }
+    paras.push(para(
+        dw,
+        &fonts.bold,
+        &text.others,
+        0,
+        width,
+        DARK_ORANGE,
+        Role::Others,
+    )?);
+    paras.push(para(
+        dw,
+        &fonts.bold,
+        &text.footer,
+        0,
+        footer_width,
+        FIREBRICK,
+        Role::Footer,
+    )?);
+    Ok(paras)
+}
+
+/// The parts of the switch with `shown` in bold black; the other language blue and underlined (the link), the bar gray.
+fn build_switch(fonts: &Fonts, shown: Lang) -> Result<Vec<Piece>> {
+    ui::SWITCH_LABELS
+        .iter()
+        .map(|(text, lang)| {
+            let link = lang.is_some_and(|l| l != shown);
+            let is_shown = *lang == Some(shown);
+            let fmt = if is_shown {
+                &fonts.switch_bold
+            } else {
+                &fonts.switch
+            };
+            let color = if link {
+                LINK_BLUE
+            } else if is_shown {
+                BLACK
+            } else {
+                GRAY
+            };
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
+            unsafe {
+                let layout = fonts.dw.CreateTextLayout(&wide, fmt, NO_WRAP, f32::MAX)?;
+                if link {
+                    layout.SetUnderline(
+                        true,
+                        DWRITE_TEXT_RANGE {
+                            startPosition: 0,
+                            length: wide.len() as u32,
+                        },
+                    )?;
+                }
+                let mut m = DWRITE_TEXT_METRICS::default();
+                layout.GetMetrics(&mut m)?;
+                let baseline = last_baseline(&layout)?;
+                Ok(Piece {
+                    layout,
+                    color,
+                    part: ui::SwitchPart {
+                        width: m.widthIncludingTrailingWhitespace,
+                        height: m.height,
+                        baseline,
+                        lang: *lang,
+                    },
+                })
+            }
+        })
+        .collect()
+}
+
+/// The footer's width: the text area less the switch and the gap before it (never less than half of it).
+fn footer_width(width: f32, switch: &[Piece]) -> f32 {
+    let taken: f32 = switch.iter().map(|p| p.part.width).sum();
+    (width - taken - SWITCH_GAP).max(width / 2.0)
 }
 
 fn scale(dip: f32, dpi: u32) -> i32 {
@@ -320,8 +559,14 @@ pub struct Window {
 }
 
 impl Window {
-    /// Creates the window (hidden). `others` shows the orange line from the start.
-    pub fn create(text: &Texts, others: bool) -> Result<Window> {
+    /// Creates the window (hidden) in `lang`. `others` shows the orange line from the start. `on_choose` is told the
+    /// language chosen with the switch, after the window has switched.
+    pub fn create(
+        texts: &Both,
+        lang: Lang,
+        others: bool,
+        on_choose: Box<dyn FnMut(Lang)>,
+    ) -> Result<Window> {
         register_class()?;
         // SAFETY: factory creation and layout calls with valid arguments; the state pointer is handed to the
         // window and freed in Drop after the window is destroyed.
@@ -329,9 +574,14 @@ impl Window {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let loc = locale();
-            let title_fmt = format(&dw, DWRITE_FONT_WEIGHT_BOLD, TITLE_SIZE, &loc)?;
-            let body_fmt = format(&dw, DWRITE_FONT_WEIGHT_NORMAL, BODY_SIZE, &loc)?;
-            let bold_fmt = format(&dw, DWRITE_FONT_WEIGHT_BOLD, BODY_SIZE, &loc)?;
+            let fonts = Fonts {
+                title: format(&dw, DWRITE_FONT_WEIGHT_BOLD, TITLE_SIZE, &loc)?,
+                body: format(&dw, DWRITE_FONT_WEIGHT_NORMAL, BODY_SIZE, &loc)?,
+                bold: format(&dw, DWRITE_FONT_WEIGHT_BOLD, BODY_SIZE, &loc)?,
+                switch: format(&dw, DWRITE_FONT_WEIGHT_NORMAL, SWITCH_SIZE, &loc)?,
+                switch_bold: format(&dw, DWRITE_FONT_WEIGHT_BOLD, SWITCH_SIZE, &loc)?,
+                dw,
+            };
 
             let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
             let (mut dx, mut dy) = (96u32, 96u32);
@@ -346,58 +596,28 @@ impl Window {
             let frame_w_dip = (frame.right - frame.left) as f32 * 96.0 / dpi as f32;
             let width = OUTER_WIDTH - frame_w_dip - PAD_LEFT - PAD_RIGHT;
 
-            let mut paras = vec![para(
-                &dw,
-                &title_fmt,
-                &text.title,
-                0,
-                width,
-                BLACK,
-                Role::Title,
-            )?];
-            for (label, value) in &text.lines {
-                let head = format!("{label}: ");
-                let line = format!("{head}{value}");
-                paras.push(para(
-                    &dw,
-                    &body_fmt,
-                    &line,
-                    head.encode_utf16().count(),
-                    width,
-                    BLACK,
-                    Role::Line,
-                )?);
-            }
-            paras.push(para(
-                &dw,
-                &bold_fmt,
-                &text.others,
-                0,
-                width,
-                DARK_ORANGE,
-                Role::Others,
-            )?);
-            paras.push(para(
-                &dw,
-                &bold_fmt,
-                &text.footer,
-                0,
-                width,
-                FIREBRICK,
-                Role::Footer,
-            )?);
+            let switch = build_switch(&fonts, lang)?;
+            let paras = build_paras(&fonts, texts.get(lang), width, footer_width(width, &switch))?;
+            let title = HSTRING::from(texts.get(lang).title.as_str());
 
             let hinstance = GetModuleHandleW(None)?;
             let state = Box::into_raw(Box::new(State {
                 d2d,
                 target: None,
+                fonts,
+                width,
+                texts: texts.clone(),
+                lang,
                 paras,
+                switch,
                 show_others: others,
                 dpi,
                 destroyed: false,
                 color_fonts: true,
                 painted: false,
                 watched: None,
+                pressed: None,
+                on_choose: Some(on_choose),
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -419,7 +639,7 @@ impl Window {
             let hwnd = match CreateWindowExW(
                 EX_STYLE,
                 CLASS_NAME,
-                &HSTRING::from(text.title.as_str()),
+                &title,
                 STYLE,
                 x,
                 y,
@@ -539,6 +759,78 @@ pub fn pump() {
     }
 }
 
+/// The point of a mouse message in DIPs of the client area.
+fn dip_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
+    let x = (lparam.0 & 0xFFFF) as u16 as i16;
+    let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16;
+    let k = 96.0 / dpi.max(1) as f32;
+    (f32::from(x) * k, f32::from(y) * k)
+}
+
+/// Whether the mouse pointer is on the switch's clickable word.
+///
+/// # Safety
+///
+/// `ptr` is the window's state.
+unsafe fn pointer_on_switch(hwnd: HWND, ptr: *mut State) -> bool {
+    let mut pt = POINT::default();
+    // SAFETY: valid window handle and out parameter.
+    let found = unsafe { GetCursorPos(&mut pt).is_ok() && ScreenToClient(hwnd, &mut pt).as_bool() };
+    if !found {
+        return false;
+    }
+    // SAFETY: (caller) a valid state; the reference ends in this function.
+    let st = unsafe { &*ptr };
+    let k = 96.0 / st.dpi.max(1) as f32;
+    st.hit(pt.x as f32 * k, pt.y as f32 * k).is_some()
+}
+
+/// Switches the window to `lang` (texts, caption, height) and then tells the owner. Nothing here activates the
+/// window: the caption and the size change with SWP_NOACTIVATE, and the click never activated it (MA_NOACTIVATE).
+///
+/// # Safety
+///
+/// `ptr` is the window's state, and no reference into it is held by the caller: the calls below re-enter the window
+/// procedure.
+unsafe fn choose(hwnd: HWND, ptr: *mut State, lang: Lang) {
+    // SAFETY: (caller) a valid state; the reference ends before the Win32 calls.
+    let (title, client_h, dpi) = unsafe {
+        let st = &mut *ptr;
+        if st.relayout(lang).is_err() {
+            return;
+        }
+        (
+            HSTRING::from(st.texts.get(lang).title.as_str()),
+            st.client_height_dip(),
+            st.dpi,
+        )
+    };
+    // SAFETY: valid window handle on its own thread.
+    unsafe {
+        let _ = SetWindowTextW(hwnd, &title);
+        if let Ok((w, h)) = outer_size(client_h, dpi) {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                w,
+                h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    // The callback is taken out of the state while it runs, so that no reference into the state is held then.
+    // SAFETY: (caller) the state stays valid until the window is dropped, which cannot happen during this message.
+    let callback = unsafe { (*ptr).on_choose.take() };
+    if let Some(mut tell) = callback {
+        tell(lang);
+        // SAFETY: as above.
+        unsafe { (*ptr).on_choose = Some(tell) };
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: GWLP_USERDATA holds the State pointer from WM_NCCREATE until WM_NCDESTROY; each handler takes a
     // short-lived reference that does not span calls which may re-enter this procedure.
@@ -595,6 +887,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            // The hand over the switch's clickable word; elsewhere the class's arrow.
+            WM_SETCURSOR
+                if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && pointer_on_switch(hwnd, ptr) =>
+            {
+                match LoadCursorW(None, IDC_HAND) {
+                    Ok(hand) => {
+                        SetCursor(Some(hand));
+                        LRESULT(1)
+                    }
+                    Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+                }
+            }
+            WM_LBUTTONDOWN => {
+                let st = &mut *ptr;
+                let (x, y) = dip_point(lparam, st.dpi);
+                st.pressed = st.hit(x, y);
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                let chosen = {
+                    let st = &mut *ptr;
+                    let (x, y) = dip_point(lparam, st.dpi);
+                    let pressed = st.pressed.take();
+                    st.hit(x, y).filter(|l| pressed == Some(*l))
+                };
+                if let Some(lang) = chosen {
+                    choose(hwnd, ptr, lang);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WATCH_TIMER => {
                 let ended = (*ptr)
                     .watched
