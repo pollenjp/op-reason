@@ -208,6 +208,13 @@ token は書かず、`--session`・`--secret-key` と `name=value` の引数の�
 op-reason を初めて使うエージェントは、最初に `op-reason --skill` を打ってください。理由をつけた `op` の呼び方と、
 拒否・時間切れのときにすること (打ち直さず、ユーザーに聞く) が書いてあります。
 
+### 表示の言語
+
+既定は英語です。窓の右下の **日本語** (か **English**) を押すと切り替わります。窓はその場で変わり、1Password の承認の
+画面からフォーカスを奪いません。次の呼び出しからは、窓・通知・文・`op-reason-log` がその言語になります (Windows でも
+WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残ります。消すと `OPREASON_LANG` に戻ります (WSL
+では控えの `~/.local/state/op-reason/lang.json` も消すか、次の呼び出しが消すのを待ってください)。
+
 ### 終了コード
 
 | コード | 意味 |
@@ -223,7 +230,7 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
 
 | 変数 | 意味 |
 | --- | --- |
-| `OPREASON_LANG` | `en` か `ja`: 文・窓・記録の表の言語。無ければ `LC_ALL`・`LC_MESSAGES`・`LANG` (`ja…` なら日本語)、Windows ではその次に表示の言語、どれも無ければ英語 |
+| `OPREASON_LANG` | `en` か `ja`: 窓で言語を選んでいない間の、文・窓・記録の表の言語 ([表示の言語](#表示の言語))。既定は英語 (`LANG` と Windows の表示の言語は見ません) |
 | `OPREASON_LOCK_WAIT` | ほかの呼び出しの承認待ちを待つ秒 (既定 90。Claude Code の Bash の既定の時間切れ 120 秒より短い) |
 | `OPREASON_OP_EXE` | `op.exe` のパス (既定は `PATH` の `op.exe`) |
 | `OPREASON_EXE` | WSL: `op-reason.exe` のパス (既定は `PATH` の `op-reason.exe`)。`launcher.ps1` はそのフォルダーから探します |
@@ -272,7 +279,9 @@ cargo build && bash tests/run-all.sh         # 偽の op-reason.exe・powershell
 - 本物の 1Password で確かめる手順: [docs/manual-verification.ja.md](docs/manual-verification.ja.md)
 - 設計: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md) (英語)。
   `op-reason.exe` は [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md) (英語)、
-  WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)
+  WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)、
+  窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)
+- 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 
 ## ライセンス

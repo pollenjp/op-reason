@@ -65,6 +65,24 @@ about six prompts. Where the expectation says "note", nobody has seen it yet: wr
 | R6 | With the setup of R5: `printf 'plain text\n' \| op --reason "check R6: stdin through the fallback" inject`, approve | `plain text` comes out (stdin arrives whole after a fallback) |
 | R7 | With the setup of R5: `OPREASON_RUNNER=launcher op --reason "check R7: launcher only" vault list >/dev/null`, approve | The launcher's window appears without the fallback line (and without a Smart App Control notice) |
 
+## Checks of the window's language
+
+English by default; the switch `English | 日本語` at the bottom right of `op-reason.exe`'s window chooses
+([2026-11-15-language-toggle-design.md](superpowers/specs/2026-11-15-language-toggle-design.md)). CI clicks the switch
+with the mouse of its Windows runner, but cannot show a 1Password prompt next to it. These take about 10 minutes and
+show about seven prompts. First, in WSL `unset OPREASON_LANG; rm -f ~/.local/state/op-reason/lang.json`, and in
+PowerShell `Remove-Item "$env:LOCALAPPDATA\op-reason\settings.json" -ErrorAction SilentlyContinue`.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| L1 | `LANG=ja_JP.UTF-8 op --reason "check L1: English by default" vault list >/dev/null`, approve | The window and the toast are in English (`LANG` does not choose Japanese). At the bottom right of the window: `English \| 日本語`, English bold and black, 日本語 blue and underlined; the pointer becomes a hand over 日本語 only |
+| L2 | `op --reason "check L2: switch" vault list >/dev/null`. While the prompt is open, click 日本語 in op-reason's window, then look at the prompt before answering it | The window switches to Japanese at once (caption, labels, footer; now 日本語 is bold and English is the link) and keeps its top right corner. It does not take the focus: the prompt stays the active window (its title bar stays active, op-reason's caption stays gray) and still answers the keyboard (if it has a text field, the cursor still blinks there; do not type your password). Approve. `Get-Content "$env:LOCALAPPDATA\op-reason\settings.json"` shows `{"v":1,"lang":"ja"}` |
+| L3 | `op --reason "check L3: remembered" vault list >/dev/null`, approve; then `op item get x` (no reason) and `op-reason-log` | The window and the toast are in Japanese from the start; so are the refusal and `op-reason-log`. `cat ~/.local/state/op-reason/lang.json` shows `{"v":1,"lang":"ja"}` |
+| L4 | `OPREASON_LANG=en op --reason "check L4: the choice beats OPREASON_LANG" vault list >/dev/null`, approve | Still Japanese |
+| L5 | Click English in the window of `op --reason "check L5: back to English" vault list >/dev/null`, approve. Then in PowerShell: `op-reason.exe --reason "check L5 from Windows" vault list > $null`, approve | The window of the call from Windows is in English and has the switch too (one choice for WSL and Windows); `op-reason.exe --log` is in English |
+| L6 | `OPREASON_RUNNER=launcher OPREASON_LANG=ja op --reason "check L6: the launcher reads the choice" vault list >/dev/null`, approve | The launcher's window (the WPF one) is in English, the chosen language, and has no switch |
+| L7 | Delete both files as at the start of this section; `OPREASON_LANG=ja op --reason "check L7: reset" vault list >/dev/null`, approve; `unset OPREASON_LANG` and run it again, approve | First Japanese (`OPREASON_LANG` counts again while nothing is chosen), then English |
+
 ## Checks on Windows: op-reason.exe
 
 Use `op-reason.exe` from the folder of the R checks, by its full name `op-reason.exe`. They take about 15 minutes and

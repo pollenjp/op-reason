@@ -267,7 +267,7 @@ the PowerShell entry.
 | `op` | Windows path of `op.exe` (not used by `notify`) |
 | `args64` | arguments for `op.exe`, each UTF-8 then base64 (PowerShell 7's `ConvertFrom-Json` would turn date-like plain strings into `DateTime`) |
 | `status` | path where the launcher writes the status JSON (optional) |
-| `lang` | `en` or `ja` (missing: `en`) |
+| `lang` | `en` or `ja` (missing: `en`): the language the entry decided. The runner shows the language chosen in `op-reason.exe`'s window instead when there is one (`settings.json`, `2026-11-15-language-toggle-design.md`) |
 | `lock` | `held`: take the global lock (the named mutex, PR 2); `skipped`: do not (a pipe: the lock holder is waiting for this call's output). Missing: `held` |
 | `lockWait` | seconds to wait for the mutex (PR 2). Missing: 90 |
 | `stderr` | `inherit` (default) or `scan` (PR 2: the launcher relays `op.exe`'s stderr and reports whether it saw a denial or a timeout) |
@@ -326,6 +326,7 @@ runs twice (`2026-11-15-wsl-through-exe-design.md` §4.3, §5.1):
 | `stderrMatch` | PR 2, `stderr: "scan"` only: `denied`, `timeout` or null |
 | `runner` | `exe` when `op-reason.exe --run` wrote it (the launcher writes none) |
 | `ui` | the texts the runner built (title, lines, footer, others, toast), for tests |
+| `chosenLang` | `en` or `ja`: the language chosen in `op-reason.exe`'s window when the status was written; null when nothing is chosen; missing when the runner cannot tell (and from runners before `2026-11-15-language-toggle-design.md`). The WSL binary keeps its copy from it |
 
 Exit code: `op.exe`'s exit code; 127 when `op.exe` is missing (and one `op-reason: launcher: op.exe not found: …` line on
 stderr); 1 for other failures before `op.exe` starts; 75 when the mutex wait timed out (PR 2); `notify` exits 0. The
@@ -398,6 +399,10 @@ Records (one JSON object per line, `v: 1`; `time` is local ISO 8601 with offset,
 When it is unset or empty: WSL looks at `LC_ALL`, `LC_MESSAGES`, `LANG` (the first non-empty one; `ja…` → Japanese);
 the PowerShell entry looks at the UI culture. Anything else is English. The entry resolves the language once and passes
 it to the launcher as `lang`.
+
+Changed by `2026-11-15-language-toggle-design.md`: the language chosen in `op-reason.exe`'s window comes first
+(`%LOCALAPPDATA%\op-reason\settings.json`; on WSL its copy `<state>/lang.json`), then `OPREASON_LANG`, then English.
+The locale variables and the UI culture no longer count, and the runners prefer the chosen language over `lang`.
 
 ## 6. WSL binary
 
