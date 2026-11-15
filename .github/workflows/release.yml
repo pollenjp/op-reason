@@ -41,9 +41,27 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  windows:
+    name: Windows zip
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Assets
+        run: |
+          mkdir -p dist/op-reason-windows
+          cp windows/op-reason.ps1 windows/op-reason.cmd launcher/launcher.ps1 skill/SKILL.md \
+            README.md README.ja.md LICENSE-MIT LICENSE-APACHE dist/op-reason-windows/
+          (cd dist && zip -r -X op-reason-windows.zip op-reason-windows && rm -r op-reason-windows)
+          (cd dist && sha256sum op-reason-windows.zip >op-reason-windows.zip.sha256)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-zip
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: Draft release
-    needs: [linux]
+    needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -58,4 +76,4 @@ jobs:
         run: |
           ls -l dist
           gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
-            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. Each binary has a .sha256 file."
+            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable; op-reason-windows.zip holds the Windows entry. Each asset has a .sha256 file."

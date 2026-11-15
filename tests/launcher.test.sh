@@ -34,6 +34,11 @@
 #       place "o/r (feat/x) · ~/w", footer with この窓が出ていない, toast of 3 texts (理由: … cut at 100 characters)
 #     - English: labels Time, Caller, Place, Reason, Command, caller "Human (terminal)", footer "… without this window"
 #     - notify: toast title and body for cleared and not cleared, before and after the call
+#   stderr scan: op's stderr reaches the launcher's stderr; a denial or a timeout from op's [ERROR] lines is reported in
+#     status.stderrMatch (a child's "Connection timed out" is not); stdin and stdout stay binary-safe
+#   The named mutex Local\op-reason (.NET supports named mutexes on Linux too): a call takes it (status lock held) and
+#     removes its holder.json; while another process holds it, a call waits lockWait seconds, says so once on stderr and
+#     exits 75 (status lock timeout, error lock-timeout, the holder from holder.json); a lock-skipped call runs anyway
 #
 # ## How
 #
@@ -83,8 +88,9 @@ case ${1-} in
     exit 0
     ;;
 esac
+if [[ -n ${FAKE_SLEEP:-} ]]; then sleep "${FAKE_SLEEP}"; fi
 cat
-printf 'FAKE-ERR 日本語\n' >&2
+printf '%s\n' "${FAKE_ERR_TEXT:-FAKE-ERR 日本語}" >&2
 exit "${FAKE_RC:-0}"
 EOF
 
@@ -98,8 +104,9 @@ payload() {
     enc+=("$(printf '%s' "${a}" | base64 -w0)")
   done
   jq -cn --arg mode "${mode}" --arg op "${op}" --arg status "${work}/status.json" --arg lang "${LANG_CODE:-ja}" \
-    --argjson facts "${FACTS:-null}" --arg lock "${LOCK_MODE:-held}" \
-    '{v: 1, mode: $mode, op: $op, status: $status, lang: $lang, lock: $lock, lockWait: 90, stderr: "inherit",
+    --argjson facts "${FACTS:-null}" --arg lock "${LOCK_MODE:-held}" --argjson wait "${LOCK_WAIT:-90}" \
+    --arg stderr "${STDERR_MODE:-inherit}" \
+    '{v: 1, mode: $mode, op: $op, status: $status, lang: $lang, lock: $lock, lockWait: $wait, stderr: $stderr,
       args64: $ARGS.positional} + (if $facts == null then {} else {facts: $facts} end)' --args -- "${enc[@]}"
 }
 
@@ -284,5 +291,70 @@ if [[ ${title} == "Could not clear a shared 1Password CLI approval" && ${body} =
 else
   ng "notify toast texts for cleared / not cleared, before / after the call" "en=${title} / ${body} ja=$(status_field '.ui')"
 fi
+
+echo "== stderr scan (the Windows entry)"
+STDERR_MODE=scan FAKE_RC=1 FAKE_ERR_TEXT="[ERROR] 2026/11/08 00:00:00 authorization prompt dismissed, please try again" \
+  run scan-denied "$(STDERR_MODE=scan payload desktop "${fake_op}" item get x)"
+if [[ ${rc} == 1 && $(status_field '.stderrMatch') == denied &&
+$(<"${work}/scan-denied.err") == *"authorization prompt dismissed"* ]]; then
+  ok "scan: op's stderr is relayed and a denial is reported (stderrMatch denied)"
+else
+  ng "scan: op's stderr is relayed and a denial is reported (stderrMatch denied)" "rc=${rc} err=$(cat "${work}/scan-denied.err") status=$(cat "${work}/status.json")"
+fi
+STDERR_MODE=scan FAKE_RC=1 FAKE_ERR_TEXT="[ERROR] 2026/11/08 00:00:00 authorization timeout" \
+  run scan-timeout "$(STDERR_MODE=scan payload desktop "${fake_op}" item get x)"
+detail="$(cat "${work}/status.json")"
+check "scan: a timeout is reported (stderrMatch timeout)" test "$(status_field '.stderrMatch')" == timeout
+STDERR_MODE=scan FAKE_RC=1 FAKE_ERR_TEXT="curl: (28) Connection timed out after 1000 ms" \
+  run scan-other "$(STDERR_MODE=scan payload desktop "${fake_op}" item get x)"
+run inherit-mode "$(payload desktop "${fake_op}" item get x)"
+if [[ $(status_field '.stderrMatch') == null ]] && [[ $(jq -r 'has("stderrMatch")' "${work}/status.json") == false ]]; then
+  ok "scan ignores a child's \"Connection timed out\"; inherit mode reports no stderrMatch"
+else
+  ng "scan ignores a child's \"Connection timed out\"; inherit mode reports no stderrMatch" "$(cat "${work}/status.json")"
+fi
+stdin_file=${in_bin}
+STDERR_MODE=scan run scan-bin "$(STDERR_MODE=scan payload desktop "${fake_op}" item get x)"
+stdin_file=""
+detail="in=$(stat -c %s "${in_bin}") out=$(stat -c %s "${work}/scan-bin.out")"
+check "scan: stdin and stdout stay binary-safe" cmp -s "${in_bin}" "${work}/scan-bin.out"
+
+echo "== The named mutex"
+holder_file=${HOME}/.local/share/op-reason/holder.json
+run lock-normal "$(payload desktop "${fake_op}" item get x)"
+if [[ $(status_field '.lock') == held && ! -e ${holder_file} ]]; then
+  ok "a call takes the mutex (status lock held) and removes its holder.json"
+else
+  ng "a call takes the mutex (status lock held) and removes its holder.json" "$(cat "${work}/status.json") holder=$(cat "${holder_file}" 2>&1)"
+fi
+ready=${work}/mutex.ready
+# shellcheck disable=SC2016 # PowerShell code
+READY=${ready} pwsh -NoProfile -NonInteractive -Command '
+  $m = New-Object System.Threading.Mutex($false, "Local\op-reason")
+  [void]$m.WaitOne()
+  New-Item -ItemType File -Path $env:READY | Out-Null
+  Start-Sleep -Seconds 12
+  $m.ReleaseMutex()' &
+mutex_pid=$!
+wait_file "${ready}" 400 || true
+mkdir -p "$(dirname "${holder_file}")"
+printf '%s' '{"time":"12:00:00","caller":"人","reason":"前の呼び出し","command":"op vault list","pid":1}' >"${holder_file}"
+LOCK_WAIT=1 run lock-timeout "$(LOCK_WAIT=1 payload desktop "${fake_op}" item get x)"
+if [[ ${rc} == 75 && $(status_field '.lock') == timeout && $(status_field '.error') == lock-timeout &&
+$(status_field '.started') == false && $(status_field '.holder') == *前の呼び出し* && $(calls) == 0 &&
+$(<"${work}/lock-timeout.err") == *待っています* ]]; then
+  ok "a held mutex: wait, then exit 75 with lock timeout, the holder from holder.json and one waiting line"
+else
+  ng "a held mutex: wait, then exit 75 with lock timeout, the holder from holder.json and one waiting line" "rc=${rc} calls=$(calls) err=$(cat "${work}/lock-timeout.err") status=$(cat "${work}/status.json")"
+fi
+LOCK_MODE=skipped LOCK_WAIT=1 run lock-skipped "$(LOCK_MODE=skipped LOCK_WAIT=1 payload desktop "${fake_op}" item get x)"
+if [[ ${rc} == 0 && $(calls) == 1 && $(status_field '.lock') == skipped && -e ${holder_file} ]]; then
+  ok "lock skipped: runs while the mutex is held and leaves the holder's file alone"
+else
+  ng "lock skipped: runs while the mutex is held and leaves the holder's file alone" "rc=${rc} calls=$(calls) status=$(cat "${work}/status.json")"
+fi
+kill "${mutex_pid}" 2>/dev/null
+wait "${mutex_pid}" 2>/dev/null
+rm -f "${holder_file}"
 
 finish

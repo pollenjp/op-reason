@@ -5,7 +5,8 @@
 > **Unofficial.** op-reason is an independent project. It is not made, endorsed or supported by 1Password
 > (AgileBits Inc.). 1Password is a trademark of AgileBits Inc.
 
-op-reason is a wrapper for the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) on WSL. Every call
+op-reason is a wrapper for the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) on WSL and Windows.
+Every call
 
 1. must give a reason: `op --reason "<why>" <op arguments…>`,
 2. gets its own approval from the 1Password desktop app, confined to that one call,
@@ -14,8 +15,6 @@ op-reason is a wrapper for the [1Password CLI](https://developer.1password.com/d
 
 It was written for AI coding agents (such as Claude Code) that run `op` on your behalf: you see what each request is
 for before you approve it, one approval never covers later requests, and you can review every call afterwards.
-
-A PowerShell entry for calling op-reason from Windows itself is being added (it shares the launcher below).
 
 ## Why a wrapper
 
@@ -32,15 +31,15 @@ A PowerShell entry for calling op-reason from Windows itself is being added (it 
 
 ![op-reason components](docs/architecture/plantuml/out/01_overview.svg)
 
-For every call the WSL executable checks the reason, collects the caller, takes a lock (one approval prompt at a time),
-and starts a fresh `powershell.exe` that runs the launcher (a PowerShell script embedded in the executable). The
-launcher shows the window at the top right of the screen, starts `op.exe` with your stdin, stdout and stderr, and when
-`op` exits runs `op.exe whoami` and, if a session is open, `op.exe signout --all`. Details:
-[docs/architecture/README.md](docs/architecture/README.md).
+For every call the entry (the WSL executable, or `op-reason.ps1` on Windows) checks the reason, collects the caller,
+and starts a fresh `powershell.exe` that runs the launcher (a PowerShell script; the WSL executable embeds it). The
+launcher takes a lock shared by WSL and Windows (one approval prompt at a time), shows the window at the top right of
+the screen, starts `op.exe` with your stdin, stdout and stderr, and when `op` exits runs `op.exe whoami` and, if a
+session is open, `op.exe signout --all`. Details: [docs/architecture/README.md](docs/architecture/README.md).
 
 ## Requirements
 
-- WSL 2 with Windows interop (the Windows `PATH` is part of the WSL `PATH`, so `op.exe`, `powershell.exe` and `wslpath`
+- For the WSL side: WSL 2 with Windows interop (the Windows `PATH` is part of the WSL `PATH`, so `op.exe`, `powershell.exe` and `wslpath`
   are found)
 - On Windows: the 1Password desktop app with **Settings → Developer → Integrate with 1Password CLI** turned on, and the
   1Password CLI (`op.exe`, for example `winget install AgileBits.1Password.CLI`)
@@ -71,6 +70,29 @@ nix profile install github:pollenjp/op-reason#op   # the same, plus `op`
 ```
 
 The flake also works as an input: `packages.<system>.default` and `packages.<system>.op`.
+
+### On Windows
+
+Each release has `op-reason-windows.zip` (with a `.sha256` file): `op-reason.ps1` (the entry), `op-reason.cmd` (a shim
+for cmd.exe and other programs), `launcher.ps1` and `SKILL.md`. Extract it, keep the files together, and put the folder
+in your `PATH`.
+
+- **From PowerShell**, `op-reason` runs `op-reason.ps1`. Scripts must be allowed: the default execution policy
+  (Restricted) refuses them, and files from the internet carry the Mark of the Web. Either
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and `Unblock-File <folder>\*.ps1`, or call `op-reason.cmd`
+  instead. Shells that already run with `-ExecutionPolicy Bypass` (such as Claude Code's tool shell) can call
+  `op-reason.ps1` directly.
+- **From cmd.exe and other programs**, call `op-reason.cmd`. cmd.exe re-parses the arguments: an argument without
+  spaces that contains `&`, `|`, `<`, `>`, `^` or `%` can break (the problem known as "BatBadBut"). Quote such
+  arguments, or call `op-reason.ps1` through PowerShell.
+- **`--` in PowerShell**: PowerShell takes an unquoted `--` for itself. Write `'--'` for the child command of
+  `op run`: `op-reason --reason "…" run '--' my-command`.
+- **Output in PowerShell**: `$x = op-reason …` captures `op`'s output as text (UTF-8). For binary output use
+  `op`'s `--out-file`, or `op-reason.cmd` with a redirection in cmd.exe.
+- **The log** is `%LOCALAPPDATA%\op-reason\log.jsonl` (the same format as on WSL). There is no log viewer on Windows
+  yet: `Get-Content $env:LOCALAPPDATA\op-reason\log.jsonl | ConvertFrom-Json | Format-Table time, event, reason`.
+- Calls from WSL and from Windows run one at a time: the launcher holds the mutex `Local\op-reason` while a call
+  runs.
 
 ### fish completion
 
@@ -132,10 +154,10 @@ reason and what to do when a call is denied or times out (do not retry; ask the 
 | --- | --- |
 | `op`'s code | the call ran |
 | 2 | no reason, an empty reason, arguments too long for Windows, or a wrong wrapper option |
-| 75 | another call is still waiting for its approval (the lock wait timed out) |
+| 75 | another call (WSL or Windows) is still waiting for its approval (the lock wait timed out) |
 | 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or `powershell.exe` could not be started |
 | 1 | the launcher could not start `op.exe` |
-| 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM |
+| 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL); Windows logs 130 for Ctrl+C |
 
 ### Environment variables
 
@@ -165,6 +187,12 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 - **Shared approvals.** Before and after each call op-reason runs `op.exe whoami` directly from WSL. If that succeeds,
   an approval usable from every terminal exists (someone approved a prompt without the window, or a tool ran `op.exe`
   directly); op-reason signs it out, logs it and shows a notification.
+- **Ctrl+C on Windows**: a call stopped by Ctrl+C is logged as `interrupted` (exit 130) when PowerShell lets the
+  entry clean up; the exit code of the PowerShell process itself is PowerShell's.
+- **pipes on Windows**: one op-reason call piped into another (`op-reason … | op-reason …`) is not detected on Windows;
+  the second call can wait for the lock until `OPREASON_LOCK_WAIT` runs out. Store the first output in a variable.
+- The WSL watchdog runs `op.exe signout --all` outside the Windows lock; when it finds a shared approval it can close
+  the session of a Windows call that runs at that moment (rare).
 - Not verified yet: whether plain `op signout` (without `--all`) closes only one process's session.
 
 ## Development
@@ -173,6 +201,7 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 nix develop path:./nix                       # Rust, pwsh, fish, jq, shellcheck, shfmt
 cargo test --workspace                       # unit tests and the call table
 cargo build && bash tests/run-all.sh         # black-box tests with fake powershell.exe and op.exe
+# On Windows (Windows PowerShell 5.1): tests\windows\launcher.test.ps1, entry.test.ps1, entry-plan.test.ps1
 ```
 
 - The checks with the real 1Password app are listed in [docs/manual-verification.md](docs/manual-verification.md).
