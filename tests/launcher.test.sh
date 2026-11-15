@@ -7,8 +7,8 @@
 #   bash tests/launcher.test.sh [<launcher.ps1>]
 #
 # Needs pwsh and jq. No real Windows PowerShell, op.exe, window or toast: on Linux the launcher shows neither and
-# writes "skipped". The bootstrap path (-EncodedCommand with OPREASON_SCRIPT) is covered by tests/e2e.test.sh, which
-# goes through the binary.
+# writes "skipped". The launcher started by the binary (powershell.exe -File, the fallback of a WSL call) is covered by
+# tests/e2e.test.sh.
 #
 # ## What it checks
 #
@@ -43,7 +43,7 @@
 # ## How
 #
 # The fake op (bash) counts its calls, writes its arguments NUL-separated to FAKE_DIR/call.<n> and whether
-# OPREASON_PAYLOAD / OPREASON_SCRIPT were inherited and OP_SERVICE_ACCOUNT_TOKEN to FAKE_DIR/env.<n>. whoami exits with
+# OPREASON_PAYLOAD was inherited and OP_SERVICE_ACCOUNT_TOKEN to FAKE_DIR/env.<n>. whoami exits with
 # FAKE_WHOAMI_RC (default 1); signout writes SIGNOUT-OUT / SIGNOUT-ERR and exits 0; anything else copies stdin to stdout,
 # writes "FAKE-ERR 日本語" to stderr and exits with FAKE_RC (default 0).
 
@@ -77,7 +77,6 @@ echo "${n}" >"${d}/n"
 printf '%s\0' "$@" >"${d}/call.${n}"
 {
   if [[ -n ${OPREASON_PAYLOAD+x} ]]; then echo "payload=present"; else echo "payload=absent"; fi
-  if [[ -n ${OPREASON_SCRIPT+x} ]]; then echo "script=present"; else echo "script=absent"; fi
   echo "sa=${OP_SERVICE_ACCOUNT_TOKEN-<unset>}"
 } >"${d}/env.${n}"
 case ${1-} in

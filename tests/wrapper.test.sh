@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# Black-box test of the WSL wrapper (the op-reason binary) with fake powershell.exe, op.exe, wslpath and herdr.
-# Ported from the dotfiles' test of the bash version; every check of the original is kept, with the new names.
+# Black-box test of the WSL wrapper (the op-reason binary) with fake op-reason.exe, powershell.exe, op.exe, wslpath and
+# herdr. Ported from the dotfiles' test of the bash version; every check of the original is kept, with the new names.
 #
 #   bash tests/wrapper.test.sh [<op-reason binary>]
 #
-# Needs bash, coreutils, jq, git, flock and setsid (util-linux). No real powershell.exe, op.exe or 1Password (the
-# launcher itself is tested by launcher.test.sh, the binary and the real launcher together by e2e.test.sh).
+# Needs bash, coreutils, jq, git, flock and setsid (util-linux). No real op-reason.exe, powershell.exe, op.exe or
+# 1Password (the exe is tested on Windows by crates/op-reason-win/tests/exe.rs, the launcher by launcher.test.sh, the
+# binary and the real launcher together by e2e.test.sh).
 # OPREASON_LANG=ja is set so that the Japanese messages of the original checks stay; a few checks use English.
 #
 # ## What it checks
 #
 #   Reason
-#     - no --reason, an empty one or one of only spaces: exit 2, usage on stderr, no powershell, refused (no-reason)
+#     - no --reason, an empty one or one of only spaces: exit 2, usage on stderr, no runner, refused (no-reason)
 #     - --reason X / --reason=X anywhere: op gets the rest; a --reason after -- is op's
 #     - newline, tab and control characters fold into one space, ends trimmed; the window gets 200 characters, the log 500
 #   Calls without a reason (--version, --help, -h, help, --help before --) run in help mode (no window) through
-#     powershell
-#   No op arguments (also --reason alone): the wrapper's usage on stdout, exit 0, no powershell, no op.exe (not even the
+#     the runner
+#   No op arguments (also --reason alone): the wrapper's usage on stdout, exit 0, no runner, no op.exe (not even the
 #     watchdog's whoami), no log
 #   The wrapper's own options: op-reason --help / --version (only under the name op-reason), --skill, --completion fish,
 #     --completion zsh (exit 2), op-reason-log by its name; op --help goes to op
 #   Passing through
 #     - binary stdin reaches op and comes out on stdout; stderr has only op's; the exit code is op's
-#     - powershell gets -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand <bootstrap>,
-#       the launcher in OPREASON_SCRIPT
+#     - the runner is op-reason.exe (found in PATH) with --run as its only argument, and no OPREASON_SCRIPT
 #   desktop
 #     - payload mode desktop, op is the Windows path of op.exe, args64 are op's arguments, lang, lock held
-#     - WSLENV is the caller's plus OPREASON_SCRIPT and OPREASON_PAYLOAD; no token (removed from the environment too)
+#     - WSLENV is the caller's plus OPREASON_PAYLOAD; no token (removed from the environment too)
 #     - facts: time, caller, place, reason, command
 #   service account and Connect
 #     - OP_SERVICE_ACCOUNT_TOKEN: service mode without facts, WSLENV adds OP_SERVICE_ACCOUNT_TOKEN/w and
@@ -37,13 +37,13 @@
 #     - tokens are never logged
 #   Masking: password=…, --session and --secret-key values become *** in the log and the facts (op gets them unchanged);
 #     after -- only the command name and value-less flags stay
-#   Too long (base64 over 28000): exit 2, no powershell, refused (too-long)
+#   Too long (base64 over 28000): exit 2, no runner, refused (too-long)
 #   Results: 0 → approved; denial text → denied; timeout text → timeout; others → failed; no status → launcher-failed.
 #     Only op's "[ERROR] …" lines count (a child's "Connection timed out" is failed). start and end share the id; end's
 #     seconds is an integer ≥ 0
 #   Caller: a claude ancestor in proc (with its pid), else human; herdr workspace label and pane; git repo and branch;
 #     CLAUDE_CODE_SESSION_ID in start and end
-#   Lock: another call holding the lock past the limit → exit 75 with the seconds and the holder's reason, no powershell,
+#   Lock: another call holding the lock past the limit → exit 75 with the seconds and the holder's reason, no runner,
 #     refused (lock-timeout); TERM while waiting → exit 143, refused (interrupted); a broken current.json → "(分からない)"
 #   Pipes: op … | op … (also with cat in between) never deadlocks, whatever starts first or takes the lock first
 #     - sender takes the lock first: the receiver finds it and drains stdin (larger than a pipe buffer)
@@ -53,12 +53,23 @@
 #     - a pipe without op behind it (a writer that never closes) is not drained (after waiting for the lock too)
 #     - a lock holder that does not read our output: wait and give up with 75
 #     - four unordered rounds never deadlock
-#   Shared approval watchdog: a direct op.exe whoami that succeeds → signout --all, shared-approval logged, notify (launcher
-#     notify mode and herdr); otherwise no signout
-#   op.exe or powershell.exe missing → 127 (refused)
-#   TERM → end interrupted, exit 143; a TERM to the wrapper alone is forwarded to the launcher; the launcher starts
+#   Shared approval watchdog: a direct op.exe whoami that succeeds → signout --all, shared-approval logged, notify (the
+#     runner's notify mode and herdr); otherwise no signout
+#   op.exe missing → 127 (refused); powershell.exe is not needed while op-reason.exe runs
+#   The runner (OPREASON_RUNNER, design 2026-11-15-wsl-through-exe-design.md §4)
+#     - auto (default): op-reason.exe, end runner exe; launcher mode: powershell.exe -File <Windows path of launcher.ps1>
+#       next to op-reason.exe, end runner launcher
+#     - auto falls back to the launcher only when op-reason.exe left no status file: an exe that writes nothing (with
+#       stdin still whole for the launcher, also stdin drained from another op-reason), an exe that cannot be started, an
+#       exe missing next to launcher.ps1; each prints one line and records end fallback (why, exit)
+#     - no fallback when the exe wrote the status file (failing before op.exe, or dying after it); op.exe runs exactly
+#       once in every case
+#     - exe mode never falls back; nothing found → 127 (no-exe); launcher mode without launcher.ps1 / powershell.exe →
+#       127 (no-launcher / no-powershell); a fallback without the launcher → 127, end launcher-failed
+#     - the shared approval toast falls back the same way
+#   TERM → end interrupted, exit 143; a TERM to the wrapper alone is forwarded to the runner; the runner starts
 #     with no blocked signals (so a TERM or HUP to the process group reaches it); a powershell.exe that cannot be started
-#     gives 127 with a message
+#     (launcher mode) gives 127 with a message
 #   Closed stdin: nothing extra on stderr
 #   Log rotation at 1 MiB; nothing left under the state directory after a call (no run/ entries, no current.json, no
 #     temporary files); run/ entries older than an hour are removed
@@ -66,14 +77,17 @@
 #
 # ## How
 #
-# The fake powershell.exe writes a notify payload to FAKE_DIR/notify.<pid>.payload and exits 0 (started in the
-# background). Otherwise it writes its arguments, OPREASON_PAYLOAD, WSLENV and the token variables to FAKE_DIR/ps.<n>.*,
-# decodes args64, runs the fake op.exe (the payload's op through the fake wslpath) with stdio inherited, writes the status
-# and exits with op's code (FAKE_PS_NO_STATUS=1: no status, exit 1). The fake op.exe logs whoami (0 when FAKE_DIR/shared
-# exists) and signout (removes it) to FAKE_DIR/op.direct; other calls write their arguments to FAKE_DIR/op.args, copy
-# FAKE_OUT, FAKE_OUT_FILE and stdin (unless FAKE_NO_STDIN=1) to stdout, write FAKE_STDERR to stderr and exit with FAKE_RC.
-# The fake wslpath maps /x/y to C:\fake\x\y and back. The fake proc tree is passed with OPREASON_PROC_ROOT and
-# OPREASON_PROC_START.
+# One fake runner script is installed twice: as op-reason.exe (in FAKE_WIN, which is in PATH, next to a launcher.ps1)
+# and as powershell.exe. As op-reason.exe it first writes the status file, as the real exe does (FAKE_EXE=blocked:
+# writes nothing and exits 1; marker: writes the status file and exits 1; die-after-op: exits 9 after op without the
+# final status). A notify payload goes to FAKE_DIR/notify.<runner>.<pid>.payload (exit 0). Otherwise it writes its
+# arguments, its name, OPREASON_PAYLOAD, WSLENV and the token variables to FAKE_DIR/ps.<n>.*, decodes args64, runs the
+# fake op.exe (the payload's op through the fake wslpath) with stdio inherited, writes the status and exits with op's
+# code (FAKE_PS_NO_STATUS=1: no status, exit 1). The fake op.exe logs whoami (0 when FAKE_DIR/shared exists) and
+# signout (removes it) to FAKE_DIR/op.direct; other calls add a line to FAKE_DIR/op.calls, write their arguments to
+# FAKE_DIR/op.args, copy FAKE_OUT, FAKE_OUT_FILE and stdin (unless FAKE_NO_STDIN=1) to stdout, write FAKE_STDERR to
+# stderr and exit with FAKE_RC. The fake wslpath maps /x/y to C:\fake\x\y and back. The fake proc tree is passed with
+# OPREASON_PROC_ROOT and OPREASON_PROC_START.
 
 # No -e: a failed check must not stop the checks after it.
 set -u -o pipefail
@@ -94,10 +108,13 @@ export LC_ALL=C.UTF-8 OPREASON_LANG=ja
 export HOME=${work}/home XDG_STATE_HOME=${work}/state
 export FAKE_DIR=${work}/fake
 fake_bin=${work}/bin
-mkdir -p "${HOME}" "${XDG_STATE_HOME}" "${FAKE_DIR}" "${fake_bin}" "${work}/win" "${work}/names"
-export PATH=${fake_bin}:${PATH}
+# Where the Windows zip would be unpacked: op-reason.exe and launcher.ps1 (found through PATH)
+export FAKE_WIN=${work}/winapp
+mkdir -p "${HOME}" "${XDG_STATE_HOME}" "${FAKE_DIR}" "${fake_bin}" "${FAKE_WIN}" "${work}/win" "${work}/names"
+export PATH=${fake_bin}:${PATH}:${FAKE_WIN}
 unset WSLENV HERDR_ENV HERDR_WORKSPACE_ID HERDR_PANE_ID CLAUDE_CODE_SESSION_ID OP_SERVICE_ACCOUNT_TOKEN \
-  OP_CONNECT_HOST OP_CONNECT_TOKEN OP_BIOMETRIC_UNLOCK_ENABLED XDG_RUNTIME_DIR
+  OP_CONNECT_HOST OP_CONNECT_TOKEN OP_BIOMETRIC_UNLOCK_ENABLED XDG_RUNTIME_DIR OPREASON_RUNNER OPREASON_EXE \
+  OPREASON_POWERSHELL FAKE_EXE
 
 # The binary under its three names
 op=${work}/names/op
@@ -113,22 +130,35 @@ case $1 in
 esac
 EOF
 
-fake "${fake_bin}/powershell.exe" <<'EOF'
+runner_body=$(
+  cat <<'EOF'
 d=${FAKE_DIR}
+who=${0##*/}
 mode=$(jq -r .mode <<<"${OPREASON_PAYLOAD}")
+status_w=$(jq -r '.status // empty' <<<"${OPREASON_PAYLOAD}")
+status=""
+if [[ -n ${status_w} ]]; then status=$(wslpath -u "${status_w}"); fi
+if [[ ${who} == op-reason.exe ]]; then
+  if [[ ${FAKE_EXE:-} == blocked ]]; then
+    echo "fake: op-reason.exe was blocked" >&2
+    exit 1
+  fi
+  # The real exe writes the status file as soon as it has read the payload
+  if [[ -n ${status} ]]; then printf '{"started":false,"error":"","runner":"exe"}' >"${status}"; fi
+  if [[ ${FAKE_EXE:-} == marker ]]; then exit 1; fi
+fi
 if [[ ${mode} == notify ]]; then
-  printf "%s" "${OPREASON_PAYLOAD}" >"${d}/notify.$$.payload"
+  printf "%s" "${OPREASON_PAYLOAD}" >"${d}/notify.${who}.$$.payload"
   exit 0
 fi
 n=$(($(cat "${d}/ps.n" 2>/dev/null || echo 0) + 1))
 echo "${n}" >"${d}/ps.n"
 printf "%s\n" "$@" >"${d}/ps.${n}.argv"
+echo "${who}" >"${d}/ps.${n}.runner"
 printf "%s" "${OPREASON_PAYLOAD-}" >"${d}/ps.${n}.payload"
-script_ok=no
-if printf '%s' "${OPREASON_SCRIPT-}" | base64 -d 2>/dev/null | grep -q OPREASON_PAYLOAD; then script_ok=yes; fi
 {
   echo "WSLENV=${WSLENV-<unset>}"
-  echo "SCRIPT=${script_ok}"
+  echo "SCRIPT=${OPREASON_SCRIPT-<unset>}"
   echo "SA=${OP_SERVICE_ACCOUNT_TOKEN-<unset>}"
   echo "BIO=${OP_BIOMETRIC_UNLOCK_ENABLED-<unset>}"
   echo "CH=${OP_CONNECT_HOST-<unset>}"
@@ -144,19 +174,23 @@ while IFS= read -r b; do
   args+=("${a%x}")
 done < <(jq -r '.args64[]' <<<"${OPREASON_PAYLOAD}")
 op=$(wslpath -u "$(jq -r .op <<<"${OPREASON_PAYLOAD}")")
-status=$(wslpath -u "$(jq -r .status <<<"${OPREASON_PAYLOAD}")")
 rc=0
 "${op}" "${args[@]}" || rc=$?
-if [[ -n ${FAKE_PS_NO_STATUS:-} ]]; then
+if [[ ${who} == op-reason.exe && ${FAKE_EXE:-} == die-after-op ]]; then exit 9; fi
+if [[ ${who} == powershell.exe && -n ${FAKE_PS_NO_STATUS:-} ]]; then
   exit 1
 fi
-if [[ -n ${FAKE_PS_JUNK_STATUS:-} ]]; then
+if [[ ${who} == powershell.exe && -n ${FAKE_PS_JUNK_STATUS:-} ]]; then
   printf 'not json' >"${status}"
   exit "${rc}"
 fi
-jq -cn --argjson rc "${rc}" '{started: true, exit: $rc, error: "", window: "shown", toast: "shown", others: 0, signout: "ok"}' >"${status}"
+jq -cn --argjson rc "${rc}" --arg who "${who}" '{started: true, exit: $rc, error: "", window: "shown", toast: "shown", others: 0, signout: "ok"} + (if $who == "op-reason.exe" then {runner: "exe"} else {} end)' >"${status}"
 exit "${rc}"
 EOF
+)
+fake "${fake_bin}/powershell.exe" <<<"${runner_body}"
+fake "${FAKE_WIN}/op-reason.exe" <<<"${runner_body}"
+touch "${FAKE_WIN}/launcher.ps1"
 
 op_exe=${work}/win/op.exe
 fake "${op_exe}" <<'EOF'
@@ -173,6 +207,7 @@ case ${1-} in
     exit 0
     ;;
 esac
+echo call >>"${d}/op.calls"
 printf "%s\0" "$@" >"${d}/op.args"
 if [[ -n ${FAKE_SLEEP:-} ]]; then sleep "${FAKE_SLEEP}"; fi
 printf "%s" "${FAKE_OUT:-}"
@@ -229,8 +264,16 @@ run_as() {
   "${work}/names/${as}" "$@" </dev/null >"${work}/${name}.out" 2>"${work}/${name}.err" || rc=$?
 }
 
+# How many runners started (notify calls not counted), which runner started the n-th time, how often op.exe ran (the
+# watchdog's whoami and signout not counted)
 ps_count() {
   cat "${FAKE_DIR}/ps.n" 2>/dev/null || echo 0
+}
+runner_of() {
+  cat "${FAKE_DIR}/ps.${1:-1}.runner" 2>/dev/null
+}
+op_runs() {
+  if [[ -e ${FAKE_DIR}/op.calls ]]; then wc -l <"${FAKE_DIR}/op.calls"; else echo 0; fi
 }
 payload_of() {
   cat "${FAKE_DIR}/ps.${1:-1}.payload" 2>/dev/null
@@ -267,9 +310,9 @@ reset
 run_op noreason item get a
 if [[ ${rc} == 2 && $(<"${work}/noreason.err") == *--reason* && $(<"${work}/noreason.err") == *"op-reason --skill"* &&
 $(ps_count) == 0 && $(last_field refused '.why') == no-reason ]]; then
-  ok "no --reason: exit 2, usage (with the agent hint), no powershell, refused (no-reason)"
+  ok "no --reason: exit 2, usage (with the agent hint), no runner, refused (no-reason)"
 else
-  ng "no --reason: exit 2, usage (with the agent hint), no powershell, refused (no-reason)" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/noreason.err")"
+  ng "no --reason: exit 2, usage (with the agent hint), no runner, refused (no-reason)" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/noreason.err")"
 fi
 reset
 run_op empty --reason "" item get a
@@ -335,9 +378,9 @@ for c in "" "--reason 理由だけ"; do
     ng "\"op ${c}\" prints the wrapper's usage on stdout, exit 0 (stderr empty)" "rc=${rc} out=${usage_text} err=$(cat "${work}/noargs.err")"
   fi
   if [[ $(ps_count) == 0 && ! -e ${FAKE_DIR}/op.direct && ! -e ${FAKE_DIR}/op.args && ! -e ${log} ]]; then
-    ok "\"op ${c}\" starts neither powershell nor op.exe (not even whoami) and logs nothing"
+    ok "\"op ${c}\" starts neither a runner nor op.exe (not even whoami) and logs nothing"
   else
-    ng "\"op ${c}\" starts neither powershell nor op.exe (not even whoami) and logs nothing" "ps=$(ps_count) files=$(ls "${FAKE_DIR}") log=$(cat "${log}" 2>&1)"
+    ng "\"op ${c}\" starts neither a runner nor op.exe (not even whoami) and logs nothing" "ps=$(ps_count) files=$(ls "${FAKE_DIR}") log=$(cat "${log}" 2>&1)"
   fi
 done
 
@@ -348,9 +391,9 @@ help_text=$(<"${work}/ophelp.out")
 run_as op-reason opversion --version
 if [[ ${rc} == 0 && $(<"${work}/opversion.out") == "op-reason "[0-9]* && ${help_text} == *op-reason-log* &&
 $(ps_count) == 0 && ! -e ${log} ]]; then
-  ok "op-reason --help and --version are the wrapper's (no powershell, no log)"
+  ok "op-reason --help and --version are the wrapper's (no runner, no log)"
 else
-  ng "op-reason --help and --version are the wrapper's (no powershell, no log)" "rc=${rc} out=$(cat "${work}/opversion.out") ps=$(ps_count)"
+  ng "op-reason --help and --version are the wrapper's (no runner, no log)" "rc=${rc} out=$(cat "${work}/opversion.out") ps=$(ps_count)"
 fi
 reset
 OPREASON_LANG=en run_as op-reason ophelpen -h
@@ -397,17 +440,14 @@ detail="$(cat "${work}/pass.err")"
 check "stderr has only op's" test "$(<"${work}/pass.err")" == "op の stderr"
 detail="rc=${rc}"
 check "the exit code is op's" test "${rc}" == 3
-argv=$(head -n 7 "${FAKE_DIR}/ps.1.argv")
-boot=$(sed -n 8p "${FAKE_DIR}/ps.1.argv" | base64 -d 2>/dev/null | tr -d '\000')
-# shellcheck disable=SC2016 # the bootstrap's PowerShell text, not a shell expression
-if [[ ${argv} == $'-NoProfile\n-NonInteractive\n-ExecutionPolicy\nBypass\n-OutputFormat\nText\n-EncodedCommand' &&
-  ${boot} == *'$env:OPREASON_SCRIPT'* ]] && grep -qx 'SCRIPT=yes' <<<"$(env_of)"; then
-  ok "powershell gets -NoProfile … -EncodedCommand <bootstrap>, the launcher in OPREASON_SCRIPT"
+if [[ $(<"${FAKE_DIR}/ps.1.argv") == --run && $(runner_of 1) == op-reason.exe && $(ps_count) == 1 ]] \
+  && grep -qx 'SCRIPT=<unset>' <<<"$(env_of)"; then
+  ok "the runner is op-reason.exe (found in PATH) with --run as its only argument, and no OPREASON_SCRIPT"
 else
-  ng "powershell gets -NoProfile … -EncodedCommand <bootstrap>, the launcher in OPREASON_SCRIPT" "$(head -n 8 "${FAKE_DIR}/ps.1.argv") $(env_of)"
+  ng "the runner is op-reason.exe (found in PATH) with --run as its only argument, and no OPREASON_SCRIPT" "runner=$(runner_of 1) argv=$(cat "${FAKE_DIR}/ps.1.argv") $(env_of)"
 fi
 detail="$(cat "${FAKE_DIR}/ps.1.sigblk" 2>&1)"
-check "the launcher starts with no blocked signals (a TERM or HUP to the group reaches it)" grep -qE '^SigBlk:[[:space:]]+0+$' "${FAKE_DIR}/ps.1.sigblk"
+check "the runner starts with no blocked signals (a TERM or HUP to the group reaches it)" grep -qE '^SigBlk:[[:space:]]+0+$' "${FAKE_DIR}/ps.1.sigblk"
 
 echo "== desktop"
 reset
@@ -422,11 +462,11 @@ $(payload_field '.lang') == ja && $(payload_field '.lock') == held && $(payload_
 else
   ng "payload: mode desktop, op is the Windows path, args64 are op's arguments, lang, lock held" "$(payload_of)"
 fi
-if grep -qx 'WSLENV=WT_SESSION:WT_PROFILE_ID:OPREASON_SCRIPT:OPREASON_PAYLOAD' <<<"$(env_of)" \
+if grep -qx 'WSLENV=WT_SESSION:WT_PROFILE_ID:OPREASON_PAYLOAD' <<<"$(env_of)" \
   && grep -qx 'SA=<unset>' <<<"$(env_of)" && grep -qx 'CH=<unset>' <<<"$(env_of)"; then
-  ok "WSLENV is the caller's plus OPREASON_SCRIPT and OPREASON_PAYLOAD; no token or Connect variable"
+  ok "WSLENV is the caller's plus OPREASON_PAYLOAD; no token or Connect variable"
 else
-  ng "WSLENV is the caller's plus OPREASON_SCRIPT and OPREASON_PAYLOAD; no token or Connect variable" "$(env_of)"
+  ng "WSLENV is the caller's plus OPREASON_PAYLOAD; no token or Connect variable" "$(env_of)"
 fi
 if [[ $(payload_field '.facts.reason') == 設定を読む && $(payload_field '.facts.command') == 'op item get "a b"' &&
 $(payload_field '.facts.time') =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ &&
@@ -442,7 +482,7 @@ export OP_SERVICE_ACCOUNT_TOKEN=tok-SECRET
 run_op sa --reason "CI で読む" vault list
 unset OP_SERVICE_ACCOUNT_TOKEN
 if [[ ${rc} == 0 && $(payload_field '.mode') == service && $(payload_field '.facts') == null ]] \
-  && grep -qx 'WSLENV=OPREASON_SCRIPT:OPREASON_PAYLOAD:OP_SERVICE_ACCOUNT_TOKEN/w:OP_BIOMETRIC_UNLOCK_ENABLED/w' <<<"$(env_of)" \
+  && grep -qx 'WSLENV=OPREASON_PAYLOAD:OP_SERVICE_ACCOUNT_TOKEN/w:OP_BIOMETRIC_UNLOCK_ENABLED/w' <<<"$(env_of)" \
   && grep -qx 'SA=tok-SECRET' <<<"$(env_of)" && grep -qx 'BIO=false' <<<"$(env_of)" \
   && [[ $(last_field start '.kind') == service-account ]]; then
   ok "service account: service mode, token and OP_BIOMETRIC_UNLOCK_ENABLED=false passed with /w, kind service-account"
@@ -454,7 +494,7 @@ export OP_CONNECT_HOST=https://connect.example OP_CONNECT_TOKEN=ctok-SECRET
 run_op connect --reason "Connect で読む" item get a
 unset OP_CONNECT_HOST OP_CONNECT_TOKEN
 if [[ $(payload_field '.mode') == service && $(last_field start '.kind') == connect ]] \
-  && grep -qx 'WSLENV=OPREASON_SCRIPT:OPREASON_PAYLOAD:OP_CONNECT_HOST/w:OP_CONNECT_TOKEN/w:OP_BIOMETRIC_UNLOCK_ENABLED/w' <<<"$(env_of)" \
+  && grep -qx 'WSLENV=OPREASON_PAYLOAD:OP_CONNECT_HOST/w:OP_CONNECT_TOKEN/w:OP_BIOMETRIC_UNLOCK_ENABLED/w' <<<"$(env_of)" \
   && grep -qx 'SA=<unset>' <<<"$(env_of)"; then
   ok "Connect with both variables: service (kind connect)"
 else
@@ -502,12 +542,12 @@ check_result failed "another failure"
 export FAKE_STDERR="curl: (28) Connection timed out after 1000 ms"
 check_result failed "a child command's \"Connection timed out\""
 unset FAKE_RC FAKE_STDERR
-export FAKE_PS_NO_STATUS=1
+export OPREASON_RUNNER=launcher FAKE_PS_NO_STATUS=1
 check_result launcher-failed "the launcher writes no status"
 unset FAKE_PS_NO_STATUS
 export FAKE_PS_JUNK_STATUS=1
 check_result launcher-failed "the launcher writes a status that is not JSON"
-unset FAKE_PS_JUNK_STATUS
+unset FAKE_PS_JUNK_STATUS OPREASON_RUNNER
 
 echo "== Caller"
 reset
@@ -557,9 +597,9 @@ unset OPREASON_LOCK_WAIT
 err=$(<"${work}/lock.err")
 if [[ ${rc} == 75 && ${err} == *"1 秒"* && ${err} == *前の理由* && $(ps_count) == 0 &&
 $(last_field refused '.why') == lock-timeout ]]; then
-  ok "past the lock limit: exit 75 with the seconds and the holder's reason, no powershell, refused (lock-timeout)"
+  ok "past the lock limit: exit 75 with the seconds and the holder's reason, no runner, refused (lock-timeout)"
 else
-  ng "past the lock limit: exit 75 with the seconds and the holder's reason, no powershell, refused (lock-timeout)" "rc=${rc} ps=$(ps_count) err=${err}"
+  ng "past the lock limit: exit 75 with the seconds and the holder's reason, no runner, refused (lock-timeout)" "rc=${rc} ps=$(ps_count) err=${err}"
 fi
 wait "${holder}" 2>/dev/null
 reset
@@ -589,11 +629,11 @@ for _ in $(seq 50); do
 done
 if grep -qx 'signout --all' "${FAKE_DIR}/op.direct" && [[ $(last_field shared-approval '.when') == start &&
 $(last_field shared-approval '.cleared') == true && $(last_field end '.watch.start') == cleared &&
--n ${notify_file} && $(jq -r '.notify.cleared' "${notify_file}" 2>/dev/null) == true && -s ${FAKE_DIR}/herdr.notify &&
-$(payload_field '.facts.notes[0].kind') == shared-cleared ]]; then
-  ok "a direct whoami that succeeds → signout --all, logged, notified (launcher notify and herdr), noted in the window"
+${notify_file} == */notify.op-reason.exe.* && $(jq -r '.notify.cleared' "${notify_file}" 2>/dev/null) == true &&
+-s ${FAKE_DIR}/herdr.notify && $(payload_field '.facts.notes[0].kind') == shared-cleared ]]; then
+  ok "a direct whoami that succeeds → signout --all, logged, notified (the runner's notify and herdr), noted in the window"
 else
-  ng "a direct whoami that succeeds → signout --all, logged, notified (launcher notify and herdr), noted in the window" \
+  ng "a direct whoami that succeeds → signout --all, logged, notified (the runner's notify and herdr), noted in the window" \
     "direct=$(tr '\n' ' ' <"${FAKE_DIR}/op.direct" 2>&1) notify=${notify_file} herdr=$(cat "${FAKE_DIR}/herdr.notify" 2>&1) log=$(cat "${log}")"
 fi
 reset
@@ -615,19 +655,195 @@ else
 fi
 reset
 OPREASON_POWERSHELL=${work}/no-such-powershell.exe run_op nops --reason "無い" item get a
-if [[ ${rc} == 127 && $(last_field refused '.why') == no-powershell ]]; then
-  ok "powershell.exe missing → 127 (refused no-powershell)"
+if [[ ${rc} == 0 && $(runner_of 1) == op-reason.exe && $(last_field end '.result') == approved ]]; then
+  ok "powershell.exe missing does not matter while op-reason.exe runs"
 else
-  ng "powershell.exe missing → 127 (refused no-powershell)" "rc=${rc} err=$(cat "${work}/nops.err")"
+  ng "powershell.exe missing does not matter while op-reason.exe runs" "rc=${rc} err=$(cat "${work}/nops.err")"
+fi
+reset
+OPREASON_RUNNER=launcher OPREASON_POWERSHELL=${work}/no-such-powershell.exe run_op nops2 --reason "無い" item get a
+if [[ ${rc} == 127 && $(last_field refused '.why') == no-powershell && $(ps_count) == 0 ]]; then
+  ok "launcher mode with powershell.exe missing → 127 (refused no-powershell)"
+else
+  ng "launcher mode with powershell.exe missing → 127 (refused no-powershell)" "rc=${rc} err=$(cat "${work}/nops2.err")"
 fi
 reset
 printf '#!/nonexistent/interpreter\n' >"${work}/broken-powershell.exe"
 chmod +x "${work}/broken-powershell.exe"
-OPREASON_POWERSHELL=${work}/broken-powershell.exe run_op cannotstart --reason "起こせない" item get a
+OPREASON_RUNNER=launcher OPREASON_POWERSHELL=${work}/broken-powershell.exe run_op cannotstart --reason "起こせない" item get a
 if [[ ${rc} == 127 && $(<"${work}/cannotstart.err") == *起こせません* && $(last_field end '.result') == launcher-failed ]]; then
-  ok "powershell.exe that cannot be started → 127 with a message, end launcher-failed"
+  ok "powershell.exe that cannot be started (launcher mode) → 127 with a message, end launcher-failed"
 else
-  ng "powershell.exe that cannot be started → 127 with a message, end launcher-failed" "rc=${rc} err=$(cat "${work}/cannotstart.err") log=$(cat "${log}" 2>&1)"
+  ng "powershell.exe that cannot be started (launcher mode) → 127 with a message, end launcher-failed" "rc=${rc} err=$(cat "${work}/cannotstart.err") log=$(cat "${log}" 2>&1)"
+fi
+
+echo "== The runner: op-reason.exe and the fallback"
+# winpath <path>: the fake wslpath's Windows form
+winpath() {
+  local p=${1//\//\\}
+  printf 'C:\\fake%s' "${p}"
+}
+# fell_back <why>: end runner launcher with that fallback reason
+fell_back() {
+  [[ $(last_field end '.runner') == launcher && $(last_field end '.fallback.why') == "$1" ]]
+}
+stdin_file=${work}/runner-in.txt
+printf 'line 1\nline 2 の入力\n' >"${stdin_file}"
+
+reset
+run_op exeok --reason "exe で打つ" item get a
+if [[ ${rc} == 0 && $(ps_count) == 1 && $(runner_of 1) == op-reason.exe && $(op_runs) == 1 &&
+$(last_field end '.runner') == exe ]] && ! jq -e 'select(.event == "end") | has("fallback")' "${log}" >/dev/null \
+  && cmp -s "${stdin_file}" "${work}/exeok.out"; then
+  ok "auto: op-reason.exe runs the call (end runner exe, no fallback field), stdin reaches op"
+else
+  ng "auto: op-reason.exe runs the call (end runner exe, no fallback field), stdin reaches op" "rc=${rc} ps=$(ps_count) runner=$(runner_of 1) op=$(op_runs) log=$(cat "${log}")"
+fi
+
+reset
+OPREASON_RUNNER=launcher run_op launcherok --reason "launcher で打つ" item get a
+want_argv=$(printf '%s\n' -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -File "$(winpath "${FAKE_WIN}/launcher.ps1")")
+if [[ ${rc} == 0 && $(ps_count) == 1 && $(runner_of 1) == powershell.exe && $(<"${FAKE_DIR}/ps.1.argv") == "${want_argv}" &&
+$(op_runs) == 1 && $(last_field end '.runner') == launcher && $(last_field end '.fallback') == null ]]; then
+  ok "launcher mode: powershell.exe -NoProfile … -File <Windows path of launcher.ps1 next to op-reason.exe>"
+else
+  ng "launcher mode: powershell.exe -NoProfile … -File <Windows path of launcher.ps1 next to op-reason.exe>" "argv=$(cat "${FAKE_DIR}/ps.1.argv") want=${want_argv} log=$(cat "${log}")"
+fi
+
+reset
+FAKE_EXE=blocked FAKE_RC=4 run_op blocked --reason "止められた exe" item get a
+err=$(<"${work}/blocked.err")
+if [[ ${rc} == 4 && $(ps_count) == 1 && $(runner_of 1) == powershell.exe && $(op_runs) == 1 &&
+${err} == *"fake: op-reason.exe was blocked"* &&
+${err} == *"op-reason.exe が呼び出しを始めずに終わった (終了コード 1) ので、launcher.ps1 で打ち直します"* &&
+${err} == *OPREASON_RUNNER=launcher* ]] && fell_back no-status && [[ $(last_field end '.fallback.exit') == 1 ]] \
+  && cmp -s "${stdin_file}" "${work}/blocked.out"; then
+  ok "an exe that writes no status → the launcher runs once with the same stdin; one stderr line; end fallback no-status (exit 1)"
+else
+  ng "an exe that writes no status → the launcher runs once with the same stdin; one stderr line; end fallback no-status (exit 1)" "rc=${rc} ps=$(ps_count) op=$(op_runs) err=${err} log=$(cat "${log}")"
+fi
+
+reset
+FAKE_EXE=marker run_op marker --reason "印だけの exe" item get a
+if [[ ${rc} == 1 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field end '.result') == launcher-failed &&
+$(last_field end '.runner') == exe && $(last_field end '.fallback') == null && $(<"${work}/marker.err") != *launcher.ps1* ]]; then
+  ok "an exe that wrote the status file and failed before op.exe: no launcher, end launcher-failed"
+else
+  ng "an exe that wrote the status file and failed before op.exe: no launcher, end launcher-failed" "rc=${rc} ps=$(ps_count) op=$(op_runs) err=$(cat "${work}/marker.err") log=$(cat "${log}")"
+fi
+
+reset
+FAKE_EXE=die-after-op run_op dieafter --reason "op の後に落ちる exe" item get a
+if [[ ${rc} == 9 && $(ps_count) == 1 && $(runner_of 1) == op-reason.exe && $(op_runs) == 1 &&
+$(last_field end '.result') == launcher-failed && $(last_field end '.fallback') == null ]]; then
+  ok "an exe that dies after op.exe without the final status: op.exe ran once, no launcher"
+else
+  ng "an exe that dies after op.exe without the final status: op.exe ran once, no launcher" "rc=${rc} ps=$(ps_count) op=$(op_runs) log=$(cat "${log}")"
+fi
+
+reset
+mkdir -p "${work}/badexe"
+printf '#!/nonexistent/interpreter\n' >"${work}/badexe/op-reason.exe"
+chmod +x "${work}/badexe/op-reason.exe"
+touch "${work}/badexe/launcher.ps1"
+OPREASON_EXE=${work}/badexe/op-reason.exe run_op notstarted --reason "起こせない exe" item get a
+if [[ ${rc} == 0 && $(ps_count) == 1 && $(runner_of 1) == powershell.exe && $(op_runs) == 1 &&
+$(<"${work}/notstarted.err") == *"op-reason.exe を起こせなかった ("* ]] && fell_back not-started; then
+  ok "an exe that cannot be started → the launcher next to it; end fallback not-started"
+else
+  ng "an exe that cannot be started → the launcher next to it; end fallback not-started" "rc=${rc} err=$(cat "${work}/notstarted.err") log=$(cat "${log}")"
+fi
+
+reset
+mkdir -p "${work}/onlylauncher"
+touch "${work}/onlylauncher/launcher.ps1"
+OPREASON_EXE=${work}/onlylauncher/op-reason.exe run_op notfound --reason "exe の無いフォルダ" item get a
+if [[ ${rc} == 0 && $(ps_count) == 1 && $(runner_of 1) == powershell.exe && $(op_runs) == 1 &&
+$(<"${FAKE_DIR}/ps.1.argv") == *"$(winpath "${work}/onlylauncher/launcher.ps1")" &&
+$(<"${work}/notfound.err") == *"op-reason.exe が見つからない (${work}/onlylauncher/op-reason.exe) ので、launcher.ps1 で打ちます"* ]] \
+  && fell_back not-found && [[ $(last_field end '.fallback.exit') == null ]]; then
+  ok "auto without the exe where OPREASON_EXE points, launcher.ps1 there → the launcher; end fallback not-found"
+else
+  ng "auto without the exe where OPREASON_EXE points, launcher.ps1 there → the launcher; end fallback not-found" "rc=${rc} err=$(cat "${work}/notfound.err") log=$(cat "${log}")"
+fi
+
+reset
+mkdir -p "${work}/nothing"
+OPREASON_EXE=${work}/nothing/op-reason.exe run_op nothing --reason "何も無い" item get a
+if [[ ${rc} == 127 && $(ps_count) == 0 && $(last_field refused '.why') == no-exe &&
+$(<"${work}/nothing.err") == *"op-reason.exe が見つかりません (${work}/nothing/op-reason.exe)"* ]]; then
+  ok "neither the exe nor launcher.ps1 → 127 (refused no-exe)"
+else
+  ng "neither the exe nor launcher.ps1 → 127 (refused no-exe)" "rc=${rc} err=$(cat "${work}/nothing.err")"
+fi
+
+reset
+OPREASON_RUNNER=exe FAKE_EXE=blocked run_op exeonly --reason "exe だけ" item get a
+if [[ ${rc} == 1 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field end '.result') == launcher-failed &&
+$(last_field end '.runner') == exe && $(last_field end '.fallback') == null && $(<"${work}/exeonly.err") != *launcher.ps1* ]]; then
+  ok "exe mode never falls back (an exe that writes no status → end launcher-failed)"
+else
+  ng "exe mode never falls back (an exe that writes no status → end launcher-failed)" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/exeonly.err") log=$(cat "${log}")"
+fi
+reset
+OPREASON_RUNNER=exe OPREASON_EXE=${work}/onlylauncher/op-reason.exe run_op exemissing --reason "exe だけ" item get a
+detail="rc=${rc} err=$(cat "${work}/exemissing.err")"
+check "exe mode without the exe → 127 (refused no-exe), even with launcher.ps1 there" \
+  test "${rc}" == 127 -a "$(last_field refused '.why')" == no-exe -a "$(ps_count)" == 0
+
+reset
+mkdir -p "${work}/nolauncher"
+cp "${FAKE_WIN}/op-reason.exe" "${work}/nolauncher/"
+OPREASON_RUNNER=launcher OPREASON_EXE=${work}/nolauncher/op-reason.exe run_op nolauncher --reason "launcher が無い" item get a
+if [[ ${rc} == 127 && $(ps_count) == 0 && $(last_field refused '.why') == no-launcher &&
+$(<"${work}/nolauncher.err") == *"launcher.ps1 が見つかりません (${work}/nolauncher/launcher.ps1)"* ]]; then
+  ok "launcher mode without launcher.ps1 next to op-reason.exe → 127 (refused no-launcher)"
+else
+  ng "launcher mode without launcher.ps1 next to op-reason.exe → 127 (refused no-launcher)" "rc=${rc} err=$(cat "${work}/nolauncher.err")"
+fi
+
+reset
+FAKE_EXE=blocked OPREASON_POWERSHELL=${work}/no-such-powershell.exe run_op nofallback --reason "回避も無い" item get a
+err=$(<"${work}/nofallback.err")
+if [[ ${rc} == 127 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field end '.result') == launcher-failed &&
+${err} == *"回避経路も使えません"* && ${err} == *no-such-powershell.exe* ]]; then
+  ok "the fallback is needed but powershell.exe is missing → 127, end launcher-failed, both lines"
+else
+  ng "the fallback is needed but powershell.exe is missing → 127, end launcher-failed, both lines" "rc=${rc} err=${err} log=$(cat "${log}")"
+fi
+stdin_file=""
+
+reset
+touch "${FAKE_DIR}/shared"
+FAKE_EXE=blocked run_op notifyfb --reason "見張りの回避" item get a
+notify_file=""
+for _ in $(seq 50); do
+  for f in "${FAKE_DIR}"/notify.powershell.exe.*.payload; do
+    [[ ! -e ${f} ]] || notify_file=${f}
+  done
+  [[ -z ${notify_file} ]] || break
+  sleep 0.1
+done
+if [[ -n ${notify_file} && $(jq -r '.notify.when' "${notify_file}") == start && $(jq -r '.status' "${notify_file}") == null ]] \
+  && fell_back no-status; then
+  ok "the shared approval toast falls back to the launcher too when the exe writes nothing"
+else
+  ng "the shared approval toast falls back to the launcher too when the exe writes nothing" "files=$(ls "${FAKE_DIR}") log=$(cat "${log}")"
+fi
+
+reset
+export OPREASON_LOCK_WAIT=8 FAKE_EXE=blocked
+head -c 300000 /dev/zero | tr '\0' z >"${work}/fb-big.out"
+{
+  FAKE_OUT_FILE=${work}/fb-big.out "${op}" --reason "回避で送る" item list </dev/null 2>/dev/null \
+    | { wait_file "${FAKE_DIR}/op.args" && FAKE_OUT="" "${op}" --reason "回避で受ける" item get - 2>/dev/null; }
+} >"${work}/fb-pipe.out"
+unset OPREASON_LOCK_WAIT FAKE_EXE
+if cmp -s "${work}/fb-pipe.out" "${work}/fb-big.out" && [[ $(op_runs) == 2 &&
+$(jq -c 'select(.event == "end") | .fallback.why' "${log}" | sort -u) == '"no-status"' ]]; then
+  ok "stdin drained from another op-reason goes to the launcher again after a fallback (op.exe once per call)"
+else
+  ng "stdin drained from another op-reason goes to the launcher again after a fallback (op.exe once per call)" "out=$(stat -c %s "${work}/fb-pipe.out") op=$(op_runs) log=$(cat "${log}")"
 fi
 
 echo "== TERM"
@@ -656,9 +872,9 @@ for _ in $(seq 40); do
   sleep 0.05
 done
 if [[ -n ${ps_pid} ]] && ! kill -0 "${ps_pid}" 2>/dev/null; then
-  ok "TERM to the wrapper alone is forwarded to the launcher (the window closes)"
+  ok "TERM to the wrapper alone is forwarded to the runner"
 else
-  ng "TERM to the wrapper alone is forwarded to the launcher (the window closes)" "the fake powershell ${ps_pid} still runs"
+  ng "TERM to the wrapper alone is forwarded to the runner" "the fake runner ${ps_pid} still runs"
 fi
 sleep 2.5
 
@@ -694,9 +910,9 @@ reset
 big=$(printf 'x%.0s' $(seq 25000))
 run_op toolong --reason "長い" item create "notesPlain=${big}"
 if [[ ${rc} == 2 && $(ps_count) == 0 && $(last_field refused '.why') == too-long && $(<"${work}/toolong.err") == *長すぎます* ]]; then
-  ok "arguments that are too long: exit 2, no powershell"
+  ok "arguments that are too long: exit 2, no runner"
 else
-  ng "arguments that are too long: exit 2, no powershell" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/toolong.err")"
+  ng "arguments that are too long: exit 2, no runner" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/toolong.err")"
 fi
 
 echo "== Stopped while waiting for the lock"

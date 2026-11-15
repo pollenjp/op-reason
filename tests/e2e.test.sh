@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# Runs the op-reason binary end to end with the real launcher (embedded in the binary, started on PowerShell 7 for
-# Linux through the same bootstrap as on Windows) and only a fake op. When the contract between the binary and the
-# launcher (payload, status, bootstrap, environment) drifts, this test fails: wrapper.test.sh uses a fake powershell
-# and launcher.test.sh runs the launcher alone, so both could follow the same mistake. Ported from the dotfiles.
+# Runs the op-reason binary end to end with the real launcher (launcher/launcher.ps1, started with powershell.exe -File
+# on PowerShell 7 for Linux, as a WSL call starts its fallback) and only a fake op. When the contract between the
+# binary and the launcher (payload, status, environment, the -File command line) drifts, this test fails:
+# wrapper.test.sh uses a fake runner and launcher.test.sh runs the launcher alone, so both could follow the same
+# mistake. Ported from the dotfiles.
 #
 #   bash tests/e2e.test.sh [<op-reason binary>]
 #
 # Needs pwsh, jq, git and flock. The fake powershell.exe runs pwsh with the arguments it gets; the fake wslpath returns
-# the path unchanged. No window or toast on Linux.
+# the path unchanged. launcher.ps1 is linked into the folder where OPREASON_EXE points (where the Windows zip puts it
+# next to op-reason.exe), and OPREASON_RUNNER=launcher, except in the last check. No window or toast on Linux.
 #
 # ## What it checks
 #
@@ -21,6 +23,8 @@
 #   service account: the token and OP_BIOMETRIC_UNLOCK_ENABLED=false reach op; the launcher runs neither whoami nor
 #     signout (kind service-account, signout skipped)
 #   pipe: in "op … | op …" with the receiver holding the lock, the sender's launcher does not sign out
+#   auto: an op-reason.exe that writes no status → the real launcher runs the call once (end runner launcher, fallback
+#     no-status, one stderr line)
 #
 # ## How
 #
@@ -53,6 +57,10 @@ export PATH=${work}/bin:${PATH}
 export OPREASON_OP_EXE=${work}/bin/op.exe
 op=${work}/bin/op
 ln -s "${bin}" "${op}"
+# The Windows zip's folder: launcher.ps1 next to where op-reason.exe would be
+mkdir -p "${work}/winapp"
+ln -s "${here}/../launcher/launcher.ps1" "${work}/winapp/launcher.ps1"
+export OPREASON_EXE=${work}/winapp/op-reason.exe OPREASON_RUNNER=launcher
 
 fake "${work}/bin/powershell.exe" <<'EOF'
 exec pwsh "$@"
@@ -197,5 +205,27 @@ else
     "whoami=${whoami_calls} signout=${signout_calls} send_signout=${send_signout} $(cat "${log}")"
 fi
 unset FAKE_WHOAMI_RC
+
+echo "== auto: an op-reason.exe that writes no status"
+reset
+fake "${work}/winapp/op-reason.exe" <<'EOF'
+echo "blocked (fake)" >&2
+exit 1
+EOF
+export FAKE_WHOAMI_RC=0
+stdin_file=${work}/in.bin
+OPREASON_RUNNER="" run_op fallback --reason "回避経路で読む" item get x
+stdin_file=""
+unset FAKE_WHOAMI_RC
+mapfile -t from_pwsh < <(calls_from launcher)
+if [[ ${rc} == 0 ]] && cmp -s "${work}/in.bin" "${work}/fallback.out" && ((${#from_pwsh[@]} == 3)) \
+  && call_is "${from_pwsh[0]}" item get x && [[ $(end_field .runner) == launcher && $(end_field .fallback.why) == no-status &&
+  $(end_field .result) == approved && $(grep -c 'so it runs through launcher.ps1 instead' "${work}/fallback.err") == 1 ]]; then
+  ok "the real launcher runs the call once after the exe wrote nothing (end runner launcher, fallback no-status)"
+else
+  ng "the real launcher runs the call once after the exe wrote nothing (end runner launcher, fallback no-status)" \
+    "rc=${rc} calls=${from_pwsh[*]} err=$(cat "${work}/fallback.err") $(cat "${log}" 2>&1)"
+fi
+rm -f "${work}/winapp/op-reason.exe"
 
 finish
