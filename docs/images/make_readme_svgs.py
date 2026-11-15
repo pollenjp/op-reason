@@ -5,7 +5,9 @@
   scripts.
 - Each SVG has its own background, so that it reads the same on GitHub's light and dark themes. It uses the
   viewer's fonts (an image cannot load web fonts).
-- With reduced motion (prefers-reduced-motion: reduce), each SVG shows its last frame.
+- With reduced motion (prefers-reduced-motion: reduce), each SVG holds still on the frame that carries its point
+  (scene 1: op-reason's window next to the approval prompt), so that nothing is lost without the motion. Viewers
+  that run no CSS animations show the same frame.
 - op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it, with the texts of
   crates/op-reason-win/src/ui.rs. The refusal and the log table are op-reason's output (the texts of
   crates/op-reason-core/src/messages.rs and logview.rs). The 1Password approval prompt is a plain box: it copies
@@ -23,6 +25,7 @@ To change a text or the layout, change this script and run it again; do not edit
 from __future__ import annotations
 
 import argparse
+import itertools
 import sys
 import unicodedata
 from pathlib import Path
@@ -449,14 +452,24 @@ def g(attr: str, *parts: str) -> str:
 class Motion:
     """The animations of one SVG. Every animation loops over the scene's length.
 
-    An element's own style is its look at the end of the scene, so that with animations off (reduced motion) the
-    picture stops at its last frame.
+    An element's own style is its look at the rest time, the frame that holds the point of the scene (the end of the
+    scene unless given), so that with animations off (reduced motion) the picture stays on that frame.
     """
 
-    def __init__(self, duration: float) -> None:
+    def __init__(self, duration: float, rest: float | None = None) -> None:
         self.d = duration
+        self.rest = duration if rest is None else rest
         self.rules: list = []
         self.names: dict = {}
+
+    def still(self, merged: list) -> str:
+        """The look at the rest time. It must not fall in a transition: there the look is between two stops."""
+        for (t0, v, timing), (t1, _, _) in itertools.pairwise(merged):
+            if t0 <= self.rest < t1:
+                if timing != STEP:
+                    raise ValueError(f"the rest time {self.rest} s falls in a transition ({num(t0)} to {num(t1)} s)")
+                return v
+        return merged[-1][1]
 
     def keyframes(self, stops: list, cls: str = "") -> str:
         """(time, declarations, timing function to the next stop), in time order, the first at 0."""
@@ -478,7 +491,7 @@ class Motion:
             name = f"k{len(self.names) + 1}"
             self.names[body] = name
             self.rules.append(f"@keyframes {name}{{{body}}}")
-            self.rules.append(f".{name}{{{merged[-1][1]};animation:{name} {num(self.d)}s infinite}}")
+            self.rules.append(f".{name}{{{self.still(merged)};animation:{name} {num(self.d)}s infinite}}")
         return f' class="{(cls + " " + name).strip()}"'
 
     def track(self, changes: list, ease: tuple = (), cls: str = "") -> str:
@@ -525,9 +538,9 @@ class Motion:
 class Canvas:
     """One SVG: its size, its motion, its defs and its body."""
 
-    def __init__(self, h: float, duration: float) -> None:
+    def __init__(self, h: float, duration: float, rest: float | None = None) -> None:
         self.w, self.h = W, h
-        self.m = Motion(duration)
+        self.m = Motion(duration, rest)
         self.defs: list = []
         self.body: list = []
 
@@ -551,7 +564,7 @@ class Canvas:
                 ".tb{transform-box:fill-box;transform-origin:50% 50%}",
                 ".blink{animation:blink 1s step-end infinite}@keyframes blink{50%{opacity:0}}",
                 *self.m.rules,
-                # reduced motion: every element keeps its own style, the last frame
+                # reduced motion: every element keeps its own style, the frame at the rest time
                 "@media (prefers-reduced-motion:reduce){*{animation:none!important}}",
             ]
         )
@@ -794,14 +807,26 @@ ARROW = (
 
 
 def mouse(m: Motion, start: tuple, moves: tuple) -> str:
-    """The mouse pointer: (from, to, where) moves."""
+    """The mouse pointer: (from, to, where) moves.
+
+    Its place at the rest time is an attribute and the animation moves it from there, so that a viewer that runs no
+    CSS transforms still draws it in its place.
+    """
+    base = start
+    for _, t1, to in moves:
+        if t1 <= m.rest:
+            base = to
+
+    def shift(p: tuple) -> str:
+        return f"transform:translate({num(p[0] - base[0])}px,{num(p[1] - base[1])}px)"
+
     pos = start
-    stops = [(0.0, f"transform:translate({num(pos[0])}px,{num(pos[1])}px)", STEP)]
+    stops = [(0.0, shift(pos), STEP)]
     for t0, t1, to in moves:
-        stops.append((t0, f"transform:translate({num(pos[0])}px,{num(pos[1])}px)", MOVE))
-        stops.append((t1, f"transform:translate({num(to[0])}px,{num(to[1])}px)", STEP))
+        stops.append((t0, shift(pos), MOVE))
+        stops.append((t1, shift(to), STEP))
         pos = to
-    return g(m.keyframes(stops), ARROW)
+    return f'<g transform="translate({num(base[0])},{num(base[1])})">{g(m.keyframes(stops), ARROW)}</g>'
 
 
 def ripple(m: Motion, at: tuple, t: float) -> str:
@@ -892,7 +917,7 @@ def scene_call(lang: str) -> str:
     tx = TEXTS[lang]
     reason = REASONS[lang]["proxmox"]
     d = 13.5
-    c = Canvas(584, d)
+    c = Canvas(584, d, rest=2.0)  # without motion: op-reason's window next to the approval prompt, before the click
     m = c.m
     c.add(desk(0, 0, W, 540), taskbar(512, 28, "10:42"))
     t_call, t_window, t_prompt = 0.8, 1.4, 1.55
@@ -974,7 +999,8 @@ def scene_leak(lang: str) -> str:
     tx = TEXTS[lang]
     r = REASONS[lang]
     d = 12.0
-    c = Canvas(484, d)
+    # without motion: terminal 2's call, the value without a prompt on the left, asked again on the right
+    c = Canvas(484, d, rest=6.2)
     m = c.m
     c.add(f'<rect width="{W}" height="484" fill="#e9edf2"/>')
     calls = (  # (call, prompt and window, click, value, window closes): terminal 1, then terminal 2
