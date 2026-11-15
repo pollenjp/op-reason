@@ -689,6 +689,17 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             }
         }
     }
+    // exe mode: say why nothing ran when the exe left no status file (it never falls back)
+    if let (
+        RunnerPlan::Exe {
+            fallback: false, ..
+        },
+        Ok((rc, _)),
+    ) = (&plan, &outcome)
+        && fs::symlink_metadata(&status_file).is_err()
+    {
+        say(&[messages::exe_no_status(lang, *rc)]);
+    }
     let (op_rc, stderr_tail) = match outcome {
         Ok(done) => done,
         Err(e) => {

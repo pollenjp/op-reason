@@ -234,6 +234,18 @@ pub fn no_fallback(lang: Lang, why: FallbackWhy) -> String {
     }
 }
 
+/// `OPREASON_RUNNER=exe` and `op-reason.exe` exited without writing the status file (no fallback).
+pub fn exe_no_status(lang: Lang, code: i32) -> String {
+    match lang {
+        Lang::En => format!(
+            "op-reason.exe ended without starting the call (exit {code}); with OPREASON_RUNNER=exe there is no fallback to launcher.ps1."
+        ),
+        Lang::Ja => format!(
+            "op-reason.exe が呼び出しを始めずに終わりました (終了コード {code})。OPREASON_RUNNER=exe なので launcher.ps1 には回しません。"
+        ),
+    }
+}
+
 /// A runner (`op-reason.exe` or `powershell.exe`) was found but could not be started (for example, WSL interop is
 /// broken).
 pub fn cannot_start(lang: Lang, cmd: &str, error: &str) -> String {

@@ -780,10 +780,11 @@ fi
 reset
 OPREASON_RUNNER=exe FAKE_EXE=blocked run_op exeonly --reason "exe だけ" item get a
 if [[ ${rc} == 1 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field end '.result') == launcher-failed &&
-$(last_field end '.runner') == exe && $(last_field end '.fallback') == null && $(<"${work}/exeonly.err") != *launcher.ps1* ]]; then
-  ok "exe mode never falls back (an exe that writes no status → end launcher-failed)"
+$(last_field end '.runner') == exe && $(last_field end '.fallback') == null &&
+$(<"${work}/exeonly.err") == *"OPREASON_RUNNER=exe なので launcher.ps1 には回しません"* ]]; then
+  ok "exe mode never falls back (an exe that writes no status → end launcher-failed, one line says why)"
 else
-  ng "exe mode never falls back (an exe that writes no status → end launcher-failed)" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/exeonly.err") log=$(cat "${log}")"
+  ng "exe mode never falls back (an exe that writes no status → end launcher-failed, one line says why)" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/exeonly.err") log=$(cat "${log}")"
 fi
 reset
 OPREASON_RUNNER=exe OPREASON_EXE=${work}/onlylauncher/op-reason.exe run_op exemissing --reason "exe だけ" item get a
