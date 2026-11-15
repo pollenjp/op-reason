@@ -1,10 +1,10 @@
 #Requires -Version 7
-# Screenshots and timings on a Windows runner, with the fake op.exe: op-reason.exe (plan C') and, for comparison,
-# plan A': its PowerShell entry (-Entry op-reason.ps1, -EntryCmd op-reason.cmd) and its launcher started directly
-# (-Launcher launcher.ps1, the second half of every A' call).
+# Screenshots and timings on a Windows runner, with the fake op.exe: op-reason.exe next to the PowerShell entry of the
+# same tree (-Entry op-reason.ps1, -EntryCmd op-reason.cmd) and its launcher started directly (-Launcher launcher.ps1,
+# the second half of every call through the PowerShell entry). The numbers help to choose a Windows entry (README).
 #
 #   pwsh -File .github/scripts/windows-exe-shots.ps1 -Exe target\release\op-reason.exe -FakeOp target\debug\op.exe `
-#     -Launcher <a>\launcher\launcher.ps1 -Entry <a>\windows\op-reason.ps1 -EntryCmd <a>\windows\op-reason.cmd -Out shots
+#     -Launcher launcher\launcher.ps1 -Entry windows\op-reason.ps1 -EntryCmd windows\op-reason.cmd -Out shots
 #
 # Writes <Out>\*.png (the window per scene, and the whole screen once), <Out>\timing.json and <Out>\timing.md, and
 # appends timing.md to the job summary. Timings are black-box: from starting the process until a visible window with
@@ -15,11 +15,10 @@
 param(
   [Parameter(Mandatory)] [string] $Exe,
   [Parameter(Mandatory)] [string] $FakeOp,
+  [Parameter(Mandatory)] [string] $Launcher,
+  [Parameter(Mandatory)] [string] $Entry,
+  [Parameter(Mandatory)] [string] $EntryCmd,
   [Parameter(Mandatory)] [string] $Out,
-  [string] $Launcher = '',
-  [string] $Entry = '',
-  [string] $EntryCmd = '',
-  [string] $EntryLabel = '',
   [int] $Runs = 10
 )
 $ErrorActionPreference = 'Stop'
@@ -46,9 +45,9 @@ $TitleEn = '1Password CLI approval request'
 
 $Exe = (Resolve-Path $Exe).Path
 $FakeOp = (Resolve-Path $FakeOp).Path
-if ($Launcher) { $Launcher = (Resolve-Path $Launcher).Path }
-if ($Entry) { $Entry = (Resolve-Path $Entry).Path }
-if ($EntryCmd) { $EntryCmd = (Resolve-Path $EntryCmd).Path }
+$Launcher = (Resolve-Path $Launcher).Path
+$Entry = (Resolve-Path $Entry).Path
+$EntryCmd = (Resolve-Path $EntryCmd).Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 $work = Join-Path ([IO.Path]::GetTempPath()) ("op-reason-shots-" + [guid]::NewGuid())
@@ -85,7 +84,7 @@ if ($env:USERPROFILE -and $cwd.StartsWith($env:USERPROFILE, [StringComparison]::
   $cwd = '~' + $cwd.Substring($env:USERPROFILE.Length)
 }
 
-# Starts the A' launcher for one desktop call with the payload of the A' spec (section 5.2).
+# Starts the launcher for one desktop call with the payload of the launcher contract (docs/architecture/README.md).
 function Start-Launcher([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, [hashtable] $Env) {
   $facts = [ordered]@{
     time    = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
@@ -113,8 +112,8 @@ function Start-Launcher([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller,
   Start-Proc 'powershell.exe' @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-File', $Launcher) $all
 }
 
-# Plan A' through its entry: what a program or cmd.exe runs (the shim starts powershell.exe -File op-reason.ps1),
-# and powershell.exe -File op-reason.ps1 without cmd.exe in front.
+# The PowerShell entry as a program or cmd.exe runs it (the shim starts powershell.exe -File op-reason.ps1), and
+# powershell.exe -File op-reason.ps1 without cmd.exe in front.
 function Start-EntryCmd([string[]] $Arguments, [hashtable] $Env) {
   Start-Proc 'cmd.exe' (@('/d', '/c', $EntryCmd) + $Arguments) $Env
 }
@@ -160,14 +159,10 @@ function Save-Screen([string] $Path) {
 $reasonJa = & $u '\u30c7\u30d7\u30ed\u30a4\u306e\u305f\u3081\u306b Proxmox \u306e API \u306e token \u3092\u8aad\u3080'
 $longReason = 'Read the API token of the staging cluster to rotate the deploy key, then write the new key back to the vault item so that the nightly job can pick it up without anyone copying secrets by hand'
 $readArgs = @('read', 'op://Private/proxmox/token')
-$claudeCaller = [ordered]@{ type = 'claude'; pid = 4242; session = 'demo'; detail = $null }
+$claudeEnv = @{ OPREASON_LANG = 'ja'; CLAUDECODE = '1'; CLAUDE_PID = '4242'; CLAUDE_CODE_SESSION_ID = 'demo' }
 $scenes = @(
-  @{ name = '01-exe-claude-ja'; title = $TitleJa; env = @{ OPREASON_LANG = 'ja'; CLAUDECODE = '1'; CLAUDE_PID = '4242'; CLAUDE_CODE_SESSION_ID = 'demo' };
-     args = @('--reason', $reasonJa) + $readArgs },
-  @{ name = '02-a-entry-claude-ja'; title = $TitleJa; entry = $true; env = @{ OPREASON_LANG = 'ja'; CLAUDECODE = '1'; CLAUDE_PID = '4242'; CLAUDE_CODE_SESSION_ID = 'demo' };
-     args = @('--reason', $reasonJa) + $readArgs },
-  @{ name = '02-launcher-claude-ja'; title = $TitleJa; launcher = $true; lang = 'ja'; caller = $claudeCaller; reason = $reasonJa;
-     opargs = $readArgs; command = 'op read op://Private/proxmox/token' },
+  @{ name = '01-exe-claude-ja'; title = $TitleJa; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
+  @{ name = '02-entry-claude-ja'; title = $TitleJa; entry = $true; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
   @{ name = '03-exe-person-en'; title = $TitleEn; env = @{ OPREASON_LANG = 'en'; WT_SESSION = '00000000-0000-0000-0000-000000000000' };
      args = @('--reason', 'Read the Proxmox API token to create a VM') + $readArgs },
   @{ name = '04-exe-others-ja'; title = $TitleJa; env = @{ OPREASON_LANG = 'ja' }; others = $true;
@@ -180,22 +175,16 @@ $scenes = @(
 [Threading.Thread]::Sleep(1000)
 $screenTaken = $false
 foreach ($s in $scenes) {
-  if ($s.entry -and -not $Entry) { continue }
-  # with the entry there, its window stands for A'; the bare launcher scene is only the fallback
-  if ($s.launcher -and (-not $Launcher -or $Entry)) { continue }
   $other = $null
   if ($s.others) {
     # an op.exe that is not ours: the window shows the orange line
     $other = Start-Proc $FakeOp @('vault', 'list') @{ FAKE_SLEEP_MS = '15000' }
     [Threading.Thread]::Sleep(300)
   }
-  if ($s.launcher) {
-    $p = Start-Launcher $s.opargs $s.lang $s.caller $s.reason $s.command @{ FAKE_SLEEP_MS = '6000' }
-  } elseif ($s.entry) {
+  if ($s.entry) {
     $p = Start-EntryPs1 $s.args (@{ FAKE_SLEEP_MS = '6000' } + $s.env)
   } else {
-    $callEnv = @{ FAKE_SLEEP_MS = '4000' } + $s.env
-    $p = Start-Proc $Exe $s.args $callEnv
+    $p = Start-Proc $Exe $s.args (@{ FAKE_SLEEP_MS = '4000' } + $s.env)
   }
   $h = Wait-Window $s.title
   if ($h -eq [IntPtr]::Zero) { throw "no window for scene $($s.name)" }
@@ -245,46 +234,40 @@ function Measure-Whole([scriptblock] $Start) {
 $argsTiming = @('--reason', 'timing', 'vault', 'list')
 $humanCaller = [ordered]@{ type = 'human'; pid = $null; session = $null; detail = $null }
 $results = @()
-$results += Measure-Runs "C': start -> window visible" {
+$results += Measure-Runs 'op-reason.exe: start -> window visible' {
   Measure-Window { Start-Proc $Exe $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }
 }
-$results += Measure-Runs "C': whole desktop call (window, toast, op, whoami, signout)" {
+$results += Measure-Runs 'op-reason.exe: whole desktop call (window, toast, op, whoami, signout)' {
   Measure-Whole { Start-Proc $Exe $argsTiming @{ OPREASON_LANG = 'en'; FAKE_WHOAMI_RC = '0' } }
 }
-$results += Measure-Runs "C': help call (op vault --help: op.exe, no window)" {
+$results += Measure-Runs 'op-reason.exe: help call (op vault --help: op.exe, no window)' {
   Measure-Whole { Start-Proc $Exe @('vault', '--help') @{ OPREASON_LANG = 'en' } }
 }
-$results += Measure-Runs "C': op-reason --version (no op.exe)" {
+$results += Measure-Runs 'op-reason.exe: op-reason --version (no op.exe)' {
   Measure-Whole { Start-Proc $Exe @('--version') @{} }
 }
-if ($Launcher) {
-  $results += Measure-Runs "A' launcher alone: start -> window visible" {
-    Measure-Window { Start-Launcher @('vault', 'list') 'en' $humanCaller 'timing' 'op vault list' @{ FAKE_SLEEP_MS = '1500' } }
-  }
-  $results += Measure-Runs "A' launcher alone: whole desktop call (window, toast, op, whoami, signout)" {
-    Measure-Whole { Start-Launcher @('vault', 'list') 'en' $humanCaller 'timing' 'op vault list' @{ FAKE_WHOAMI_RC = '0' } }
-  }
+$results += Measure-Runs 'PowerShell entry via op-reason.cmd: start -> window visible' {
+  Measure-Window { Start-EntryCmd $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }
 }
-if ($Entry) {
-  $results += Measure-Runs "A' entry via powershell -File op-reason.ps1: start -> window visible" {
-    Measure-Window { Start-EntryPs1 $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }
-  }
-  $results += Measure-Runs "A' entry via powershell -File op-reason.ps1: whole desktop call" {
-    Measure-Whole { Start-EntryPs1 $argsTiming @{ OPREASON_LANG = 'en'; FAKE_WHOAMI_RC = '0' } }
-  }
-  $results += Measure-Runs "A' entry via powershell -File op-reason.ps1: op-reason --version" {
-    Measure-Whole { Start-EntryPs1 @('--version') @{} }
-  }
+$results += Measure-Runs 'PowerShell entry via op-reason.cmd: whole desktop call' {
+  Measure-Whole { Start-EntryCmd $argsTiming @{ OPREASON_LANG = 'en'; FAKE_WHOAMI_RC = '0' } }
 }
-if ($EntryCmd) {
-  $results += Measure-Runs "A' entry via op-reason.cmd: start -> window visible" {
-    Measure-Window { Start-EntryCmd $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }
-  }
-  $results += Measure-Runs "A' entry via op-reason.cmd: whole desktop call" {
-    Measure-Whole { Start-EntryCmd $argsTiming @{ OPREASON_LANG = 'en'; FAKE_WHOAMI_RC = '0' } }
-  }
+$results += Measure-Runs 'PowerShell entry via powershell -File op-reason.ps1: start -> window visible' {
+  Measure-Window { Start-EntryPs1 $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }
 }
-# what one more powershell.exe start costs (the A' entry starts one before the launcher)
+$results += Measure-Runs 'PowerShell entry via powershell -File op-reason.ps1: whole desktop call' {
+  Measure-Whole { Start-EntryPs1 $argsTiming @{ OPREASON_LANG = 'en'; FAKE_WHOAMI_RC = '0' } }
+}
+$results += Measure-Runs 'PowerShell entry via powershell -File op-reason.ps1: op-reason --version' {
+  Measure-Whole { Start-EntryPs1 @('--version') @{} }
+}
+$results += Measure-Runs 'launcher alone: start -> window visible' {
+  Measure-Window { Start-Launcher @('vault', 'list') 'en' $humanCaller 'timing' 'op vault list' @{ FAKE_SLEEP_MS = '1500' } }
+}
+$results += Measure-Runs 'launcher alone: whole desktop call (window, toast, op, whoami, signout)' {
+  Measure-Whole { Start-Launcher @('vault', 'list') 'en' $humanCaller 'timing' 'op vault list' @{ FAKE_WHOAMI_RC = '0' } }
+}
+# what one more powershell.exe start costs (the PowerShell entry starts one before the launcher)
 $results += Measure-Runs 'reference: powershell.exe -NoProfile -Command exit' {
   Measure-Whole { Start-Proc 'powershell.exe' @('-NoProfile', '-NonInteractive', '-Command', 'exit') @{} }
 }
@@ -298,11 +281,10 @@ $lastEnd = Get-Content (Join-Path $work 'op-reason\log.jsonl') |
 $size = (Get-Item $Exe).Length
 $os = (Get-CimInstance Win32_OperatingSystem).Caption
 $md = @(
-  "### op-reason.exe (plan C') and the A' launcher: timings",
+  '### op-reason.exe and the PowerShell entry: timings',
   '',
   "Runner: $os. $Runs runs each, in milliseconds. Fake op.exe; black-box from process start.",
-  "A' entry rows run op-reason.ps1 as a program or cmd.exe would; launcher rows start the launcher directly (half of an A' call).",
-  $(if ($EntryLabel) { "A' was taken from: $EntryLabel." } else { '' }),
+  'The PowerShell entry rows run op-reason.ps1 as a program or cmd.exe would; the launcher rows start the launcher directly (the second half of such a call).',
   '',
   '| measurement | min | median | max |',
   '| --- | ---: | ---: | ---: |'

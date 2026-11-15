@@ -1,7 +1,8 @@
-# Plan C': op-reason.exe for Windows (crates/op-reason-win, a workspace of its own). Lints and tests it, builds the
-# exe, runs it with the fake op.exe on a real Windows desktop, takes screenshots of its window and of the A' launcher's
-# window, measures how fast both start, and puts the screenshots on the pull request.
-name: windows-exe
+# op-reason.exe, the Windows entry (crates/op-reason-win, a Cargo workspace of its own). Lints and tests it, builds
+# the exe and its release assets, runs it with the fake op.exe on a real Windows desktop, takes screenshots of its
+# window and of the window of the PowerShell entry (the fallback where Smart App Control blocks the exe), measures how
+# fast both start, and puts the screenshots on the pull request.
+name: Windows exe
 
 on:
   pull_request:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   linux:
-    name: C' neutral modules on Linux (fmt, clippy, test)
+    name: op-reason.exe, portable parts on Linux (fmt, clippy, test)
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -33,16 +34,13 @@ jobs:
         run: nix develop path:../../nix --command cargo fmt --check -p op-reason-win -p fake-op
       - name: Clippy
         run: nix develop path:../../nix --command cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Tests (the window texts against launcher/launcher.ps1, the command-line length)
+      - name: Tests (the window texts against launcher/launcher.ps1, the usage, the command-line length)
         run: nix develop path:../../nix --command cargo test --locked --workspace
 
   windows:
-    name: C' op-reason.exe on Windows (clippy, test, build, screenshots, timing)
+    name: op-reason.exe on Windows (clippy, test, build, screenshots, timing)
     runs-on: windows-2025
     timeout-minutes: 30
-    env:
-      # Plan A' (the PowerShell entry, PR #3) at a fixed commit, measured next to the exe. Update it when PR #3 moves.
-      A_PRIME_COMMIT: 0657395af2a9b4a1d91df79eb0a02c38c19657be
     defaults:
       run:
         working-directory: crates/op-reason-win
@@ -60,42 +58,37 @@ jobs:
         run: cargo test --locked --workspace
       - name: Release build
         run: cargo build --locked --release -p op-reason-win
-      - name: SHA-256 of the exe
+      # .cargo/config.toml links the C runtime statically: the exe must start on a Windows without the Visual C++
+      # Redistributable.
+      - name: No Visual C++ runtime DLL among the imports
         shell: pwsh
         run: |
-          $hash = (Get-FileHash target/release/op-reason.exe -Algorithm SHA256).Hash.ToLower()
-          Set-Content -Path target/release/op-reason.exe.sha256 -Value "$hash  op-reason.exe" -Encoding ascii
-          "op-reason.exe SHA-256: $hash" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-      # For trying by hand on the author's machine (unsigned: Smart App Control may block it).
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $imports = & $dumpbin.FullName /nologo /dependents target/release/op-reason.exe
+          $imports
+          if ($imports -match 'vcruntime|msvcp|api-ms-win-crt') { throw 'op-reason.exe imports the Visual C++ runtime' }
+      - name: Release assets (the script that release.yml runs)
+        shell: pwsh
+        run: ../../.github/scripts/windows-exe-dist.ps1 -Exe target/release/op-reason.exe -Out dist
+      - name: The SHA-256 file checks with sha256sum
+        shell: bash
+        working-directory: crates/op-reason-win/dist
+        run: sha256sum -c op-reason.exe.sha256
+      # For trying a pull request's exe by hand (unsigned: Smart App Control may block it).
       - name: Upload the exe
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: op-reason-exe
-          path: |
-            crates/op-reason-win/target/release/op-reason.exe
-            crates/op-reason-win/target/release/op-reason.exe.sha256
+          path: crates/op-reason-win/dist/
           if-no-files-found: error
-      # If the commit cannot be fetched, the comparison falls back to the launcher of this branch.
-      - name: Check out plan A' (PR #3) at the fixed commit
-        continue-on-error: true
-        shell: bash
-        run: |
-          git fetch --no-tags --depth=1 origin "$A_PRIME_COMMIT"
-          git worktree add --detach "$RUNNER_TEMP/a-prime" "$A_PRIME_COMMIT"
-      - name: Screenshots and timings (the exe, and plan A' for comparison)
+      - name: Screenshots and timings (the exe, and the PowerShell entry of the same tree)
         shell: pwsh
-        run: |
-          $p = @{ Exe = 'target/release/op-reason.exe'; FakeOp = 'target/debug/op.exe'; Out = 'screenshots' }
-          $a = Join-Path $env:RUNNER_TEMP 'a-prime'
-          if (Test-Path (Join-Path $a 'windows/op-reason.ps1')) {
-            $p.Launcher = Join-Path $a 'launcher/launcher.ps1'
-            $p.Entry = Join-Path $a 'windows/op-reason.ps1'
-            $p.EntryCmd = Join-Path $a 'windows/op-reason.cmd'
-            $p.EntryLabel = "PR #3 at $($env:A_PRIME_COMMIT.Substring(0, 7))"
-          } else {
-            $p.Launcher = '../../launcher/launcher.ps1'
-          }
-          & ../../.github/scripts/windows-exe-shots.ps1 @p
+        run: >-
+          ../../.github/scripts/windows-exe-shots.ps1
+          -Exe target/release/op-reason.exe -FakeOp target/debug/op.exe
+          -Launcher ../../launcher/launcher.ps1 -Entry ../../windows/op-reason.ps1 -EntryCmd ../../windows/op-reason.cmd
+          -Out screenshots
       - name: Upload screenshots and timings
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -109,7 +102,7 @@ jobs:
   # uploaded. The three conditions: failed runs' screenshots are wanted too (always()), only pull requests have a
   # number, and pull requests from forks get no write token.
   screenshots:
-    name: C' screenshots on the pull request
+    name: op-reason.exe screenshots on the pull request
     needs: windows
     if: >-
       always() && github.event_name == 'pull_request' &&
@@ -127,14 +120,17 @@ jobs:
           name: windows-exe-screenshots
           path: screenshots
         continue-on-error: true
+      # The branch and the marker differ from windows.yml's, so the two comments do not overwrite each other;
+      # screenshots-cleanup.yml deletes both branches when the pull request closes.
       - name: Post the screenshots
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           SHOTS_DIR: screenshots
           SHOTS_MARKER: "<!-- windows-exe-screenshots -->"
           SHOTS_BRANCH: windows-exe-screenshots/pr-${{ github.event.pull_request.number }}
-          SHOTS_TITLE: "op-reason.exe (plan C') and the A' launcher on Windows"
-          SHOTS_SOURCE: windows-exe.yml
+          SHOTS_TITLE: "op-reason.exe and the PowerShell entry on Windows"
+          SHOTS_SOURCE: .github/workflows/windows-exe.yml
           GRID_COLS: "3"
           IMG_WIDTH: "320"
         run: >-
