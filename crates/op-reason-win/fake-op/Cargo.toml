@@ -1,0 +1,19 @@
+[package]
+name = "fake-op"
+version = "0.0.0"
+description = "A stand-in for op.exe in op-reason.exe's tests: records each call and acts on environment variables"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Named `op` so that it is `op.exe`, like the real 1Password CLI.
+[[bin]]
+name = "op"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

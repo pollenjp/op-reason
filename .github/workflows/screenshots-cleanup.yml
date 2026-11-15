@@ -1,7 +1,7 @@
 name: Screenshots cleanup
 
-# Deletes the screenshot branch of a pull request (screenshots/pr-<number>, written by windows.yml) when the pull
-# request is closed or merged. Keep it together with windows.yml.
+# Deletes the screenshot branches of a pull request when it is closed or merged: screenshots/pr-<number> (written by
+# windows.yml) and windows-exe-screenshots/pr-<number> (written by windows-exe.yml). Keep it together with those two.
 on:
   pull_request:
     types: [closed]
@@ -14,13 +14,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # A pull request that never got screenshots has no branch: do not fail
-      - name: Delete the screenshot branch
+      - name: Delete the screenshot branches
         env:
           GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          ref="heads/screenshots/pr-${{ github.event.pull_request.number }}"
-          if gh api -X DELETE "repos/${{ github.repository }}/git/refs/${ref}"; then
-            echo "deleted ${ref}"
-          else
-            echo "no branch (nothing to do): ${ref}"
-          fi
+          for ref in "heads/screenshots/pr-${NUMBER}" "heads/windows-exe-screenshots/pr-${NUMBER}"; do
+            if gh api -X DELETE "repos/${{ github.repository }}/git/refs/${ref}"; then
+              echo "deleted ${ref}"
+            else
+              echo "no branch (nothing to do): ${ref}"
+            fi
+          done

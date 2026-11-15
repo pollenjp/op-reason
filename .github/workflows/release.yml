@@ -59,9 +59,32 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # op-reason.exe, the Windows entry (crates/op-reason-win, a Cargo workspace of its own). Not signed.
+  windows-exe:
+    name: Windows exe
+    runs-on: windows-2025
+    defaults:
+      run:
+        working-directory: crates/op-reason-win
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain (crates/op-reason-win/rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build (the C runtime linked statically, see crates/op-reason-win/.cargo/config.toml)
+        run: cargo build --locked --release -p op-reason-win
+      # windows-exe.yml runs the same script on every pull request
+      - name: Assets
+        shell: pwsh
+        run: ../../.github/scripts/windows-exe-dist.ps1 -Exe target/release/op-reason.exe -Out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-exe
+          path: crates/op-reason-win/dist/*
+          if-no-files-found: error
+
   release:
     name: Draft release
-    needs: [linux, windows]
+    needs: [linux, windows, windows-exe]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -76,4 +99,4 @@ jobs:
         run: |
           ls -l dist
           gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
-            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable; op-reason-windows.zip holds the Windows entry. Each asset has a .sha256 file."
+            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable; op-reason.exe is the Windows entry (not signed); op-reason-windows.zip holds the PowerShell entry, for machines where Smart App Control blocks op-reason.exe. Each asset has a .sha256 file."

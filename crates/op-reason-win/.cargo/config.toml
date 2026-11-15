@@ -1,0 +1,4 @@
+# Link the C runtime statically, so that op-reason.exe starts on a Windows without the Visual C++ Redistributable
+# (Rust's MSVC targets import vcruntime140.dll otherwise). The Windows CI job checks the exe's imports.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

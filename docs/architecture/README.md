@@ -11,8 +11,9 @@ This page describes op-reason as it is now. Why it is built this way is in the d
 | --- | --- | --- |
 | WSL executable | `crates/op-reason/` | `op` / `op-reason`: the wrapper; `op-reason-log`: the log viewer. Linux only (`/proc`, flock, signals, `WSLENV`) |
 | Core library | `crates/op-reason-core/` | argument planning, the launcher contract, log records and the log viewer, place detection, messages; builds for Windows too |
-| Launcher | `launcher/launcher.ps1` | Windows PowerShell 5.1 script started fresh for every call: window, toast, `op.exe`, sign-out, status |
-| Windows entry | `windows/` | `op-reason.ps1` (the entry) and `op-reason.cmd` (a shim for cmd.exe and other programs) |
+| Launcher | `launcher/launcher.ps1` | Windows PowerShell 5.1 script started fresh for every call from WSL and through the PowerShell entry: window, toast, `op.exe`, sign-out, status |
+| Windows executable | `crates/op-reason-win/` | `op-reason.exe`, the Windows entry: the whole call in one process (Direct2D window, WinRT toast, `op.exe`, sign-out, log, `--log`). A Cargo workspace of its own, on the core |
+| PowerShell entry | `windows/` | `op-reason.ps1` and `op-reason.cmd` (a shim for cmd.exe and other programs): the fallback where Smart App Control blocks `op-reason.exe` |
 | Fish completion | `completions/op.fish` | template printed by `op-reason --completion fish` |
 | Skill | `skill/SKILL.md` | printed by `op-reason --skill` |
 | Call table | `tests/cases/calls.json` | invocations and their expected plan, shared by the Rust tests and the Windows entry's tests |
@@ -42,7 +43,31 @@ Signals (INT, TERM, HUP) log `interrupted` (an `end` after the start, a `refused
 Children start with an empty signal mask, and a TERM or HUP to the wrapper alone is forwarded to the launcher, so the
 window closes with the call.
 
-## One call from Windows
+## One call from Windows (op-reason.exe)
+
+`op-reason.exe` is a fresh process for every call, so the approval binds to it, and it exits after the call. It does
+what the PowerShell entry and the launcher do, in one process:
+
+1. **Plan** with the core's planning function (the WSL executable's): wrapper options, the reason, the mode, masking.
+   No reason and not a help call → `refused` (exit 2).
+2. **Find** `op.exe`: `OPREASON_OP_EXE`, else the first `op.exe` in an absolute `PATH` entry that is not this exe
+   (exit 127). Refuse when `op.exe`'s command line would be over 32,766 characters (exit 2).
+3. **Collect** the caller (the PowerShell entry's rules; the process chain from one Toolhelp snapshot) and the place
+   from git files.
+4. **Lock** `Local\op-reason` before the `start` record, waiting up to `OPREASON_LOCK_WAIT` seconds (a time-out is a
+   `refused` record with `lock-timeout`, exit 75); write `holder.json`. A mutex that cannot be used at all is recorded
+   as `lock: failed`, and the call goes on.
+5. **Start** record; the window (Direct2D and DirectWrite, the launcher's texts) and the toast (on a worker thread);
+   `op.exe` with the caller's stdin and stdout, its stderr copied through while the tail is kept for `denied` and
+   `timeout`.
+6. **Close** the session (`whoami`, then `signout --all` when signed in; not for service calls), **end** record,
+   remove `holder.json`, release the mutex and exit with `op`'s code. Ctrl+C: `interrupted`, 130; the console closed:
+   129.
+
+The window and toast texts are a Rust copy of the launcher's table (`crates/op-reason-win/src/ui.rs`). A test reads
+`Get-Texts` out of `launcher.ps1` and fails when the two differ: change both together.
+
+## One call through the PowerShell entry (fallback)
 
 1. **Arguments**: from PowerShell, PowerShell's arguments (`'--'` must be quoted); through `op-reason.cmd`, the entry
    splits the process command line itself (empty arguments and `--` survive).
@@ -61,9 +86,9 @@ There is no shared-approval watchdog on Windows (no shared parent process).
 
 ## The launcher contract
 
-Entries (the WSL executable, the Windows entry, or an executable that replaces the Windows entry) and the launcher
-agree on the following. Changing any of it is a contract change: update both sides, `tests/e2e.test.sh` and this
-page.
+The entries that start the launcher (the WSL executable and the PowerShell entry) and the launcher agree on the
+following. Changing any of it is a contract change: update both sides, `tests/e2e.test.sh` and this page.
+`op-reason.exe` does not start the launcher, but it shares the lock and `holder.json`, the log and the window texts.
 
 ### Environment
 
@@ -106,6 +131,8 @@ for other failures before `op.exe` starts, 0 for `notify`.
   `skipped`, waiting up to `lockWait` seconds; `%LOCALAPPDATA%\op-reason\holder.json` names the holder (`time`,
   `caller`, `reason`, `command`, `pid`). A WSL call holds the flock and then the mutex; it passes what is left of its own
   wait as `lockWait`.
+- `op-reason.exe` takes the same mutex around its whole call, before its `start` record, and writes `holder.json` the
+  same way.
 
 ## Log
 
@@ -114,7 +141,7 @@ JSON object per line, renamed to `log.1.jsonl` at 1 MiB. Appends take `log.lock`
 
 | `event` | Fields |
 | --- | --- |
-| `start` | `v`, `id`, `time`, `epoch`, `session`, `mode`, `kind` (`desktop`, `help`, `service-account`, `connect`), `lock` (`held`, `skipped`), `caller` (`type`, `claude_pid`, `herdr`, `cwd`, `repo`, `branch`), `reason` (≤ 500), `args` (masked) |
+| `start` | `v`, `id`, `time`, `epoch`, `session`, `mode`, `kind` (`desktop`, `help`, `service-account`, `connect`), `lock` (`held`, `skipped`; `failed` from `op-reason.exe` when the mutex cannot be used), `caller` (`type`, `claude_pid`, `herdr`, `cwd`, `repo`, `branch`), `reason` (≤ 500), `args` (masked) |
 | `end` | `v`, `id`, `time`, `epoch`, `session`, `result` (`approved`, `ok`, `denied`, `timeout`, `failed`, `launcher-failed`, `interrupted`), `exit`, `seconds`, `window`, `toast`, `others`, `signout`, `watch` (`start`, `end`: `none`, `cleared`, `error` or null) |
 | `refused` | `v`, `id`, `time`, `epoch`, `session`, `why` (`no-reason`, `too-long`, `lock-timeout`, `no-op-exe`, `no-powershell`, `no-wslpath`, `interrupted`), `caller`, `reason`, `args` |
 | `shared-approval` | `v`, `id`, `time`, `epoch`, `when` (`start`, `end`), `cleared` |
@@ -141,4 +168,7 @@ removed). Drained stdin and the stderr tail stay in memory.
 | `tests/windows/entry-plan.test.ps1` | the call table against the Windows entry (Windows PowerShell 5.1 in CI, PowerShell 7 on Linux) |
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the window and its screenshots) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
+| `cargo test` in `crates/op-reason-win` (Linux) | the exe's window texts against `launcher.ps1`, its usage, the command-line length |
+| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer |
+| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` and the PowerShell entry on the Windows runner |
 | [manual-verification.md](../manual-verification.md) | checks with the real 1Password app (by hand) |

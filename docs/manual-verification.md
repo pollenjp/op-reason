@@ -43,7 +43,24 @@ export OPREASON_LANG=en  # or ja
 | 13 | `op item get x` (no reason) | Exit 2, the usage with the hint for AI agents; `op-reason-log` shows `refused (no reason)` |
 | 14 (optional) | With a service account: put the token in `OP_SERVICE_ACCOUNT_TOKEN` without showing it, then `op --reason "manual check 14: service account" vault list >/dev/null` | No window, no prompt, exit 0; `op-reason-log` shows `ok (SA)` |
 
-## Checks on Windows
+## Checks on Windows: op-reason.exe
+
+Download `op-reason.exe` from a release (or the `op-reason-exe` artifact of a pull request's Windows exe workflow) and
+check its SHA-256 as the README shows. The checks call it by its full name, `op-reason.exe`, so that a PowerShell entry
+on `PATH` cannot answer instead. They take about 15 minutes and show about ten prompts.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| E1 | In PowerShell: `op-reason.exe --version` | The version. If Windows refuses to start it (Smart App Control) or warns (SmartScreen), note the exact message: the other E checks cannot run, and this machine needs the PowerShell entry (the W checks) |
+| E2 | `op-reason.exe --reason "check E2: list vaults" vault list > $null`, approve | Window at the top right and a toast, one prompt, exit 0; `op-reason.exe --log` shows `approved` |
+| E3 | Run E2 again | A prompt again |
+| E4 | In cmd.exe: `op-reason.exe --reason "check E4: from cmd" whoami`, approve | Works the same from cmd.exe |
+| E5 | Terminal A (WSL): `op --reason "check E5 WSL" vault list >/dev/null`, do not answer. Terminal B (PowerShell): `op-reason.exe --reason "check E5 exe" vault list > $null` | B says it waits for another op call; after you answer A, B's window and prompt appear |
+| E6 | As E5 with `$env:OPREASON_LOCK_WAIT = 10` in B and A unanswered for 15 seconds, then deny A | B exits with 75 and names A's reason; `op-reason.exe --log` shows B as `refused (lock wait timed out)` |
+| E7 | `op-reason.exe --reason "check E7: deny" vault list`, **deny** | Exit not 0, op's error on stderr; `op-reason.exe --log` shows `denied` |
+| E8 | Press Ctrl+C while the prompt of `op-reason.exe --reason "check E8: interrupt" vault list` is open | The window disappears; deny the prompt if it stays. `op-reason.exe --log --json` shows `interrupted` with exit 130, and `op.exe whoami` says that it is not signed in |
+
+## Checks on Windows: the PowerShell entry (fallback)
 
 Use the release zip (or `windows/op-reason.ps1`, `windows/op-reason.cmd` and `launcher/launcher.ps1` from the
 repository, side by side in one folder on `PATH`).

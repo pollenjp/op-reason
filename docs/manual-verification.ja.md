@@ -43,7 +43,24 @@ export OPREASON_LANG=ja  # 英語なら en
 | 13 | `op item get x` (理由なし) | 終了コード 2、AI エージェント向けの案内つきの使い方。`op-reason-log` に `断った (理由なし)` |
 | 14 (任意) | service account があれば、token を表示せずに `OP_SERVICE_ACCOUNT_TOKEN` に入れ、`op --reason "確認 14: service account" vault list >/dev/null` | 窓も画面も出ず、終了コード 0。`op-reason-log` に `成功 (SA)` |
 
-## Windows で確かめること
+## Windows で確かめること: op-reason.exe
+
+Release (か、pull request の Windows exe の workflow の `op-reason-exe` の artifact) から `op-reason.exe` を落とし、README の
+とおりに SHA-256 を確かめます。`PATH` にある PowerShell の入口が代わりに応えないよう、`op-reason.exe` と名前を全部書いて
+呼びます。約 15 分かかり、画面は 10 回ほど出ます。
+
+| # | すること | 見込み |
+| --- | --- | --- |
+| E1 | PowerShell で `op-reason.exe --version` | 版が出る。Windows が起こすのを断った (Smart App Control) か警告を出した (SmartScreen) ときは、出た文をそのまま書き留める。ほかの E は確かめられず、このマシンでは PowerShell の入口 (W の確認) を使う |
+| E2 | `op-reason.exe --reason "確認 E2: vault の一覧" vault list > $null`、許可 | 右上に窓と toast、画面は 1 回、終了コード 0。`op-reason.exe --log` に `許可` |
+| E3 | E2 をもう一度 | 画面がまた出る |
+| E4 | cmd.exe で `op-reason.exe --reason "確認 E4: cmd から" whoami`、許可 | cmd.exe からも同じく動く |
+| E5 | 端末 A (WSL): `op --reason "確認 E5 WSL" vault list >/dev/null`、まだ応えない。端末 B (PowerShell): `op-reason.exe --reason "確認 E5 exe" vault list > $null` | B はほかの op の呼び出しを待つと出す。A に応えると B の窓と画面が出る |
+| E6 | E5 と同じで、B に `$env:OPREASON_LOCK_WAIT = 10` を付け、A に 15 秒応えず、そのあと A を拒否 | B は A の理由を出して 75 で終わる。`op-reason.exe --log` で B は `断った (承認待ちが終わらない)` |
+| E7 | `op-reason.exe --reason "確認 E7: 拒否" vault list`、**拒否** | 終了コードは 0 以外で、op の誤りが stderr に出る。`op-reason.exe --log` に `拒否` |
+| E8 | `op-reason.exe --reason "確認 E8: 止める" vault list` の画面が出ている間に Ctrl+C | 窓が消える。画面が残れば拒否する。`op-reason.exe --log --json` に `interrupted` と終了コード 130 があり、`op.exe whoami` は sign in していないと出す |
+
+## Windows で確かめること: PowerShell の入口 (回避経路)
 
 Release の zip (か、repo の `windows/op-reason.ps1`・`windows/op-reason.cmd`・`launcher/launcher.ps1` を `PATH` の 1 つの
 フォルダーに並べたもの) を使います。

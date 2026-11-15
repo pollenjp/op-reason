@@ -18,6 +18,10 @@ description: >-
   the command; the person approves or denies in 1Password's own prompt;
 - is logged (`op-reason-log`).
 
+On Windows the command is `op-reason` (`op-reason.exe`, or `op-reason.ps1` / `op-reason.cmd` where Smart App Control
+blocks the exe): write `op-reason --reason …` wherever this guide writes `op --reason …`, and `op-reason --log` for the
+log. There, `op` is the 1Password CLI itself, which must never be called directly (below).
+
 ## Calling op
 
 ```sh
@@ -45,7 +49,7 @@ op --reason "read the staging DB password to run the migration" read "op://Priva
 | op's `[ERROR] … authorization timeout` | nobody answered the prompt | the same: ask, do not call again |
 | exit 75, "Another op call is still waiting for its approval" | another call holds the lock while its prompt is open | tell the user; call again after that prompt is answered |
 | exit 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or could not be started (the message says which) | tell the user; do not work around it with another op |
-| exit 1 with an `op-reason: launcher:` line | the launcher could not start op | report the line |
+| exit 1 with an `op-reason: launcher:` line (`op-reason.exe`: `could not start op.exe`) | op could not be started | report the line |
 
 Do not retry denied or timed-out calls: every retry shows another prompt, and people who see many prompts start
 approving them out of habit, which defeats the rule "deny any prompt that comes without the window".

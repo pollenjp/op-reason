@@ -1,0 +1,140 @@
+# op-reason.exe, the Windows entry (crates/op-reason-win, a Cargo workspace of its own). Lints and tests it, builds
+# the exe and its release assets, runs it with the fake op.exe on a real Windows desktop, takes screenshots of its
+# window and of the window of the PowerShell entry (the fallback where Smart App Control blocks the exe), measures how
+# fast both start, and puts the screenshots on the pull request.
+name: Windows exe
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Also keeps two runs of one pull request from writing the screenshot branch and comment at the same time.
+concurrency:
+  group: windows-exe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: op-reason.exe, portable parts on Linux (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: crates/op-reason-win
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Format
+        # -p, not --all: --all also formats the core (a path dependency), which the main workspace checks
+        run: nix develop path:../../nix --command cargo fmt --check -p op-reason-win -p fake-op
+      - name: Clippy
+        run: nix develop path:../../nix --command cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Tests (the window texts against launcher/launcher.ps1, the usage, the command-line length)
+        run: nix develop path:../../nix --command cargo test --locked --workspace
+
+  windows:
+    name: op-reason.exe on Windows (clippy, test, build, screenshots, timing)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crates/op-reason-win
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (crates/op-reason-win/rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Clippy (the Windows-only code compiles only here)
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build the fake op.exe
+        run: cargo build --locked -p fake-op
+      - name: Tests (the desktop-mode tests show the window on the runner's desktop)
+        run: cargo test --locked --workspace
+      - name: Release build
+        run: cargo build --locked --release -p op-reason-win
+      # .cargo/config.toml links the C runtime statically: the exe must start on a Windows without the Visual C++
+      # Redistributable.
+      - name: No Visual C++ runtime DLL among the imports
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $imports = & $dumpbin.FullName /nologo /dependents target/release/op-reason.exe
+          $imports
+          if ($imports -match 'vcruntime|msvcp|api-ms-win-crt') { throw 'op-reason.exe imports the Visual C++ runtime' }
+      - name: Release assets (the script that release.yml runs)
+        shell: pwsh
+        run: ../../.github/scripts/windows-exe-dist.ps1 -Exe target/release/op-reason.exe -Out dist
+      - name: The SHA-256 file checks with sha256sum
+        shell: bash
+        working-directory: crates/op-reason-win/dist
+        run: sha256sum -c op-reason.exe.sha256
+      # For trying a pull request's exe by hand (unsigned: Smart App Control may block it).
+      - name: Upload the exe
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: op-reason-exe
+          path: crates/op-reason-win/dist/
+          if-no-files-found: error
+      - name: Screenshots and timings (the exe, and the PowerShell entry of the same tree)
+        shell: pwsh
+        run: >-
+          ../../.github/scripts/windows-exe-shots.ps1
+          -Exe target/release/op-reason.exe -FakeOp target/debug/op.exe
+          -Launcher ../../launcher/launcher.ps1 -Entry ../../windows/op-reason.ps1 -EntryCmd ../../windows/op-reason.cmd
+          -Out screenshots
+      - name: Upload screenshots and timings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-exe-screenshots
+          path: crates/op-reason-win/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Only this job has write access, and it runs no code from the build: it posts the screenshots that the Windows job
+  # uploaded. The three conditions: failed runs' screenshots are wanted too (always()), only pull requests have a
+  # number, and pull requests from forks get no write token.
+  screenshots:
+    name: op-reason.exe screenshots on the pull request
+    needs: windows
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the screenshot branch
+      pull-requests: write # the sticky comment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-exe-screenshots
+          path: screenshots
+        continue-on-error: true
+      # The branch and the marker differ from windows.yml's, so the two comments do not overwrite each other;
+      # screenshots-cleanup.yml deletes both branches when the pull request closes.
+      - name: Post the screenshots
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          SHOTS_DIR: screenshots
+          SHOTS_MARKER: "<!-- windows-exe-screenshots -->"
+          SHOTS_BRANCH: windows-exe-screenshots/pr-${{ github.event.pull_request.number }}
+          SHOTS_TITLE: "op-reason.exe and the PowerShell entry on Windows"
+          SHOTS_SOURCE: .github/workflows/windows-exe.yml
+          GRID_COLS: "3"
+          IMG_WIDTH: "320"
+        run: >-
+          .github/scripts/pr-screenshots.sh
+          "${{ github.event.pull_request.number }}"
+          "${{ github.event.pull_request.head.sha }}"
+          "${{ needs.windows.result }}"
