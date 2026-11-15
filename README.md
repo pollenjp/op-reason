@@ -21,7 +21,7 @@ for before you approve it, one approval never covers later requests, and you can
 - **One approval leaks to later calls.** The 1Password desktop app binds a CLI approval to the process that started
   `op.exe`. From WSL every `op.exe` is a child of the same `wslhost` that all terminals share, so a single approval
   reaches later calls and other terminals. op-reason starts a fresh `powershell.exe` for every call, starts `op.exe`
-  from it, and signs out at the end.
+  from it, and signs out at the end. On Windows, `op-reason.exe` is itself the fresh process of each call.
 - **The prompt does not say who asks.** 1Password's prompt names only the terminal ("WindowsTerminal", or "wslhost"
   from WSL), whatever process asked. op-reason's window shows the caller (a person or Claude Code with its process id),
   the repository, branch and directory, the reason and the command.
@@ -31,11 +31,13 @@ for before you approve it, one approval never covers later requests, and you can
 
 ![op-reason components](docs/architecture/plantuml/out/01_overview.svg)
 
-For every call the entry (the WSL executable, or `op-reason.ps1` on Windows) checks the reason, collects the caller,
-and starts a fresh `powershell.exe` that runs the launcher (a PowerShell script; the WSL executable embeds it). The
-launcher takes a lock shared by WSL and Windows (one approval prompt at a time), shows the window at the top right of
-the screen, starts `op.exe` with your stdin, stdout and stderr, and when `op` exits runs `op.exe whoami` and, if a
-session is open, `op.exe signout --all`. Details: [docs/architecture/README.md](docs/architecture/README.md).
+For every call from WSL, the WSL executable checks the reason, collects the caller, and starts a fresh
+`powershell.exe` that runs the launcher (a PowerShell script that the executable embeds). The launcher takes a lock
+shared by WSL and Windows (one approval prompt at a time), shows the window at the top right of the screen, starts
+`op.exe` with your stdin, stdout and stderr, and when `op` exits runs `op.exe whoami` and, if a session is open,
+`op.exe signout --all`. On Windows, `op-reason.exe` does all of this in its own process, with the same lock, window
+texts and log. (The PowerShell entry, the fallback for machines where Smart App Control blocks `op-reason.exe`,
+starts the launcher as WSL does.) Details: [docs/architecture/README.md](docs/architecture/README.md).
 
 ## Requirements
 
@@ -43,13 +45,15 @@ session is open, `op.exe signout --all`. Details: [docs/architecture/README.md](
   are found)
 - On Windows: the 1Password desktop app with **Settings → Developer → Integrate with 1Password CLI** turned on, and the
   1Password CLI (`op.exe`, for example `winget install AgileBits.1Password.CLI`)
-- Windows PowerShell 5.1 (part of Windows)
+- Windows PowerShell 5.1 (part of Windows), for calls from WSL and for the PowerShell entry (`op-reason.exe` does not
+  use it)
 
 ## Install
 
 ### From a release
 
-Releases start with v0.1.0. Each release has static Linux executables for x86_64 and aarch64 with SHA-256 files.
+Releases start with v0.1.0. Each release has static Linux executables for x86_64 and aarch64 with SHA-256 files, and
+the Windows files described under [On Windows](#on-windows).
 
 ```sh
 arch=$(uname -m)   # x86_64 or aarch64
@@ -73,9 +77,43 @@ The flake also works as an input: `packages.<system>.default` and `packages.<sys
 
 ### On Windows
 
-Each release has `op-reason-windows.zip` (with a `.sha256` file): `op-reason.ps1` (the entry), `op-reason.cmd` (a shim
-for cmd.exe and other programs), `launcher.ps1` and `SKILL.md`. Extract it, keep the files together, and put the folder
-in your `PATH`.
+The Windows entry is `op-reason.exe`, one program that does the whole call itself: the reason, the lock, the window,
+`op.exe`, the sign-out and the log. Each release has `op-reason.exe` with a `.sha256` file. In PowerShell:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\op-reason"    # any folder; it is added to your PATH below
+$base = 'https://github.com/pollenjp/op-reason/releases/latest/download'
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest "$base/op-reason.exe" -OutFile "$dir\op-reason.exe" -UseBasicParsing
+Invoke-WebRequest "$base/op-reason.exe.sha256" -OutFile "$dir\op-reason.exe.sha256" -UseBasicParsing
+$want = (Get-Content "$dir\op-reason.exe.sha256").Split(' ')[0]
+if ((Get-FileHash "$dir\op-reason.exe" -Algorithm SHA256).Hash -ne $want) { throw 'the SHA-256 does not match' }
+& "$dir\op-reason.exe" --version
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($userPath -split ';') -notcontains $dir) {
+  [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')    # for terminals opened from now on
+}
+```
+
+- **`op-reason.exe` is not signed.** Windows may warn before it starts (SmartScreen), and with Smart App Control on it
+  may refuse to start it at all, again for each new version. Then use the PowerShell entry below.
+- It is called the same way from PowerShell, cmd.exe and other programs, and the arguments reach `op` as given (`--`
+  needs no quotes).
+- **Output in PowerShell**: PowerShell decodes a program's output with `[Console]::OutputEncoding`. When `op`'s output
+  is not ASCII, run `[Console]::OutputEncoding = [Text.Encoding]::UTF8` before `$x = op-reason …`. For binary output
+  use `op`'s `--out-file`.
+- **The log** is `%LOCALAPPDATA%\op-reason\log.jsonl` (the same format as on WSL); `op-reason --log` shows it.
+- Calls from WSL and from Windows run one at a time: `op-reason.exe` and the launcher hold the mutex `Local\op-reason`
+  while a call runs.
+
+#### If Smart App Control blocks op-reason.exe: the PowerShell entry
+
+Each release also has `op-reason-windows.zip` (with a `.sha256` file): `op-reason.ps1` (the entry), `op-reason.cmd` (a
+shim for cmd.exe and other programs), `launcher.ps1` and `SKILL.md`. These are scripts for Windows PowerShell, which
+comes with Windows, and they ran on a machine with Smart App Control on. They are slower: the window appears one to
+one and a half seconds after the call, against a few tens of milliseconds for `op-reason.exe` (measured on GitHub's
+Windows runners). Take `op-reason.exe` out of your `PATH`, extract the zip, keep the files together, and put the
+folder in your `PATH`.
 
 - **From PowerShell**, `op-reason` runs `op-reason.ps1`. Scripts must be allowed: the default execution policy
   (Restricted) refuses them, and files from the internet carry the Mark of the Web. Either
@@ -89,10 +127,8 @@ in your `PATH`.
   `op run`: `op-reason --reason "…" run '--' my-command`.
 - **Output in PowerShell**: `$x = op-reason …` captures `op`'s output as text (UTF-8). For binary output use
   `op`'s `--out-file`, or `op-reason.cmd` with a redirection in cmd.exe.
-- **The log** is `%LOCALAPPDATA%\op-reason\log.jsonl` (the same format as on WSL). There is no log viewer on Windows
-  yet: `Get-Content $env:LOCALAPPDATA\op-reason\log.jsonl | ConvertFrom-Json | Format-Table time, event, reason`.
-- Calls from WSL and from Windows run one at a time: the launcher holds the mutex `Local\op-reason` while a call
-  runs.
+- **The log** is the same file. The PowerShell entry has no log viewer:
+  `Get-Content $env:LOCALAPPDATA\op-reason\log.jsonl | ConvertFrom-Json | Format-Table time, event, reason`.
 
 ### fish completion
 
@@ -118,7 +154,7 @@ op --reason "read the Proxmox API token to create the staging VM" read "op://Pri
 - **Deny any 1Password CLI approval prompt that comes without the op-reason window.**
 
 The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves the same, except that `--help` and
-`--version` alone are the wrapper's own.
+`--version` alone are the wrapper's own. On Windows, type `op-reason`.
 
 ### Wrapper options (first argument only)
 
@@ -139,7 +175,8 @@ op-reason-log --all        # everything kept
 op-reason-log --json       # one JSON object per call, reason and command not cut
 ```
 
-The log is `${XDG_STATE_HOME:-~/.local/state}/op-reason/log.jsonl` (renamed to `log.1.jsonl` at 1 MiB). It never holds
+The log is `${XDG_STATE_HOME:-~/.local/state}/op-reason/log.jsonl` on WSL and `%LOCALAPPDATA%\op-reason\log.jsonl` on
+Windows, where `op-reason --log` takes the same options (renamed to `log.1.jsonl` at 1 MiB). It never holds
 `op`'s output or tokens; values of `--session`, `--secret-key` and `name=value` arguments are masked. The record format
 is described in [docs/architecture/README.md](docs/architecture/README.md).
 
@@ -156,14 +193,14 @@ reason and what to do when a call is denied or times out (do not retry; ask the 
 | 2 | no reason, an empty reason, arguments too long for Windows, or a wrong wrapper option |
 | 75 | another call (WSL or Windows) is still waiting for its approval (the lock wait timed out) |
 | 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or `powershell.exe` could not be started |
-| 1 | the launcher could not start `op.exe` |
-| 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL); Windows logs 130 for Ctrl+C |
+| 1 | the launcher or `op-reason.exe` could not start `op.exe` |
+| 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL); on Windows, 130 for Ctrl+C and 129 when the console of `op-reason.exe` closes |
 
 ### Environment variables
 
 | Variable | Meaning |
 | --- | --- |
-| `OPREASON_LANG` | `en` or `ja`: language of messages, the window and the log viewer. Default: from `LC_ALL`, `LC_MESSAGES`, `LANG` (`ja…` → Japanese), otherwise English |
+| `OPREASON_LANG` | `en` or `ja`: language of messages, the window and the log viewer. Default: from `LC_ALL`, `LC_MESSAGES`, `LANG` (`ja…` → Japanese), on Windows then the display language, otherwise English |
 | `OPREASON_LOCK_WAIT` | seconds to wait for another call's approval (default 90, below the 120-second default timeout of Claude Code's Bash tool) |
 | `OPREASON_OP_EXE` | path of `op.exe` (default: `op.exe` in `PATH`) |
 | `OPREASON_POWERSHELL` | the `powershell.exe` command (default `powershell.exe`) |
@@ -187,8 +224,9 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 - **Shared approvals.** Before and after each call op-reason runs `op.exe whoami` directly from WSL. If that succeeds,
   an approval usable from every terminal exists (someone approved a prompt without the window, or a tool ran `op.exe`
   directly); op-reason signs it out, logs it and shows a notification.
-- **Ctrl+C on Windows**: a call stopped by Ctrl+C is logged as `interrupted` (exit 130) when PowerShell lets the
-  entry clean up; the exit code of the PowerShell process itself is PowerShell's.
+- **Ctrl+C on Windows**: `op-reason.exe` stops `op`, signs out, logs `interrupted` and exits with 130. Through the
+  PowerShell entry, a call stopped by Ctrl+C is logged as `interrupted` (exit 130) when PowerShell lets the entry clean
+  up; the exit code of the PowerShell process itself is PowerShell's.
 - **pipes on Windows**: one op-reason call piped into another (`op-reason … | op-reason …`) is not detected on Windows;
   the second call can wait for the lock until `OPREASON_LOCK_WAIT` runs out. Store the first output in a variable.
 - The WSL watchdog runs `op.exe signout --all` outside the Windows lock; when it finds a shared approval it can close
@@ -201,11 +239,14 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 nix develop path:./nix                       # Rust, pwsh, fish, jq, shellcheck, shfmt
 cargo test --workspace                       # unit tests and the call table
 cargo build && bash tests/run-all.sh         # black-box tests with fake powershell.exe and op.exe
+# op-reason.exe is a Cargo workspace of its own: in crates/op-reason-win, `cargo build -p fake-op` and then
+# `cargo test --workspace` on Windows (on Linux, the portable parts only)
 # On Windows (Windows PowerShell 5.1): tests\windows\launcher.test.ps1, entry.test.ps1, entry-plan.test.ps1
 ```
 
 - The checks with the real 1Password app are listed in [docs/manual-verification.md](docs/manual-verification.md).
-- The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md).
+- The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md);
+  `op-reason.exe`: [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md).
 - Where to read what: [docs/README.md](docs/README.md).
 
 ## License

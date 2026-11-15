@@ -9,7 +9,8 @@ package "WSL" {
   file "~~/.local/state/op-reason/\nlog.jsonl" as WSLLOG
 }
 package "Windows" {
-  component "op-reason.cmd\nop-reason.ps1\n(PR 2)" as WINENTRY #F2F2F2
+  component "op-reason.exe\n(the Windows entry,\nfresh process per call)" as WINEXE #E8F1FB
+  component "op-reason.cmd\nop-reason.ps1\n(fallback if Smart App Control\nblocks op-reason.exe)" as WINENTRY #F2F2F2
   component "powershell.exe\nlauncher.ps1\n(fresh process per call)" as LAUNCHER #FFF8DC
   component "op.exe\n(1Password CLI)" as OPEXE
   component "1Password app\n(approval prompt)" as APP
@@ -21,7 +22,10 @@ WSLBIN --> LAUNCHER : payload (env)\nstdin / stdout / stderr
 WINENTRY --> LAUNCHER : payload (env)
 LAUNCHER --> WIN : shows
 LAUNCHER --> OPEXE : starts, then\nwhoami + signout --all
+WINEXE --> WIN : shows
+WINEXE --> OPEXE : starts, then\nwhoami + signout --all
 OPEXE --> APP : asks
 WSLBIN --> WSLLOG : start / end / refused
+WINEXE --> WINLOG : same format
 WINENTRY --> WINLOG : same format
 @enduml

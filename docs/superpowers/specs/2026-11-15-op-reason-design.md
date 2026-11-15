@@ -131,6 +131,10 @@ To make C' possible:
   executable can follow them (same mutex name, same log format and location, same exit codes; it may also accept the
   launcher payload).
 
+Decision (2026-11-15): C' became the main Windows entry. `op-reason.exe` ships in the releases, unsigned (no signing
+application for now), and the PowerShell entry of this design stays as the fallback for machines where Smart App
+Control blocks the exe. Calls from WSL still use the launcher. C' is described in `2026-11-15-windows-exe-design.md`.
+
 ## 4. Command line
 
 ### 4.1 Invocation names
@@ -604,8 +608,8 @@ dates are checked by hand).
 
 ## 11. Distribution
 
-- GitHub Releases: Linux x86_64 and aarch64 binaries (musl, static) with SHA-256 files; PR 2 adds the Windows zip. A
-  workflow builds them on a `v*` tag. Tags and releases are made after merge, by the maintainer.
+- GitHub Releases: Linux x86_64 and aarch64 binaries (musl, static) with SHA-256 files; PR 2 adds the Windows zip, and
+  C' adds `op-reason.exe` (3.1). A workflow builds them on a `v*` tag. Tags and releases are made after merge, by the maintainer.
 - Nix flake: `packages.default` (`op-reason`, `op-reason-log`, fish completion for `op-reason`) and `packages.op` (adds
   the `op` symlink and the fish completion for `op`). The author's dotfiles will take the flake as an input.
 - Not published to crates.io, Homebrew or apt.

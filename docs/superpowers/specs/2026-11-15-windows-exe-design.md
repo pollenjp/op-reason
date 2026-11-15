@@ -1,15 +1,16 @@
 # op-reason on Windows as one Rust exe (plan C') — design
 
 - Date: 2026-11-15
-- Status: prototype for comparison. Not the default plan. The default Windows entry is plan A' (PowerShell entry +
-  PowerShell launcher), described in `2026-11-15-op-reason-design.md` ("the A' spec" below).
+- Status: adopted on 2026-11-15 as the main Windows entry. The PowerShell entry and launcher of plan A' (described in
+  `2026-11-15-op-reason-design.md`, "the A' spec" below) stay as the fallback for machines where Smart App Control
+  blocks the unsigned exe. The exe was first built as a prototype to compare with A'; §16 keeps the comparison.
 - Scope: the Windows side only. The WSL side (the Rust binary, its flock and pipe handling, the embedded
-  `launcher.ps1`) is the same in A' and C' and is not changed here.
+  `launcher.ps1`) is not changed here.
 
 ## 1. Goal and non-goals
 
-Goal: run every Windows-native call of op-reason through one native executable, `op-reason.exe`, and compare it
-with plan A' on the same contract, so that the author can decide which Windows entry to ship.
+Goal: run every Windows-native call of op-reason through one native executable, `op-reason.exe`, on the same
+contract as plan A', so that the PowerShell entry can stay as a fallback that behaves the same.
 
 ```text
 op-reason --reason "<why>" <op arguments...>
@@ -20,12 +21,12 @@ running `launcher.ps1` for every call. In C', the same command is `op-reason.exe
 everything the entry and the launcher do: it reads the reason, finds the caller and the place, takes the lock,
 draws the window, shows the toast, starts `op.exe`, closes the CLI session and writes the record.
 
-Non-goals (this PR):
+Non-goals:
 
-- Calling `op-reason.exe` from WSL instead of `launcher.ps1`. Discussed in §12, not built.
-- Signing the exe or applying to SignPath. §13 lists what an application needs.
+- Calling `op-reason.exe` from WSL instead of `launcher.ps1`. Discussed in §12, not built here.
+- Signing the exe: no signing application for now (decided on 2026-11-15). §13 keeps what an application would need.
 - Making the window richer (stage ④). §7.4 says how the chosen window code serves as its base.
-- Tags, GitHub Releases, crates.io.
+- Tags and publishing releases (the release workflow builds the exe; the maintainer pushes the tag), crates.io.
 
 ## 2. Why the process boundary matters (facts this design keeps)
 
@@ -259,6 +260,9 @@ Risks:
 Middle ground, if ever wanted: keep `launcher.ps1` as the WSL default, and let WSL use the exe only when the user
 opts in and the exe is signed; fall back to the launcher when the exe fails to start.
 
+Status (2026-11-15): not part of this change. Calls from WSL keep the launcher; moving them to the exe is a design of
+its own.
+
 ## 13. Signing and Smart App Control
 
 The author's machine has Smart App Control on. SAC lets an unsigned exe run only after the cloud has built
@@ -281,8 +285,8 @@ SignPath Foundation signs open-source projects for free. Conditions read on 2026
 
 What op-reason would need before applying:
 
-1. Ship `op-reason.exe` unsigned in a GitHub Release (for example next to the PowerShell zip, marked as a
-   preview), because the signed form has to be released first. SAC users will see it blocked until signed.
+1. Ship `op-reason.exe` unsigned in a GitHub Release (the release workflow attaches it), because the signed form has
+   to be released first. SAC users may see it blocked until signed.
 2. Turn on MFA for every maintainer on GitHub and SignPath.
 3. Add the roles and the sentence above to the README (not in this PR).
 4. Build the release exe only in GitHub Actions from a tag, with the version resource and the manifest version
@@ -292,8 +296,11 @@ What op-reason would need before applying:
 5. Keep the license MIT OR Apache-2.0 and keep the code free of anything that disables or works around Windows
    security features.
 
-Until the exe is signed, the PowerShell entry stays the safe default on SAC machines, which is why A' is the
-default plan.
+Until the exe is signed, the PowerShell entry is the way on machines where Smart App Control blocks it.
+
+Decision (2026-11-15): no application for now. The exe ships unsigned in the releases as the main Windows entry; the
+README says that Smart App Control may block it and that the PowerShell entry is the fallback then. The conditions and
+steps above stay as a record for a later decision.
 
 ## 14. Build, layout and tests
 
@@ -307,14 +314,18 @@ default plan.
     starting op.exe and signing out, console events.
   - `src/ui.rs`: the launcher's `Build-Ui` and its text table in Rust. A test reads the table out of
     `launcher/launcher.ps1` and fails when a text differs.
-  - `src/cmdline.rs` (the command-line length) and `src/messages.rs` (the three messages whose core wording speaks
-    of WSL or of the payload).
+  - `src/cmdline.rs` (the command-line length) and `src/messages.rs` (the usage and the messages whose core wording
+    speaks of WSL or of the payload).
   - Everything else (planning, masking, place, records and their file, result, messages, log viewer, time) is the
     core's, the same code the WSL binary runs.
 - Dependencies of the exe: the core, `serde`/`serde_json` (the holder file), `windows` and `windows-numerics`
   (Microsoft); build dependency `embed-manifest` (no `rc.exe`). Versions are at least 7 days old when locked; the
   core's dependencies are locked at the same versions as in the main lock file.
-- Release profile: LTO, one codegen unit, stripped.
+- Release profile: LTO, one codegen unit, stripped. The C runtime is linked statically
+  (`crates/op-reason-win/.cargo/config.toml`), so the exe needs no Visual C++ Redistributable; CI checks its imports.
+- Release: the release workflow builds `op-reason.exe` on a Windows runner and attaches it with its SHA-256 file
+  (`sha256sum` format) to the draft release. The asset step is `.github/scripts/windows-exe-dist.ps1`, which the pull
+  request workflow runs too, followed by `sha256sum -c`.
 - Tests:
   - The core's unit tests and the call table cover the planning that the exe uses as is.
   - On Linux: the window texts against `launcher.ps1`, the command-line length.
@@ -322,11 +333,13 @@ default plan.
     (empty, spaces, quotes, trailing backslashes, `&|<>^%!`, Japanese, newline, tab, emoji, an unpaired surrogate),
     stdin bytes pass through, stderr carries only op's text, the exit code is op's, the environment per kind, `whoami`
     then `signout --all`, refusals and their records, `denied` and `timeout`, two concurrent calls wait for the mutex
-    and the second times out with 75 naming the holder, the window really shows, the wrapper options, the log viewer.
-  - A screenshot job that shows the window with a sleeping fake `op.exe` and captures it, next to the A' launcher's
-    window with the same facts, and a timing job that measures (black box, from process start) how long until the
-    window is visible and how long a whole call takes, for the exe and for the A' launcher started directly. The
-    screenshots go to the pull request as one comment.
+    and the second times out with 75 naming the holder, the window really shows, the wrapper options, the usage, the
+    log viewer, and the `--` of `op run` from Windows PowerShell 5.1 and pwsh (unquoted and quoted).
+  - A screenshot job that shows the window with a sleeping fake `op.exe` and captures it, next to the window of the
+    PowerShell entry of the same tree, and a timing job that measures (black box, from process start) how long until
+    the window is visible and how long a whole call takes, for the exe, for the PowerShell entry (through
+    `op-reason.cmd` and through `powershell -File`) and for the launcher started directly. The screenshots go to the
+    pull request as one comment.
 - Local checks from Linux: `cargo clippy --target x86_64-pc-windows-msvc` (needs only the target's standard
   library). The exe is not started on the author's machine by the agent.
 
@@ -340,9 +353,27 @@ default plan.
 | Too long | base64 of the arguments over 28,000, or a payload over 32,000 | the `op.exe` command line over 32,766 | no payload |
 | Caller | the process chain from CIM | the same rules; the chain from a Toolhelp snapshot, which also guards against reused PIDs | faster, and a reused PID does not join the chain |
 | Log viewer | none on Windows | `op-reason --log` | the core's viewer is Rust |
-| Messages | the PowerShell entry's own texts | the core's texts, which say `op` (the WSL command name) in the usage; Windows wording for a missing `op.exe` and for the length limit | one copy of the texts |
+| Messages | the PowerShell entry's own texts | the core's texts for refusals and the lock; its own usage (`op-reason --reason …`, `op-reason --log`) and Windows wording for a missing `op.exe` and for the length limit | one copy of the shared texts; the core's usage speaks of the WSL path |
 
 ## 16. Comparison with A'
 
-Filled in the PR description with numbers from CI: lines written, start time, what the window can do, SAC and
-signing, `cmd.exe` re-reading the arguments, distribution, and upkeep.
+Measured by the Windows exe workflow on GitHub's `windows-2025` runner with the fake `op.exe`, both entries from the
+same tree (2026-11-15, medians of 10 runs, in milliseconds; every pull request writes a new table to the job summary,
+and the numbers move by tens of percent between runs):
+
+| | A': PowerShell entry through `op-reason.cmd` | A': `powershell -File op-reason.ps1` | C': `op-reason.exe` |
+| --- | ---: | ---: | ---: |
+| Start until the window is visible | 1,046 | 999 | 28 |
+| A whole desktop call (window, toast, op, whoami, signout) | 1,526 | 1,471 | 82 |
+| `op-reason --version` | | 260 | 7 |
+
+The launcher alone (the second half of an A' call) takes 485 ms until its window is visible, and a bare
+`powershell.exe` start 127 ms. The release exe is 884 KiB.
+
+| Point | A' | C' |
+| --- | --- | --- |
+| Smart App Control | scripts for the Windows PowerShell that ships with Windows; they ran with SAC on | unsigned: SAC may block each new version until it has reputation |
+| Arguments | `op-reason.cmd` goes through cmd.exe, which re-parses them; PowerShell takes an unquoted `--` | passed as given from PowerShell, cmd.exe and other programs |
+| Log viewer | none on Windows | `op-reason --log` |
+| Code | about 900 lines of PowerShell for the entry, plus the launcher | about 1,900 lines of Rust for the Windows part (`src/win`, with `unsafe` Win32 calls) on the shared core, plus tests on the runner |
+| Upkeep | one window implementation (WPF), shared with WSL | a second window implementation (Direct2D) as long as WSL uses the launcher (§7.4) |
