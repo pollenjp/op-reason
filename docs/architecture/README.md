@@ -39,7 +39,8 @@ This page describes op-reason as it is now. Why it is built this way is in the d
    (`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -File <launcher.ps1>`).
    stdin and stdout are the caller's; stderr is relayed while its tail is kept.
 8. **Fallback** (`auto` only): when `op-reason.exe` left no status file (it could not be started, or it exited
-   without writing one), one stderr line, then the launcher with the same payload and stdin.
+   without writing one) and the call's run directory is still there, one stderr line, then the launcher with the same
+   payload and stdin.
 9. **Result** from the status file, `op`'s exit code and `op`'s stderr; watchdog again; **end** record (with `runner`,
    and `fallback` when step 8 ran); exit with `op`'s code.
 
@@ -58,7 +59,9 @@ exe ends, its Job Object ends `op.exe` and the prompt.
 
 `op-reason.exe` is `OPREASON_EXE` (a WSL path) or `op-reason.exe` in `PATH`; `launcher.ps1` is looked for in its
 folder (the Windows zip keeps them together); `powershell.exe` is `OPREASON_POWERSHELL` or the one in `PATH`. The
-fallback cannot run `op.exe` twice: the exe writes the status file before anything else and stops when it cannot.
+fallback cannot run `op.exe` twice: the exe writes the status file before anything else and stops when it cannot (also
+when the payload's status path is empty; the WSL executable refuses a call whose paths `wslpath -w` could not
+convert).
 
 ## One call from Windows (op-reason.exe, the entry face)
 
@@ -192,8 +195,8 @@ A call's `start` and `end` share `id`. Denied and timed-out approvals are recogn
 
 `<state>` = `${XDG_STATE_HOME:-~/.local/state}/op-reason/` (mode 0700): `log.jsonl`, `log.1.jsonl`, `log.lock`, `lock`,
 `current.json` (while a call holds the lock), `run/<id>/status.json` and `run/<id>/notify-<when>.json` (during a call;
-the runner writes them through the `\\wsl.localhost\…` path; leftovers older than an hour are removed). Drained stdin
-and the stderr tail stay in memory.
+the runner writes them through the `\\wsl.localhost\…` path; leftovers older than an hour are removed unless the
+process of their call still runs). Drained stdin and the stderr tail stay in memory.
 
 ## Tests
 

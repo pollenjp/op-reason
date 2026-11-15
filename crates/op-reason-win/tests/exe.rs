@@ -1111,6 +1111,17 @@ fn run_stops_when_the_status_file_cannot_be_written() {
         0,
         "without the first write nothing starts: the WSL binary may start the launcher instead"
     );
+
+    // an empty status path (wslpath -w gave nothing) is no path to write: the same
+    p["status"] = "".into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("status path of the payload is empty"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sb.calls(), 0, "op never started");
 }
 
 /// Starts a call whose op sleeps, kills the exe once op runs, and checks that op ends too.

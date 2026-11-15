@@ -217,7 +217,7 @@ reason and what to do when a call is denied or times out (do not retry; ask the 
 | `op`'s code | the call ran |
 | 2 | no reason, an empty reason, arguments too long for Windows, or a wrong wrapper option |
 | 75 | another call (WSL or Windows) is still waiting for its approval (the lock wait timed out) |
-| 127 | `op.exe`, `op-reason.exe` (and its fallback), `launcher.ps1`, `powershell.exe` or `wslpath` was not found, or could not be started |
+| 127 | `op.exe`, `op-reason.exe` (and its fallback), `launcher.ps1`, `powershell.exe` or `wslpath` was not found, or could not be started, or `wslpath -w` could not convert a path |
 | 1 | `op-reason.exe` or the launcher could not start `op.exe` |
 | 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL); on Windows, 130 for Ctrl+C and 129 when the console of `op-reason.exe` closes |
 

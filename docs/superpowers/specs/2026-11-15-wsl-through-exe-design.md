@@ -95,7 +95,9 @@ calls from Windows and from WSL.
 
 ### 4.3 The fallback
 
-In `auto` mode the WSL binary starts the launcher after the exe only when the exe left **no status file at all**:
+In `auto` mode the WSL binary starts the launcher after the exe only when the exe left **no status file at all**, and
+the call's run directory is still there (another call's clean-up could have removed it, and then a missing file proves
+nothing):
 
 - the exe could not be started (`not-started`: starting it failed on the Linux side), or
 - the exe ran and exited without writing the status file (`no-status`, with its exit code). Smart App Control
@@ -116,7 +118,13 @@ and 127, and the message names what is missing.
 
 Why `op.exe` cannot run twice: the exe writes the status file before it does anything else (§5.1), and it stops
 without starting `op.exe` when it cannot write it. A status file therefore exists whenever the exe may have started
-`op.exe`, and the fallback runs only when none exists.
+`op.exe`, and the fallback runs only when none exists. Two guards keep that true (both found in review):
+
+- The WSL binary refuses the call (`no-wslpath`, 127) when `wslpath -w` gives nothing for the status file or `op.exe`
+  (it fails or times out after 10 seconds): an empty status path would let a runner run without a trace. The exe, too,
+  treats a `status` that is there but empty as a status file it cannot write.
+- The clean-up of leftovers (`run/*` older than an hour, A' spec §6.1 step 10) skips the directory of a call whose
+  process still runs: an `op run` can take longer than an hour, and its status file must stay.
 
 Known edge: when the exe starts and dies before its first write, while stdin is a pipe that WSL's interop already
 began to read for it, the bytes it read are lost for the launcher. The exe's first write comes before anything else,
@@ -148,9 +156,10 @@ arguments after `--run` give exit 2. The exe writes no log record in this face: 
 1. Read `OPREASON_PAYLOAD` and remove it from the environment (`op.exe` must not inherit it).
 2. Read the `status` path from the payload, even when the rest of it cannot be used.
 3. Write the status file at once: `{"started":false,"error":"","runner":"exe"}`.
-4. If the payload is empty or not JSON, or the status file cannot be written: print one `op-reason: …` line on
-   stderr and exit 1 without doing anything else. A payload without `status` (allowed by the contract; the WSL binary
-   always sends one, except for the toast of `OPREASON_RUNNER=exe`) runs without the first write.
+4. If the payload is empty or not JSON, or its `status` is empty or not text, or the status file cannot be written:
+   print one `op-reason: …` line on stderr and exit 1 without doing anything else. A payload without `status` (allowed
+   by the contract; the WSL binary always sends one, except for the toast of `OPREASON_RUNNER=exe`) runs without the
+   first write.
 
 ### 5.2 Checks
 
@@ -316,6 +325,7 @@ On a Windows machine with WSL (the CI runners have no WSL2 and no 1Password), `d
 | The exe's argument is `--run` alone; everything else comes in the payload | a fixed argument cannot be broken by the command line WSL builds |
 | The first write is `{"started":false,"error":"","runner":"exe"}`, before the payload is checked | the trace must exist before anything with an effect, and a bad payload is better reported by the exe than retried |
 | No status file can be written → exit 1 before anything else | keeps "a status file exists whenever `op.exe` may have run" |
+| No fallback when the run directory is gone; no call with an empty Windows path; no clean-up of a live call's directory | the review found that each could make a missing status file lie, and `op.exe` run twice |
 | An unknown `OPREASON_RUNNER` means `auto` | the other `OPREASON_` variables fall back to their default too; `auto` still reaches the launcher |
 | `launcher.ps1` is looked for in the exe's folder only (also the folder of an `OPREASON_EXE` whose exe is missing) | the zip keeps them together; no extra variable |
 | An exe missing in `auto` mode falls back with the stderr line | the user learns why the window looks different and how to make it quiet |

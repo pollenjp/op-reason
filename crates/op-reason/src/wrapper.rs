@@ -569,16 +569,30 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         command: args::clip(&call.display, 300, "…"),
         notes,
     });
+    // The runner needs both Windows paths: with an empty status path it could not leave the trace that keeps the
+    // fallback from running op.exe a second time
+    let op_win = launch::wslpath_w(&op_exe);
+    let status_win = launch::wslpath_w(&status_file);
+    for (linux, windows) in [(&op_exe, &op_win), (&status_file, &status_win)] {
+        if windows.is_empty() {
+            return call.refuse(
+                "no-wslpath",
+                contract::EXIT_MISSING,
+                false,
+                &[messages::wslpath_failed(lang, &linux.display().to_string())],
+            );
+        }
+    }
     let payload = Payload {
         v: contract::CONTRACT_VERSION,
         mode: mode.as_str().to_string(),
-        op: Some(launch::wslpath_w(&op_exe)),
+        op: Some(op_win),
         args64: parsed
             .op_args
             .iter()
             .map(|a| base64::encode(&args::os_bytes(a)))
             .collect(),
-        status: Some(launch::wslpath_w(&status_file)),
+        status: Some(status_win),
         lang: lang.code().to_string(),
         lock: lock_mode.to_string(),
         lock_wait: remaining.max(1),
@@ -617,7 +631,8 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     );
 
     // The runner, and in auto mode the launcher when op-reason.exe left no status file (op.exe never runs twice: the
-    // exe writes the status file before anything else)
+    // exe writes the status file before anything else). Only when the run directory is still there: without it, a
+    // missing status file proves nothing.
     let mut fallback: Option<Fallback> = None;
     let mut used = match &plan {
         RunnerPlan::Exe { exe, .. } => Runner::Exe(exe.clone()),
@@ -650,7 +665,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         fallback: true,
         ..
     } = &plan
-        && fs::symlink_metadata(&status_file).is_err()
+        && no_trace(&run_dir, &status_file)
     {
         let (spawn_error, record) = match &outcome {
             Err(e) => (
@@ -696,7 +711,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         },
         Ok((rc, _)),
     ) = (&plan, &outcome)
-        && fs::symlink_metadata(&status_file).is_err()
+        && no_trace(&run_dir, &status_file)
     {
         say(&[messages::exe_no_status(lang, *rc)]);
     }
@@ -737,6 +752,11 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     );
     p.ended = true;
     op_rc
+}
+
+/// `op-reason.exe` left no trace: the run directory is there (no other call removed it) and the status file is not.
+fn no_trace(run_dir: &Path, status_file: &Path) -> bool {
+    run_dir.is_dir() && fs::symlink_metadata(status_file).is_err()
 }
 
 /// The message for a missing runner part.
@@ -844,7 +864,8 @@ fn start_runner(
     Ok((rc, tail))
 }
 
-/// Removes leftovers of calls killed by SIGKILL (`<state>/run/*` older than an hour).
+/// Removes leftovers of calls killed by SIGKILL (`<state>/run/*` older than an hour), but not the directory of a call
+/// whose process still runs (an `op run` can take longer than an hour; its status file must stay).
 fn remove_stale_runs(run_root: &Path, mine: &Path) {
     let Ok(entries) = fs::read_dir(run_root) else {
         return;
@@ -853,6 +874,16 @@ fn remove_stale_runs(run_root: &Path, mine: &Path) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path == mine {
+            continue;
+        }
+        // The id is YYYYmmddTHHMMSS-<pid>-<random>
+        let alive = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.split('-').nth(1))
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_some_and(|pid| Path::new("/proc").join(pid.to_string()).exists());
+        if alive {
             continue;
         }
         let old = entry
@@ -962,7 +993,13 @@ fn notify_shared(
                 let _ = spawn_notify(&runner, &payload);
             } else {
                 let status = run_dir.join(format!("notify-{when}.json"));
-                payload.status = Some(launch::wslpath_w(&status));
+                let status_win = launch::wslpath_w(&status);
+                if status_win.is_empty() {
+                    // No way to tell whether the exe woke up: no fallback, rather than two toasts
+                    let _ = spawn_notify(&runner, &payload);
+                    return notify_herdr(call, when, cleared);
+                }
+                payload.status = Some(status_win);
                 let woke = match spawn_notify(&runner, &payload) {
                     None => false,
                     Some(mut child) => {
@@ -983,7 +1020,10 @@ fn notify_shared(
                         }
                     }
                 };
-                if !woke && let Ok(launcher) = lookup.launcher(Some(folder)) {
+                if !woke
+                    && run_dir.is_dir()
+                    && let Ok(launcher) = lookup.launcher(Some(folder))
+                {
                     payload.status = None;
                     let _ = spawn_notify(&Runner::Launcher(launcher), &payload);
                 }
@@ -993,6 +1033,11 @@ fn notify_shared(
             let _ = spawn_notify(&Runner::Launcher(launcher.clone()), &payload);
         }
     }
+    notify_herdr(call, when, cleared);
+}
+
+/// The herdr notification of a shared approval, inside herdr.
+fn notify_herdr(call: &Call, when: &str, cleared: bool) {
     if std::env::var("HERDR_ENV").as_deref() == Ok("1") && launch::which("herdr").is_some() {
         let (title, body) = messages::shared_notice(call.lang, when, cleared);
         let _ = launch::status_timeout(

@@ -271,6 +271,18 @@ pub fn completion_usage(lang: Lang, got: &str) -> String {
     }
 }
 
+/// `wslpath -w` gave nothing for a path (it failed or timed out).
+pub fn wslpath_failed(lang: Lang, path: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "wslpath -w could not convert {path} (it failed or took longer than 10 seconds), so this call was not run."
+        ),
+        Lang::Ja => format!(
+            "wslpath -w で {path} を変換できなかった (失敗したか 10 秒を超えた) ので、打たずに終えます。"
+        ),
+    }
+}
+
 /// `wslpath` was not found.
 pub fn no_wslpath(lang: Lang) -> String {
     match lang {

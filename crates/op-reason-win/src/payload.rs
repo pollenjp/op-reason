@@ -17,15 +17,16 @@ fn json(raw: &str) -> Result<Value, String> {
 }
 
 /// The `status` path of a payload, read even when the rest of it cannot be used (`None` when it has none). `Err` when
-/// the text is not a JSON object.
+/// the text is not a JSON object, and when `status` is there but empty or not text: the caller asked for a trace that
+/// cannot be written, and running without it could let the WSL binary's fallback run `op.exe` a second time.
 pub fn status_path(raw: &str) -> Result<Option<String>, String> {
     let v = json(raw)?;
     let obj = v.as_object().ok_or("the payload is not a JSON object")?;
-    Ok(obj
-        .get("status")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned))
+    match obj.get("status") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+        Some(_) => Err("the status path of the payload is empty or not text".to_owned()),
+    }
 }
 
 /// The payload, checked: version 1 (the WSL binary and the Windows zip are installed separately and can drift
@@ -136,7 +137,12 @@ mod tests {
                 .contains("version 1, the caller sent 2")
         );
         assert_eq!(status_path(r#"{"v":1,"mode":"notify"}"#), Ok(None));
-        assert_eq!(status_path(r#"{"status":""}"#), Ok(None));
+        assert_eq!(status_path(r#"{"v":1,"status":null}"#), Ok(None));
+        assert!(
+            status_path(r#"{"status":""}"#).is_err(),
+            "an empty path is no path to write"
+        );
+        assert!(status_path(r#"{"status":3}"#).is_err());
         assert!(status_path("[1]").is_err());
         assert!(status_path("nope").is_err());
     }

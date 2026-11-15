@@ -64,15 +64,18 @@
 #       exe missing next to launcher.ps1; each prints one line and records end fallback (why, exit)
 #     - no fallback when the exe wrote the status file (failing before op.exe, or dying after it); op.exe runs exactly
 #       once in every case
+#     - no fallback either when the call's run directory is gone (another call removed it: no status file proves nothing)
 #     - exe mode never falls back; nothing found → 127 (no-exe); launcher mode without launcher.ps1 / powershell.exe →
 #       127 (no-launcher / no-powershell); a fallback without the launcher → 127, end launcher-failed
+#     - wslpath -w gives nothing for the status file → refused (no-wslpath), no runner: an empty status path would
+#       leave no trace
 #     - the shared approval toast falls back the same way
 #   TERM → end interrupted, exit 143; a TERM to the wrapper alone is forwarded to the runner; the runner starts
 #     with no blocked signals (so a TERM or HUP to the process group reaches it); a powershell.exe that cannot be started
 #     (launcher mode) gives 127 with a message
 #   Closed stdin: nothing extra on stderr
 #   Log rotation at 1 MiB; nothing left under the state directory after a call (no run/ entries, no current.json, no
-#     temporary files); run/ entries older than an hour are removed
+#     temporary files); run/ entries older than an hour are removed, unless their call's process still runs
 #   Non-UTF-8 argument bytes reach op unchanged; a removed current directory still runs; a closed stdout does not panic
 #
 # ## How
@@ -80,7 +83,7 @@
 # One fake runner script is installed twice: as op-reason.exe (in FAKE_WIN, which is in PATH, next to a launcher.ps1)
 # and as powershell.exe. As op-reason.exe it first writes the status file, as the real exe does (FAKE_EXE=blocked:
 # writes nothing and exits 1; marker: writes the status file and exits 1; die-after-op: exits 9 after op without the
-# final status). A notify payload goes to FAKE_DIR/notify.<runner>.<pid>.payload (exit 0). Otherwise it writes its
+# final status; rundir-gone: removes the call's run directory and exits 1). A notify payload goes to FAKE_DIR/notify.<runner>.<pid>.payload (exit 0). Otherwise it writes its
 # arguments, its name, OPREASON_PAYLOAD, WSLENV and the token variables to FAKE_DIR/ps.<n>.*, decodes args64, runs the
 # fake op.exe (the payload's op through the fake wslpath) with stdio inherited, writes the status and exits with op's
 # code (FAKE_PS_NO_STATUS=1: no status, exit 1). The fake op.exe logs whoami (0 when FAKE_DIR/shared exists) and
@@ -123,6 +126,7 @@ ln -s "${bin}" "${work}/names/op-reason"
 ln -s "${bin}" "${work}/names/op-reason-log"
 
 fake "${fake_bin}/wslpath" <<'EOF'
+if [[ -n ${FAKE_WSLPATH_FAIL:-} && $2 == *"${FAKE_WSLPATH_FAIL}"* ]]; then exit 1; fi
 case $1 in
   -w) p=${2//\//\\}; printf "C:\\\\fake%s\n" "${p}" ;;
   -u) p=${2#C:\\fake}; printf "%s\n" "${p//\\//}" ;;
@@ -141,6 +145,10 @@ if [[ -n ${status_w} ]]; then status=$(wslpath -u "${status_w}"); fi
 if [[ ${who} == op-reason.exe ]]; then
   if [[ ${FAKE_EXE:-} == blocked ]]; then
     echo "fake: op-reason.exe was blocked" >&2
+    exit 1
+  fi
+  if [[ ${FAKE_EXE:-} == rundir-gone ]]; then
+    rm -rf "${status%/*}"
     exit 1
   fi
   # The real exe writes the status file as soon as it has read the payload
@@ -742,6 +750,24 @@ else
 fi
 
 reset
+FAKE_EXE=rundir-gone run_op rundirgone --reason "run の dir を消される" item get a
+if [[ ${rc} == 1 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field end '.result') == launcher-failed &&
+$(last_field end '.fallback') == null && $(<"${work}/rundirgone.err") != *launcher.ps1* ]]; then
+  ok "no fallback when the run directory is gone (a missing status file proves nothing then)"
+else
+  ng "no fallback when the run directory is gone (a missing status file proves nothing then)" "rc=${rc} ps=$(ps_count) op=$(op_runs) err=$(cat "${work}/rundirgone.err") log=$(cat "${log}")"
+fi
+
+reset
+FAKE_WSLPATH_FAIL=status.json run_op nowslpath --reason "変換できない" item get a
+if [[ ${rc} == 127 && $(ps_count) == 0 && $(op_runs) == 0 && $(last_field refused '.why') == no-wslpath &&
+$(<"${work}/nowslpath.err") == *"wslpath -w で"*"status.json を変換できなかった"* ]]; then
+  ok "wslpath -w gives nothing for the status file → refused (no-wslpath), no runner"
+else
+  ng "wslpath -w gives nothing for the status file → refused (no-wslpath), no runner" "rc=${rc} ps=$(ps_count) err=$(cat "${work}/nowslpath.err") log=$(cat "${log}" 2>&1)"
+fi
+
+reset
 mkdir -p "${work}/badexe"
 printf '#!/nonexistent/interpreter\n' >"${work}/badexe/op-reason.exe"
 chmod +x "${work}/badexe/op-reason.exe"
@@ -1080,13 +1106,14 @@ reset
 detail="$(cat "${work}/closed.err")"
 check "a closed stdin adds nothing to stderr" test "$(<"${work}/closed.err")" == fake-err
 reset
-mkdir -p "${state}/run/old-call"
-touch -d '2 hours ago' "${state}/run/old-call"
+live="20260101T000000-$$-1"
+mkdir -p "${state}/run/old-call" "${state}/run/${live}"
+touch -d '2 hours ago' "${state}/run/old-call" "${state}/run/${live}"
 run_op stale --reason "片付け" item get a
-if [[ ! -e ${state}/run/old-call && -z $(ls -A "${state}/run" 2>/dev/null) ]]; then
-  ok "run/ entries older than an hour are removed, and the call leaves none"
+if [[ ! -e ${state}/run/old-call && -d ${state}/run/${live} && $(ls -A "${state}/run") == "${live}" ]]; then
+  ok "run/ entries older than an hour are removed (not one whose call still runs), and the call leaves none"
 else
-  ng "run/ entries older than an hour are removed, and the call leaves none" "$(ls -lR "${state}" 2>&1)"
+  ng "run/ entries older than an hour are removed (not one whose call still runs), and the call leaves none" "$(ls -lR "${state}" 2>&1)"
 fi
 
 echo "== Unusual inputs"

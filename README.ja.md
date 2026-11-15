@@ -215,7 +215,7 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
 | `op` の終了コード | 呼び出しが走った |
 | 2 | 理由が無い・理由が空・引数が Windows に渡せないほど長い・wrapper の option の誤り |
 | 75 | ほかの呼び出し (WSL か Windows) の承認待ちが終わらない (lock を待つ上限を超えた) |
-| 127 | `op.exe`・`op-reason.exe` (とその回避経路)・`launcher.ps1`・`powershell.exe`・`wslpath` が見つからない、または起こせない |
+| 127 | `op.exe`・`op-reason.exe` (とその回避経路)・`launcher.ps1`・`powershell.exe`・`wslpath` が見つからない・起こせない、または `wslpath -w` がパスを変換できない |
 | 1 | `op-reason.exe` か launcher が `op.exe` を起こせなかった |
 | 129・130・143 | SIGHUP・SIGINT・SIGTERM で止められた (WSL)。Windows では Ctrl+C が 130、`op-reason.exe` のコンソールが閉じられたら 129 |
 
