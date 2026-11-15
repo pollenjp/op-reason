@@ -1,7 +1,7 @@
-# op-reason.exe, the Windows entry (crates/op-reason-win, a Cargo workspace of its own). Lints and tests it, builds
-# the exe and its release assets, runs it with the fake op.exe on a real Windows desktop, takes screenshots of its
-# window and of the window of the PowerShell entry (the fallback where Smart App Control blocks the exe), measures how
-# fast both start, and puts the screenshots on the pull request.
+# op-reason.exe, the Windows entry and the runner of calls from WSL (crates/op-reason-win, a Cargo workspace of its
+# own). Lints and tests it (both faces, with the fake op.exe on a real Windows desktop), builds the exe and the Windows
+# zip of the release, takes screenshots of its window and of the window of the PowerShell entry (the fallback where
+# Smart App Control blocks the exe), measures how fast they start, and puts the screenshots on the pull request.
 name: Windows exe
 
 on:
@@ -38,7 +38,7 @@ jobs:
         run: nix develop path:../../nix --command cargo test --locked --workspace
 
   windows:
-    name: op-reason.exe on Windows (clippy, test, build, screenshots, timing)
+    name: op-reason.exe on Windows (clippy, test, build, zip, screenshots, timing)
     runs-on: windows-2025
     timeout-minutes: 30
     defaults:
@@ -54,7 +54,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build the fake op.exe
         run: cargo build --locked -p fake-op
-      - name: Tests (the desktop-mode tests show the window on the runner's desktop)
+      - name: Tests (both faces; the desktop-mode tests show the window on the runner's desktop)
         run: cargo test --locked --workspace
       - name: Release build
         run: cargo build --locked --release -p op-reason-win
@@ -68,21 +68,21 @@ jobs:
           $imports = & $dumpbin.FullName /nologo /dependents target/release/op-reason.exe
           $imports
           if ($imports -match 'vcruntime|msvcp|api-ms-win-crt') { throw 'op-reason.exe imports the Visual C++ runtime' }
-      - name: Release assets (the script that release.yml runs)
+      - name: The Windows zip (the script that release.yml runs; it checks the zip's entries)
         shell: pwsh
-        run: ../../.github/scripts/windows-exe-dist.ps1 -Exe target/release/op-reason.exe -Out dist
+        run: ../../.github/scripts/windows-dist.ps1 -Exe target/release/op-reason.exe -Out dist
       - name: The SHA-256 file checks with sha256sum
         shell: bash
         working-directory: crates/op-reason-win/dist
-        run: sha256sum -c op-reason.exe.sha256
-      # For trying a pull request's exe by hand (unsigned: Smart App Control may block it).
-      - name: Upload the exe
+        run: sha256sum -c op-reason-windows.zip.sha256
+      # For trying a pull request by hand (the exe is unsigned: Smart App Control may block it).
+      - name: Upload the zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: op-reason-exe
+          name: op-reason-windows
           path: crates/op-reason-win/dist/
           if-no-files-found: error
-      - name: Screenshots and timings (the exe, and the PowerShell entry of the same tree)
+      - name: Screenshots and timings (the exe's two faces, and the PowerShell entry of the same tree)
         shell: pwsh
         run: >-
           ../../.github/scripts/windows-exe-shots.ps1

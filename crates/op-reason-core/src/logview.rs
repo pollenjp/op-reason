@@ -39,6 +39,7 @@ struct Labels {
     refused: &'static str,
     no_window: &'static str,
     lock_skipped: &'static str,
+    fallback: &'static str,
     cleared: &'static str,
     not_cleared: &'static str,
     found_before: &'static str,
@@ -58,6 +59,7 @@ fn labels(lang: Lang) -> Labels {
             refused: "refused",
             no_window: " (no window)",
             lock_skipped: " (lock skipped)",
+            fallback: " (fallback)",
             cleared: "cleared a shared approval",
             not_cleared: "could not clear a shared approval",
             found_before: "found before the call",
@@ -74,6 +76,7 @@ fn labels(lang: Lang) -> Labels {
             refused: "断った",
             no_window: " (窓なし)",
             lock_skipped: " (lock を待たず)",
+            fallback: " (回避経路)",
             cleared: "共有の承認を消した",
             not_cleared: "共有の承認を消せなかった",
             found_before: "op を打つ前に見つけた",
@@ -114,6 +117,7 @@ fn why_label(lang: Lang, why: &str) -> String {
         (Lang::En, "no-reason") => "no reason",
         (Lang::En, "lock-timeout") => "lock wait timed out",
         (Lang::En, "no-op-exe") => "no op.exe",
+        (Lang::En, "no-exe") => "no op-reason.exe",
         (Lang::En, "no-powershell") => "no powershell.exe",
         (Lang::En, "no-wslpath") => "no wslpath",
         (Lang::En, "no-launcher") => "no launcher",
@@ -122,6 +126,7 @@ fn why_label(lang: Lang, why: &str) -> String {
         (Lang::Ja, "no-reason") => "理由なし",
         (Lang::Ja, "lock-timeout") => "承認待ちが終わらない",
         (Lang::Ja, "no-op-exe") => "op.exe が無い",
+        (Lang::Ja, "no-exe") => "op-reason.exe が無い",
         (Lang::Ja, "no-powershell") => "powershell.exe が無い",
         (Lang::Ja, "no-wslpath") => "wslpath が無い",
         (Lang::Ja, "no-launcher") => "launcher が無い",
@@ -258,6 +263,9 @@ fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
                 });
                 if text(&end["window"]).starts_with("failed") {
                     r.push_str(l.no_window);
+                }
+                if end["fallback"].is_object() {
+                    r.push_str(l.fallback);
                 }
                 r
             };
@@ -497,6 +505,25 @@ mod tests {
     fn control_characters_are_made_visible() {
         assert_eq!(visible("a\u{1b}[2Jb\tc\nd"), "a\\x1b[2Jb\\x09c\\x0ad");
         assert_eq!(visible("日本\u{85}"), "日本\\x85");
+    }
+
+    #[test]
+    fn a_call_that_fell_back_is_marked() {
+        let rec: Value = serde_json::from_str(
+            r#"{"event":"start","epoch":0,"kind":"desktop","reason":"r","args":["x"],"caller":{"type":"human"},
+                "end":{"result":"approved","seconds":1,"window":"shown","runner":"launcher","fallback":{"why":"no-status","exit":1}}}"#,
+        )
+        .unwrap();
+        assert_eq!(row(Lang::En, &rec, "")[1], "approved (fallback)");
+        assert_eq!(row(Lang::Ja, &rec, "")[1], "許可 (回避経路)");
+        let mut plain = rec.clone();
+        plain["end"]["fallback"] = Value::Null;
+        assert_eq!(row(Lang::En, &plain, "")[1], "approved");
+        let refused: Value = serde_json::from_str(
+            r#"{"event":"refused","epoch":0,"why":"no-exe","caller":{"type":"human"}}"#,
+        )
+        .unwrap();
+        assert_eq!(row(Lang::En, &refused, "")[1], "refused (no op-reason.exe)");
     }
 
     #[test]

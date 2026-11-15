@@ -673,3 +673,495 @@ fn powershell_passes_the_double_dash_to_op() {
         );
     }
 }
+
+// --- the runner face (`op-reason.exe --run`, started by the WSL binary) and the Job Object
+
+fn b64(text: &str) -> String {
+    op_reason_core::base64::encode(text.as_bytes())
+}
+
+impl Sandbox {
+    fn status_path(&self) -> PathBuf {
+        self.root.join("status.json")
+    }
+
+    /// The status file as JSON (null when there is none).
+    fn status(&self) -> serde_json::Value {
+        fs::read_to_string(self.status_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// A desktop payload as the WSL binary sends it (herdr and a note in the facts).
+    fn payload(&self, mode: &str, args: &[&str]) -> serde_json::Value {
+        let mut p = serde_json::json!({
+            "v": 1,
+            "mode": mode,
+            "op": fake_op(),
+            "args64": args.iter().map(|a| b64(a)).collect::<Vec<_>>(),
+            "status": self.status_path(),
+            "lang": "en",
+            "lock": "held",
+            "lockWait": 5,
+            "stderr": "inherit",
+        });
+        if mode == "desktop" {
+            p["facts"] = serde_json::json!({
+                "time": "2026-11-15 12:00:00",
+                "caller": {"type": "claude", "pid": 4242, "session": "s", "detail": null},
+                "herdr": {"workspace": "w1", "label": "ws label", "pane": "w1:p2"},
+                "place": {"repo": "o/r", "branch": "main", "cwd": "~/src/r"},
+                "reason": "test the runner",
+                "command": "op item get x",
+                "notes": [{"kind": "shared-cleared"}]
+            });
+        }
+        p
+    }
+
+    /// `op-reason.exe --run` with the payload in `OPREASON_PAYLOAD`.
+    fn run_payload(&self, payload: &str, envs: &[(&str, &str)], stdin: &[u8]) -> Output {
+        let mut child = self
+            .command(&[s("--run")], envs)
+            .env("OPREASON_PAYLOAD", payload)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn op-reason.exe --run");
+        {
+            let mut i = child.stdin.take().unwrap();
+            let _ = i.write_all(stdin);
+        }
+        child.wait_with_output().expect("wait op-reason.exe --run")
+    }
+
+    /// The process id that the fake op.exe of call `n` recorded.
+    fn op_pid(&self, n: usize) -> Option<u32> {
+        self.env_of(n)
+            .lines()
+            .find_map(|l| l.strip_prefix("PID="))
+            .and_then(|p| p.trim().parse().ok())
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    let out = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .expect("tasklist");
+    String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
+}
+
+/// Waits until `cond` holds, up to `limit`.
+fn wait_until(limit: Duration, cond: impl Fn() -> bool) -> bool {
+    let t0 = Instant::now();
+    while t0.elapsed() < limit {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    cond()
+}
+
+#[test]
+fn run_desktop_follows_the_launcher_contract() {
+    let _g = serial();
+    let sb = Sandbox::new("run-desktop");
+    let p = sb.payload("desktop", &["item", "get", "a b", "日本語"]);
+    let stdin: Vec<u8> = (0u8..=255).chain(*b"\r\n\0end\n").collect();
+    let out = sb.run_payload(
+        &p.to_string(),
+        &[("FAKE_RC", "7"), ("FAKE_STDERR", "op says hi")],
+        &stdin,
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "op's exit code: {err}");
+    assert_eq!(
+        out.stdout, stdin,
+        "stdin reaches op and comes out on stdout"
+    );
+    assert_eq!(
+        err.trim_end(),
+        "op says hi",
+        "stderr has only op's (inherited)"
+    );
+    assert_eq!(
+        sb.call(1),
+        ["item", "get", "a b", "日本語"]
+            .map(OsString::from)
+            .to_vec()
+    );
+    assert!(
+        sb.env_of(1).contains("OPREASON_PAYLOAD=<unset>"),
+        "the payload does not reach op: {}",
+        sb.env_of(1)
+    );
+    assert_eq!(sb.call(2), vec![OsString::from("whoami")]);
+    assert_eq!(sb.calls(), 2, "not signed in: no signout");
+    let st = sb.status();
+    assert_eq!(st["started"], true, "{st}");
+    assert_eq!(st["exit"], 7, "{st}");
+    assert_eq!(st["error"], "", "{st}");
+    assert_eq!(st["window"], "shown", "{st}");
+    assert_eq!(st["signout"], "not-signed-in", "{st}");
+    assert_eq!(st["lock"], "held", "{st}");
+    assert_eq!(st["runner"], "exe", "{st}");
+    assert_eq!(st["ui"]["title"], "1Password CLI approval request", "{st}");
+    let lines = st["ui"]["lines"].as_array().cloned().unwrap_or_default();
+    assert!(
+        lines.contains(&serde_json::json!([
+            "herdr",
+            "workspace \"ws label\" · pane w1:p2"
+        ])),
+        "the herdr line of a WSL call: {st}"
+    );
+    assert!(
+        lines.iter().any(|l| l[0] == "Note"),
+        "the note of a WSL call: {st}"
+    );
+    assert_eq!(st["ui"]["toast"].as_array().map(Vec::len), Some(3), "{st}");
+    assert!(sb.log().is_empty(), "the runner writes no records");
+    assert!(
+        !sb.root
+            .join("lad")
+            .join("op-reason")
+            .join("holder.json")
+            .exists(),
+        "the holder file is removed at the end"
+    );
+}
+
+#[test]
+fn run_closes_the_session_and_scans_stderr_when_asked() {
+    let _g = serial();
+    let sb = Sandbox::new("run-scan");
+    let mut p = sb.payload("desktop", &["item", "get", "x"]);
+    p["stderr"] = "scan".into();
+    let denial = "[ERROR] 2026/11/15 00:00:00 authorization prompt dismissed, please try again";
+    let out = sb.run_payload(
+        &p.to_string(),
+        &[
+            ("FAKE_RC", "1"),
+            ("FAKE_WHOAMI_RC", "0"),
+            ("FAKE_STDERR", denial),
+        ],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(denial),
+        "relayed"
+    );
+    let st = sb.status();
+    assert_eq!(st["stderrMatch"], "denied", "{st}");
+    assert_eq!(st["signout"], "ok", "{st}");
+    assert_eq!(
+        sb.call(3),
+        vec![OsString::from("signout"), OsString::from("--all")]
+    );
+}
+
+#[test]
+fn run_help_and_service_modes() {
+    let _g = serial();
+    let sb = Sandbox::new("run-help");
+    let out = sb.run_payload(&sb.payload("help", &["--version"]).to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    assert_eq!(
+        (&st["window"], &st["toast"], &st["signout"], st.get("ui")),
+        (
+            &serde_json::json!("skipped"),
+            &serde_json::json!("skipped"),
+            &serde_json::json!("not-signed-in"),
+            None
+        ),
+        "{st}"
+    );
+    assert_eq!(sb.call(2), vec![OsString::from("whoami")]);
+
+    let sb = Sandbox::new("run-service");
+    let out = sb.run_payload(
+        &sb.payload("service", &["vault", "list"]).to_string(),
+        &[("OP_SERVICE_ACCOUNT_TOKEN", "tok-run")],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        sb.env_of(1).contains("OP_SERVICE_ACCOUNT_TOKEN=tok-run"),
+        "the token the WSL binary passed reaches op: {}",
+        sb.env_of(1)
+    );
+    assert_eq!(sb.calls(), 1, "service mode closes no session");
+    assert_eq!(sb.status()["signout"], "skipped");
+}
+
+/// Starts an entry-face call that holds the mutex while its op sleeps; returns it once op runs.
+fn hold_the_lock(first: &Sandbox, ms: &str) -> std::process::Child {
+    let holder = first
+        .command(
+            &[s("--reason"), s("hold the lock"), s("vault"), s("list")],
+            &[("FAKE_SLEEP_MS", ms)],
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(Duration::from_secs(20), || first.calls() == 1),
+        "the first call started op"
+    );
+    holder
+}
+
+#[test]
+fn run_shows_its_first_write_while_waiting_and_times_out() {
+    let _g = serial();
+    let first = Sandbox::new("run-lock1");
+    let mut holder = hold_the_lock(&first, "8000");
+    let sb = Sandbox::new("run-lock2");
+    let lad = first.root.join("lad");
+    let mut p = sb.payload("desktop", &["vault", "list"]);
+    p["lockWait"] = 2.into();
+    let child = sb
+        .command(&[s("--run")], &[("LOCALAPPDATA", lad.to_str().unwrap())])
+        .env("OPREASON_PAYLOAD", p.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // (a file being written may be seen empty for a moment)
+    let read = || fs::read_to_string(sb.status_path()).unwrap_or_default();
+    assert!(
+        wait_until(Duration::from_secs(10), || !read().is_empty()),
+        "the first write comes at once"
+    );
+    let first_write = read();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        first_write,
+        op_reason_win::payload::FIRST_STATUS,
+        "while waiting for the mutex, the status file holds the first write"
+    );
+    assert_eq!(out.status.code(), Some(75), "{err}");
+    assert!(
+        err.contains("Waiting for another op call"),
+        "says once that it waits: {err}"
+    );
+    let st = sb.status();
+    assert_eq!(
+        (&st["started"], &st["error"], &st["lock"]),
+        (
+            &serde_json::json!(false),
+            &serde_json::json!("lock-timeout"),
+            &serde_json::json!("timeout")
+        ),
+        "{st}"
+    );
+    assert!(
+        st["holder"]
+            .as_str()
+            .is_some_and(|h| h.contains(r#"reason "hold the lock""#)),
+        "names the holder: {st}"
+    );
+    assert_eq!(sb.calls(), 0, "op was not started");
+    assert_eq!(holder.wait().unwrap().code(), Some(0));
+}
+
+#[test]
+fn run_with_lock_skipped_does_not_wait_and_keeps_the_sessions() {
+    let _g = serial();
+    let first = Sandbox::new("run-skip1");
+    let mut holder = hold_the_lock(&first, "6000");
+    let sb = Sandbox::new("run-skip2");
+    let mut p = sb.payload("desktop", &["item", "list"]);
+    p["lock"] = "skipped".into();
+    let t0 = Instant::now();
+    let out = sb.run_payload(&p.to_string(), &[("FAKE_WHOAMI_RC", "0")], b"");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        t0.elapsed() < Duration::from_secs(4),
+        "did not wait for the mutex"
+    );
+    let st = sb.status();
+    assert_eq!(
+        (&st["lock"], &st["signout"]),
+        (&"skipped".into(), &"skipped".into()),
+        "{st}"
+    );
+    assert_eq!(sb.calls(), 1, "no whoami, no signout");
+    assert_eq!(holder.wait().unwrap().code(), Some(0));
+}
+
+#[test]
+fn run_notify_shows_the_toast_only() {
+    let _g = serial();
+    let sb = Sandbox::new("run-notify");
+    let mut p = sb.payload("notify", &[]);
+    p["notify"] = serde_json::json!({"kind": "shared-approval", "when": "start", "cleared": true, "time": "12:34:56"});
+    p["lock"] = "skipped".into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    assert_eq!(
+        st["ui"]["title"], "Cleared a shared 1Password CLI approval",
+        "{st}"
+    );
+    assert_eq!(
+        st["ui"]["lines"][0],
+        serde_json::json!(["Time", "12:34:56"]),
+        "{st}"
+    );
+    assert_ne!(st["toast"], "skipped", "{st}");
+    assert_eq!(sb.calls(), 0, "notify starts no op");
+}
+
+#[test]
+fn run_refuses_bad_payloads_without_starting_op() {
+    let _g = serial();
+    let sb = Sandbox::new("run-bad");
+    let out = sb.run_payload("", &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("OPREASON_PAYLOAD is empty"));
+    let out = sb.run_payload("not json", &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!sb.status_path().exists(), "no status path known");
+
+    let mut p = sb.payload("desktop", &["x"]);
+    p["v"] = 2.into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    let st = sb.status();
+    assert!(
+        st["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("version 1, the caller sent 2")),
+        "{st}"
+    );
+    assert_eq!(st["started"], false);
+
+    let mut p = sb.payload("desktop", &["x"]);
+    p["mode"] = "later".into();
+    assert_eq!(
+        sb.run_payload(&p.to_string(), &[], b"").status.code(),
+        Some(1)
+    );
+    assert_eq!(sb.status()["error"], "unknown mode: later");
+
+    let mut p = sb.payload("desktop", &["x"]);
+    p["args64"] = serde_json::json!(["***"]);
+    assert_eq!(
+        sb.run_payload(&p.to_string(), &[], b"").status.code(),
+        Some(1)
+    );
+    assert_eq!(
+        sb.status()["error"],
+        "argument 1 of the payload is not base64"
+    );
+
+    let mut p = sb.payload("desktop", &["x"]);
+    p["op"] = sb
+        .root
+        .join("no-such-op.exe")
+        .to_string_lossy()
+        .into_owned()
+        .into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(127));
+    assert!(
+        sb.status()["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("op.exe not found: ")),
+        "{}",
+        sb.status()
+    );
+
+    let out = sb.run(&[s("--run"), s("extra")], &[], b"");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(sb.calls(), 0, "op never started");
+}
+
+#[test]
+fn run_stops_when_the_status_file_cannot_be_written() {
+    let _g = serial();
+    let sb = Sandbox::new("run-nostatus");
+    let mut p = sb.payload("desktop", &["item", "get", "x"]);
+    p["status"] = sb
+        .root
+        .join("no-such-dir")
+        .join("status.json")
+        .to_string_lossy()
+        .into_owned()
+        .into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot write the status file"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        sb.calls(),
+        0,
+        "without the first write nothing starts: the WSL binary may start the launcher instead"
+    );
+
+    // an empty status path (wslpath -w gave nothing) is no path to write: the same
+    p["status"] = "".into();
+    let out = sb.run_payload(&p.to_string(), &[], b"");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("status path of the payload is empty"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sb.calls(), 0, "op never started");
+}
+
+/// Starts a call whose op sleeps, kills the exe once op runs, and checks that op ends too.
+fn killing_the_exe_ends_op(sb: &Sandbox, mut cmd: Command) {
+    let mut child = cmd
+        .env("FAKE_SLEEP_MS", "60000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(Duration::from_secs(20), || sb.op_pid(1).is_some()),
+        "op started"
+    );
+    let pid = sb.op_pid(1).unwrap();
+    assert!(process_alive(pid), "op runs");
+    child.kill().unwrap();
+    let _ = child.wait();
+    assert!(
+        wait_until(Duration::from_secs(10), || !process_alive(pid)),
+        "op.exe {pid} ended with the exe (Job Object)"
+    );
+}
+
+#[test]
+fn killing_the_exe_ends_op_exe() {
+    let _g = serial();
+    let sb = Sandbox::new("job-entry");
+    let cmd = sb.command(
+        &[s("--reason"), s("kill the exe"), s("vault"), s("list")],
+        &[],
+    );
+    killing_the_exe_ends_op(&sb, cmd);
+
+    let sb = Sandbox::new("job-run");
+    let mut cmd = sb.command(&[s("--run")], &[]);
+    cmd.env(
+        "OPREASON_PAYLOAD",
+        sb.payload("desktop", &["vault", "list"]).to_string(),
+    );
+    killing_the_exe_ends_op(&sb, cmd);
+}

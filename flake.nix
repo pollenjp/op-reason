@@ -10,7 +10,7 @@
     let
       inherit (nixpkgs) lib;
 
-      # The executable is the WSL side; Windows uses the PowerShell entry from the release zip
+      # The executable is the WSL side; Windows uses op-reason.exe (and its PowerShell fallback) from the release zip
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -36,7 +36,6 @@
                 ./Cargo.toml
                 ./Cargo.lock
                 ./crates
-                ./launcher
                 ./completions
                 ./skill
                 ./tests/cases

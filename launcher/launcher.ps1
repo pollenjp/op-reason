@@ -1,14 +1,14 @@
-﻿# op-reason launcher. Every op-reason call starts a fresh Windows PowerShell 5.1 running this script: the 1Password
-# desktop app binds a CLI approval to the process that starts op.exe, so starting op.exe from this short-lived process
-# keeps one approval from reaching later calls or other processes. From WSL every op.exe would otherwise be a child of
-# the wslhost that all panes share; on Windows, one process starting op.exe twice reuses the approval too.
+﻿# op-reason launcher. An op-reason call that goes through it starts a fresh Windows PowerShell 5.1 running this script:
+# the 1Password desktop app binds a CLI approval to the process that starts op.exe, so starting op.exe from this
+# short-lived process keeps one approval from reaching later calls or other processes. From WSL every op.exe would
+# otherwise be a child of the wslhost that all panes share; on Windows, one process starting op.exe twice reuses the
+# approval too.
 #
-# How the entries start it (docs/superpowers/specs/2026-11-15-op-reason-design.md, section 5):
-#   - the WSL binary: -EncodedCommand with a short bootstrap that reads this script from $env:OPREASON_SCRIPT (base64 of
-#     UTF-8) and runs it in the same scope. This script as -EncodedCommand would exceed the 32767-character command
-#     line of Windows.
-#   - the PowerShell entry: -File (this file is UTF-8 with a byte order mark; without one Windows PowerShell 5.1 reads
-#     it in the ANSI code page).
+# op-reason.exe --run follows the same contract and is what calls from WSL use first; this script is the fallback where
+# the exe cannot run (Smart App Control, for example), and the second half of every call through the PowerShell entry.
+# Both callers start it with -File (docs/superpowers/specs/2026-11-15-op-reason-design.md, section 5, and
+# 2026-11-15-wsl-through-exe-design.md): this file is UTF-8 with a byte order mark; without one Windows PowerShell 5.1
+# reads it in the ANSI code page.
 #
 # Input: $env:OPREASON_PAYLOAD (JSON), removed from the environment before op.exe starts.
 #   v         contract version (1)
@@ -43,8 +43,8 @@
 # stay false: with true the child gets no stdin.
 # This script writes nothing to stdout or stderr except one "op-reason: launcher: ..." line when it cannot start op.exe
 # and one when it waits for the mutex longer than a second.
-# The bootstrap sets $ProgressPreference before anything else (the first line below repeats it for the tests), or
-# PowerShell writes CLIXML progress records to stderr.
+# The first line below sets $ProgressPreference before anything else, or PowerShell writes CLIXML progress records to
+# stderr.
 #
 # Exit code: op's exit code. 127 when op.exe is missing, 75 when the mutex wait runs out, 1 for other failures before
 # op.exe starts. notify exits 0.

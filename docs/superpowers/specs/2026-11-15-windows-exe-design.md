@@ -5,7 +5,8 @@
   `2026-11-15-op-reason-design.md`, "the A' spec" below) stay as the fallback for machines where Smart App Control
   blocks the unsigned exe. The exe was first built as a prototype to compare with A'; §16 keeps the comparison.
 - Scope: the Windows side only. The WSL side (the Rust binary, its flock and pipe handling, the embedded
-  `launcher.ps1`) is not changed here.
+  `launcher.ps1`) is not changed here. Later the same day, calls from WSL were moved to `op-reason.exe --run`
+  (`2026-11-15-wsl-through-exe-design.md`), which also changed §7.4, §12 and §14 below.
 
 ## 1. Goal and non-goals
 
@@ -23,7 +24,8 @@ draws the window, shows the toast, starts `op.exe`, closes the CLI session and w
 
 Non-goals:
 
-- Calling `op-reason.exe` from WSL instead of `launcher.ps1`. Discussed in §12, not built here.
+- Calling `op-reason.exe` from WSL instead of `launcher.ps1`. Discussed in §12, not built here (built later by
+  `2026-11-15-wsl-through-exe-design.md`).
 - Signing the exe: no signing application for now (decided on 2026-11-15). §13 keeps what an application would need.
 - Making the window richer (stage ④). §7.4 says how the chosen window code serves as its base.
 - Tags and publishing releases (the release workflow builds the exe; the maintainer pushes the tag), crates.io.
@@ -171,8 +173,8 @@ FFI, and there is no accessibility tree (screen readers read the window title on
   that screen readers and UI tests can read the text.
 - Our own AppUserModelID (`HKCU\Software\Classes\AppUserModelId\op-reason`) would show the toast as "op-reason"
   with an icon, and is the step before toast buttons. It writes to the registry, so it should be opt-in.
-- Caveat: as long as WSL calls use `launcher.ps1`, the WSL window is WPF and the Windows window is Direct2D. Any
-  stage ④ change has to be made twice, or WSL has to move to the exe (§12).
+- Caveat (resolved): calls from WSL now use this window too (`op-reason.exe --run`). Only the fallback, where the exe
+  cannot run, still shows the launcher's WPF window, and stage ④ is planned for this window only.
 
 ## 8. Starting op.exe
 
@@ -260,8 +262,9 @@ Risks:
 Middle ground, if ever wanted: keep `launcher.ps1` as the WSL default, and let WSL use the exe only when the user
 opts in and the exe is signed; fall back to the launcher when the exe fails to start.
 
-Status (2026-11-15): not part of this change. Calls from WSL keep the launcher; moving them to the exe is a design of
-its own.
+Status (2026-11-15): built by `2026-11-15-wsl-through-exe-design.md`: the exe's runner face `--run`, the launcher as
+the automatic fallback when the exe leaves no status file (`OPREASON_RUNNER`), `op.exe` in a Job Object, and one
+Windows zip that holds both, so no Linux process writes an exe.
 
 ## 13. Signing and Smart App Control
 
@@ -323,9 +326,9 @@ steps above stay as a record for a later decision.
   core's dependencies are locked at the same versions as in the main lock file.
 - Release profile: LTO, one codegen unit, stripped. The C runtime is linked statically
   (`crates/op-reason-win/.cargo/config.toml`), so the exe needs no Visual C++ Redistributable; CI checks its imports.
-- Release: the release workflow builds `op-reason.exe` on a Windows runner and attaches it with its SHA-256 file
-  (`sha256sum` format) to the draft release. The asset step is `.github/scripts/windows-exe-dist.ps1`, which the pull
-  request workflow runs too, followed by `sha256sum -c`.
+- Release: the release workflow builds `op-reason.exe` on a Windows runner and puts it into `op-reason-windows.zip`
+  with the PowerShell fallback, attached with its SHA-256 file (`sha256sum` format) to the draft release. The asset step
+  is `.github/scripts/windows-dist.ps1`, which the pull request workflow runs too, followed by `sha256sum -c`.
 - Tests:
   - The core's unit tests and the call table cover the planning that the exe uses as is.
   - On Linux: the window texts against `launcher.ps1`, the command-line length.
@@ -376,4 +379,4 @@ The launcher alone (the second half of an A' call) takes 485 ms until its window
 | Arguments | `op-reason.cmd` goes through cmd.exe, which re-parses them; PowerShell takes an unquoted `--` | passed as given from PowerShell, cmd.exe and other programs |
 | Log viewer | none on Windows | `op-reason --log` |
 | Code | about 900 lines of PowerShell for the entry, plus the launcher | about 1,900 lines of Rust for the Windows part (`src/win`, with `unsafe` Win32 calls) on the shared core, plus tests on the runner |
-| Upkeep | one window implementation (WPF), shared with WSL | a second window implementation (Direct2D) as long as WSL uses the launcher (§7.4) |
+| Upkeep | one window implementation (WPF), shared with WSL | a second window implementation (Direct2D); since WSL calls go through `--run`, the WPF one is only the fallback's (§7.4) |

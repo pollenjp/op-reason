@@ -12,6 +12,8 @@ mod lock;
 #[cfg(unix)]
 mod procfs;
 #[cfg(unix)]
+mod runner;
+#[cfg(unix)]
 mod signals;
 #[cfg(unix)]
 mod wrapper;
@@ -31,6 +33,8 @@ fn main() {
 
 #[cfg(not(unix))]
 fn main() {
-    eprintln!("op-reason: this executable is for WSL (Linux); on Windows use op-reason.ps1");
+    eprintln!(
+        "op-reason: this executable is for WSL (Linux); on Windows use op-reason.exe from op-reason-windows.zip"
+    );
     std::process::exit(2);
 }

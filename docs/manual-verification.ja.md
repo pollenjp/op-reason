@@ -2,9 +2,9 @@
 
 English: [manual-verification.md](manual-verification.md)
 
-CI は偽の `powershell.exe` と `op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で動きません)。
-ここの確認には、人と、1Password のアプリと 1Password CLI の入った Windows と、WSL が要ります。20 分ほどかかり、承認の
-画面が 10 回ほど出ます。
+CI は偽の `op-reason.exe`・`powershell.exe`・`op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で
+動かず、CI の Windows の runner では WSL2 も動きません)。ここの確認には、人と、1Password のアプリと 1Password CLI の入った
+Windows と、WSL が要ります。WSL の確認 (1〜14 と R) で 30 分ほどかかり、承認の画面が 15 回ほど出ます。
 
 ## 確かめる間の決まり
 
@@ -15,14 +15,21 @@ CI は偽の `powershell.exe` と `op.exe` でしか op-reason を流せませ�
 
 ## 用意
 
+Windows の zip (Release の `op-reason-windows.zip`、か pull request の Windows exe の workflow の `op-reason-windows`
+artifact) を Windows のフォルダーに展開し、README のとおりに SHA-256 を確かめます。WSL では:
+
 ```sh
 cargo build --release
 export PATH=$PWD/target/release:$PATH
 ln -sf op-reason target/release/op && ln -sf op-reason target/release/op-reason-log
 command -v op            # …/target/release/op
 op.exe --version         # 本物の 1Password CLI が答える
+export OPREASON_EXE=/mnt/c/Users/<あなた>/<展開したフォルダー>/op-reason.exe   # PATH にあれば要らない
 export OPREASON_LANG=ja  # 英語なら en
 ```
+
+1〜14 は既定 (`OPREASON_RUNNER` なし) のまま、`op-reason.exe` を通して確かめます。窓は Direct2D の窓です
+(launcher の WPF の窓と見た目が少し違います)。
 
 ## 確かめること
 
@@ -38,16 +45,30 @@ export OPREASON_LANG=ja  # 英語なら en
 | 8 | 7 と同じで、B に `OPREASON_LOCK_WAIT=10` を付け、A に 15 秒応えず、そのあと A を拒否 | B は A の理由を出して 75 で終わる。`op-reason-log` に `断った (承認待ちが終わらない)` |
 | 9 | `op --reason "確認 9: 雛形を読む" item template get Login \| op --reason "確認 9: 雛形から項目を試しに作る" item create --dry-run --vault Private - >/dev/null`、画面は 2 回とも許可 | 窓が 2 つ出て、止まらずに終わり、終了コード 0。`op-reason-log` に `許可` が 2 つ。受け手が先に lock を取ったときは、送り手の窓に lock を待たずに打つ注意が出て、その行は `(lock を待たず)` |
 | 10 | `op.exe vault list >/dev/null` (直に)、許可。続けて `op --reason "確認 10: 見張り" whoami` | 打つ前に共有の承認を消す: 通知「共有の 1Password CLI の承認を消しました」。`op-reason-log` に `共有の承認を消した` (そのあとの `whoami` は sign in していないと答える) |
-| 11 | `timeout 5 op --reason "確認 11: 止める" vault list`、応えない | 5 秒で窓が消え、画面だけが残る。拒否する。`op-reason-log` に `中断` |
+| 11 | `timeout 5 op --reason "確認 11: 止める" vault list`、応えない | 窓と画面がどうなるかを書き留める (R3 と同じ見方)。画面が残れば拒否する。`op-reason-log` に `中断` |
 | 12 | `op --version`・`op --help`・`op item get --help` | 理由なしで通り、窓も画面も出ない |
 | 13 | `op item get x` (理由なし) | 終了コード 2、AI エージェント向けの案内つきの使い方。`op-reason-log` に `断った (理由なし)` |
 | 14 (任意) | service account があれば、token を表示せずに `OP_SERVICE_ACCOUNT_TOKEN` に入れ、`op --reason "確認 14: service account" vault list >/dev/null` | 窓も画面も出ず、終了コード 0。`op-reason-log` に `成功 (SA)` |
 
+## WSL から op-reason.exe を通すときに確かめること
+
+CI では WSL から Windows の program を起こせないので、ここは手でしか確かめられません。約 15 分かかり、画面は 6 回ほど
+出ます。見込みに「書き留める」とある所は、まだ誰も見ていないことです。見たとおりに書いてください。
+
+| # | すること | 見込み |
+| --- | --- | --- |
+| R1 | `time op --version` を 3 回、続けて `OPREASON_RUNNER=launcher` を付けて 3 回 (理由も画面も要らない呼び出し) | それぞれの `real` を書き留める。exe の方が launcher よりずっと短い見込み (Windows から直に起こすと exe は数十ミリ秒、launcher は 0.5 秒ほど) |
+| R2 | `op --reason "確認 R2: 窓までの時間" vault list >/dev/null`、許可。続けて `OPREASON_RUNNER=launcher` を付けて同じことをする | Enter から窓が出るまでの感じ (すぐ・0.5 秒ほど・1 秒以上) を両方書き留める |
+| R3 | `op --reason "確認 R3: TERM" vault list & pid=$!`、画面が出たら応えずに `kill -TERM $pid` | 書き留める: 窓は消えたか、画面は残ったか、Windows の `tasklist.exe /FI "IMAGENAME eq op-reason.exe"` と `tasklist.exe /FI "IMAGENAME eq op.exe"` に残ったものはあるか。`op-reason-log` に `中断` (143)。画面が残れば拒否する。`OPREASON_RUNNER=launcher` でも同じことをし、違いを書き留める |
+| R4 | `op --reason "確認 R4: Ctrl+C" vault list` の画面が出ている間に、WSL の端末で Ctrl+C | R3 と同じ見方で書き留める。`op-reason-log` に `中断` (130)。続けて `op.exe whoami` が sign in していないと出すか |
+| R5 | Smart App Control が `op-reason.exe` を止めるマシンで `op --reason "確認 R5: 回避" vault list >/dev/null`、許可。止めないマシンでは、`C:\Windows\System32\whoami.exe` を `op-reason.exe` という名前で空のフォルダーに写し、そこに zip の `launcher.ps1` を置き、`OPREASON_EXE` をその `op-reason.exe` に向けて同じことをする | WSL に出た文をそのまま書き留める (止められたときの interop の文があれば)。続けて「launcher.ps1 で打ち直します」の 1 行が出て、launcher の窓が出る。許可すると終了コード 0。`op-reason-log` に `許可 (回避経路)`、`op-reason-log --json` の最後の呼び出しの `end` に `fallback` |
+| R6 | R5 の形のまま `printf 'plain text\n' \| op --reason "確認 R6: 回避でも stdin" inject`、許可 | `plain text` と出る (回避しても stdin が欠けずに届く) |
+| R7 | R5 の形のまま `OPREASON_RUNNER=launcher op --reason "確認 R7: launcher だけ" vault list >/dev/null`、許可 | 「打ち直します」の行が出ずに launcher の窓が出る (Smart App Control の通知も出ない) |
+
 ## Windows で確かめること: op-reason.exe
 
-Release (か、pull request の Windows exe の workflow の `op-reason-exe` の artifact) から `op-reason.exe` を落とし、README の
-とおりに SHA-256 を確かめます。`PATH` にある PowerShell の入口が代わりに応えないよう、`op-reason.exe` と名前を全部書いて
-呼びます。約 15 分かかり、画面は 10 回ほど出ます。
+R の確認で展開したフォルダーの `op-reason.exe` を使います。`op-reason.exe` と名前を全部書いて呼びます。約 15 分かかり、
+画面は 10 回ほど出ます。
 
 | # | すること | 見込み |
 | --- | --- | --- |
@@ -59,11 +80,12 @@ Release (か、pull request の Windows exe の workflow の `op-reason-exe` の
 | E6 | E5 と同じで、B に `$env:OPREASON_LOCK_WAIT = 10` を付け、A に 15 秒応えず、そのあと A を拒否 | B は A の理由を出して 75 で終わる。`op-reason.exe --log` で B は `断った (承認待ちが終わらない)` |
 | E7 | `op-reason.exe --reason "確認 E7: 拒否" vault list`、**拒否** | 終了コードは 0 以外で、op の誤りが stderr に出る。`op-reason.exe --log` に `拒否` |
 | E8 | `op-reason.exe --reason "確認 E8: 止める" vault list` の画面が出ている間に Ctrl+C | 窓が消える。画面が残れば拒否する。`op-reason.exe --log --json` に `interrupted` と終了コード 130 があり、`op.exe whoami` は sign in していないと出す |
+| E9 | `op-reason.exe --reason "確認 E9: 止める" vault list` の画面が出ている間に、タスク マネージャーで `op-reason.exe` を終了する | 窓が消え、`op.exe` も終わって画面が消える (Job Object)。消えなければ書き留めて、画面を拒否する |
 
 ## Windows で確かめること: PowerShell の入口 (回避経路)
 
-Release の zip (か、repo の `windows/op-reason.ps1`・`windows/op-reason.cmd`・`launcher/launcher.ps1` を `PATH` の 1 つの
-フォルダーに並べたもの) を使います。
+zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` のフォルダーより前に足して使います (README の
+「Smart App Control に op-reason.exe を止められたら」)。
 
 | # | すること | 見込み |
 | --- | --- | --- |

@@ -17,6 +17,11 @@ impl Lang {
             Lang::Ja => "ja",
         }
     }
+
+    /// The payload's `lang` (or any locale text): `ja…` → Japanese, anything else → English.
+    pub fn from_code(code: &str) -> Lang {
+        from_text(code)
+    }
 }
 
 fn from_text(text: &str) -> Lang {

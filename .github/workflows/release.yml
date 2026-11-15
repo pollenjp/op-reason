@@ -41,27 +41,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # op-reason-windows.zip: op-reason.exe (crates/op-reason-win, a Cargo workspace of its own; not signed) and the
+  # PowerShell fallback (launcher.ps1, op-reason.ps1, op-reason.cmd), with SKILL.md, the READMEs and the licenses.
   windows:
     name: Windows zip
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Assets
-        run: |
-          mkdir -p dist/op-reason-windows
-          cp windows/op-reason.ps1 windows/op-reason.cmd launcher/launcher.ps1 skill/SKILL.md \
-            README.md README.ja.md LICENSE-MIT LICENSE-APACHE dist/op-reason-windows/
-          (cd dist && zip -r -X op-reason-windows.zip op-reason-windows && rm -r op-reason-windows)
-          (cd dist && sha256sum op-reason-windows.zip >op-reason-windows.zip.sha256)
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: windows-zip
-          path: dist/*
-          if-no-files-found: error
-
-  # op-reason.exe, the Windows entry (crates/op-reason-win, a Cargo workspace of its own). Not signed.
-  windows-exe:
-    name: Windows exe
     runs-on: windows-2025
     defaults:
       run:
@@ -75,16 +58,16 @@ jobs:
       # windows-exe.yml runs the same script on every pull request
       - name: Assets
         shell: pwsh
-        run: ../../.github/scripts/windows-exe-dist.ps1 -Exe target/release/op-reason.exe -Out dist
+        run: ../../.github/scripts/windows-dist.ps1 -Exe target/release/op-reason.exe -Out dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: windows-exe
+          name: windows-zip
           path: crates/op-reason-win/dist/*
           if-no-files-found: error
 
   release:
     name: Draft release
-    needs: [linux, windows, windows-exe]
+    needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -99,4 +82,4 @@ jobs:
         run: |
           ls -l dist
           gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
-            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable; op-reason.exe is the Windows entry (not signed); op-reason-windows.zip holds the PowerShell entry, for machines where Smart App Control blocks op-reason.exe. Each asset has a .sha256 file."
+            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable. op-reason-windows.zip holds op-reason.exe (the Windows entry, and the window of calls from WSL; not signed) and the PowerShell fallback for machines where Smart App Control blocks op-reason.exe. Install both on a WSL machine. Each asset has a .sha256 file."

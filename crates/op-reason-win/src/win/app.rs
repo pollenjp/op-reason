@@ -1,5 +1,6 @@
-//! The whole call in one process: plan (core) → op.exe → lock → `start` → window and toast → op.exe → sign-out →
-//! `end`. The approval of the 1Password app binds to this process, which exits after the call.
+//! The entry face, the whole call in one process: plan (core) → op.exe → lock → `start` → window and toast → op.exe →
+//! sign-out → `end`. The approval of the 1Password app binds to this process, which exits after the call. `--run`
+//! goes to the runner face ([`super::run`]), which shares the window, op.exe and sign-out code below.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -22,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::opexe::{self, Found, Running};
 use super::{console, holder, mutex, procs, toast, window};
+use crate::ui::Texts;
 use crate::{cmdline, ui};
 
 /// The version of op-reason.
@@ -53,7 +55,7 @@ fn say(lines: &[String]) {
 }
 
 /// `%LOCALAPPDATA%\op-reason`
-fn state_dir() -> Option<PathBuf> {
+pub(super) fn state_dir() -> Option<PathBuf> {
     env_nonempty("LOCALAPPDATA").map(|d| PathBuf::from(d).join("op-reason"))
 }
 
@@ -83,6 +85,14 @@ pub fn run() -> i32 {
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
     let rest: Vec<OsString> = argv.collect();
+    // The runner face: the WSL binary starts `op-reason.exe --run` with the call in OPREASON_PAYLOAD
+    if rest.first().is_some_and(|a| a == contract::RUN_ARG) {
+        if rest.len() > 1 {
+            say(&["--run takes no other argument: the call comes in OPREASON_PAYLOAD".to_owned()]);
+            return contract::EXIT_USAGE;
+        }
+        return super::run::run();
+    }
     let lang = resolve_lang();
     let name = match args::invocation(&argv0) {
         Invocation::LogViewer => return log_viewer(&rest, lang),
@@ -269,13 +279,26 @@ impl Ctx {
 
 /// What the end of a call found (`None` is written as null: nothing was tried).
 #[derive(Default)]
-struct Outcome {
-    result: String,
-    exit: i32,
-    window: Option<String>,
-    toast: Option<String>,
-    others: Option<i64>,
-    signout: Option<String>,
+pub(super) struct Outcome {
+    pub result: String,
+    pub exit: i32,
+    pub window: Option<String>,
+    pub toast: Option<String>,
+    pub others: Option<i64>,
+    pub signout: Option<String>,
+    /// op.exe was started.
+    pub started: bool,
+    /// Why op.exe could not be started.
+    pub error: String,
+    /// The end of op.exe's stderr ([`opexe::Stderr::Tee`] only).
+    pub stderr: Vec<u8>,
+}
+
+/// How op.exe is started: its environment and its stderr.
+#[derive(Clone, Copy)]
+pub(super) struct How {
+    pub env: opexe::Env,
+    pub stderr: opexe::Stderr,
 }
 
 /// The fields an `end` line needs besides the outcome (cloned into the console-close hook).
@@ -307,6 +330,8 @@ fn end_line(key: &EndKey, o: &Outcome) -> String {
             start: None,
             end: None,
         },
+        runner: None,
+        fallback: None,
     })
 }
 
@@ -340,6 +365,7 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     let (held, lock_field) = match mutex::acquire(
         contract::MUTEX_NAME,
         Duration::from_secs(wait),
+        Duration::ZERO,
         on_wait,
         console::interrupted,
     ) {
@@ -426,10 +452,15 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         notes: Vec::new(),
     };
     let mut o = Outcome::default();
+    let how = How {
+        env: opexe::Env::Kind(kind),
+        stderr: opexe::Stderr::Tee,
+    };
+    let texts = ui::build(&facts, lang);
     let code = match mode {
-        Mode::Desktop => run_desktop(&op, &parsed.op_args, kind, lang, &facts, &mut o),
-        Mode::Help => run_plain(&op, &parsed.op_args, kind, mode, lang, true, &mut o),
-        Mode::Service => run_plain(&op, &parsed.op_args, kind, mode, lang, false, &mut o),
+        Mode::Desktop => run_desktop(&op, &parsed.op_args, how, lang, Some(&texts), true, &mut o),
+        Mode::Help => run_plain(&op, &parsed.op_args, how, mode, lang, true, &mut o),
+        Mode::Service => run_plain(&op, &parsed.op_args, how, mode, lang, false, &mut o),
     };
     console::without_close_hook(|| {
         ctx.append(end_line(&key, &o));
@@ -444,7 +475,8 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
 }
 
 /// Waits for op.exe. `tick` runs every 250 ms (and the message queue is served when `with_messages`).
-/// After Ctrl+C, op.exe gets two seconds to exit by itself, then it is terminated. Returns op's exit code.
+/// After Ctrl+C, op.exe gets two seconds to exit by itself, then it and what it started are terminated. When it ends by
+/// itself, what it left running is released from the job. Returns op's exit code.
 fn wait_op(running: &mut Running, with_messages: bool, mut tick: impl FnMut()) -> i32 {
     let handle = HANDLE(running.child.as_raw_handle());
     let mut interrupted_at: Option<Instant> = None;
@@ -476,9 +508,12 @@ fn wait_op(running: &mut Running, with_messages: bool, mut tick: impl FnMut()) -
         if console::interrupted() {
             let at = *interrupted_at.get_or_insert_with(Instant::now);
             if at.elapsed() >= INTERRUPT_GRACE {
-                let _ = running.child.kill();
+                running.kill();
             }
         }
+    }
+    if interrupted_at.is_none() {
+        running.release();
     }
     running
         .child
@@ -506,29 +541,35 @@ fn finish(o: &mut Outcome, code: i32, mode: Mode, stderr_copy: &[u8]) -> i32 {
 
 /// op.exe could not be started after `start` was written.
 fn start_failed(lang: Lang, err: &std::io::Error, o: &mut Outcome) -> i32 {
+    o.error = crate::messages::start_failed(Lang::En, &opexe::short(&err.to_string(), 200));
     say(&[crate::messages::start_failed(lang, &err.to_string())]);
     o.result = result::classify(None, 1, Mode::Desktop, b"").to_owned();
     o.exit = 1;
     1
 }
 
-/// Desktop mode: window, toast, op.exe, then sign-out.
-fn run_desktop(
+/// Desktop mode: window, toast, op.exe, then sign-out (when `close`). Without texts (a payload without facts) no window
+/// and no toast, as in the launcher.
+pub(super) fn run_desktop(
     op: &Path,
     args: &[OsString],
-    kind: Kind,
+    how: How,
     lang: Lang,
-    facts: &Facts,
+    texts: Option<&Texts>,
+    close: bool,
     o: &mut Outcome,
 ) -> i32 {
-    let texts = ui::build(facts, lang);
     let image = opexe::image_name(op);
     // Before op.exe starts, any op.exe is someone else's (but not this exe, if it was installed as op.exe).
     let me = std::env::current_exe().ok();
     let own = std::process::id();
     let mut others = procs::count_named(&image, &[own], me.as_deref()) as i64;
-    let win = match window::Window::create(&texts, others > 0) {
-        Ok(w) => {
+    let win = match texts.map(|t| window::Window::create(t, others > 0)) {
+        None => {
+            o.window = Some("skipped".to_owned());
+            None
+        }
+        Some(Ok(w)) => {
             w.show();
             // The first frame is drawn while the queue is served; `shown` means it was presented.
             let t0 = Instant::now();
@@ -546,30 +587,34 @@ fn run_desktop(
             });
             Some(w)
         }
-        Err(e) => {
+        Some(Err(e)) => {
             o.window = Some(format!("failed: {}", opexe::short(&e.message(), 120)));
             None
         }
     };
-    let pending = toast::start(texts.toast.clone());
+    let pending = texts.map(|t| toast::start(t.toast.clone()));
+    let toast_result = |pending: Option<toast::Pending>| {
+        pending.map_or_else(|| "skipped".to_owned(), toast::Pending::result)
+    };
     if console::interrupted() {
         // Ctrl+C before op.exe started: no prompt is raised
         drop(win);
-        o.toast = Some(pending.result());
+        o.toast = Some(toast_result(pending));
         o.others = Some(others);
         o.result = "interrupted".to_owned();
         o.exit = EXIT_INTERRUPTED;
         return EXIT_INTERRUPTED;
     }
-    let mut running = match opexe::start(op, args, kind) {
+    let mut running = match opexe::start(op, args, how.env, how.stderr) {
         Ok(r) => r,
         Err(e) => {
             drop(win);
-            o.toast = Some(pending.result());
+            o.toast = Some(toast_result(pending));
             o.others = Some(others);
             return start_failed(lang, &e, o);
         }
     };
+    o.started = true;
     let pid = running.child.id();
     if let Some(w) = win.as_ref() {
         w.watch(HANDLE(running.child.as_raw_handle()));
@@ -584,18 +629,25 @@ fn run_desktop(
         }
     });
     drop(win);
-    let stderr_copy = running.stderr_copy();
-    o.signout = Some(opexe::close_session(op));
-    o.toast = Some(pending.result());
+    o.stderr = running.stderr_copy();
+    o.signout = Some(if close {
+        opexe::close_session(op)
+    } else {
+        "skipped".to_owned()
+    });
+    o.toast = Some(toast_result(pending));
     o.others = Some(others);
-    finish(o, code, Mode::Desktop, &stderr_copy)
+    let copy = std::mem::take(&mut o.stderr);
+    let code = finish(o, code, Mode::Desktop, &copy);
+    o.stderr = copy;
+    code
 }
 
-/// Help and service modes: op.exe without a window. Help closes a session in case one was opened.
-fn run_plain(
+/// Help and service modes: op.exe without a window. `close` closes a session in case one was opened (help).
+pub(super) fn run_plain(
     op: &Path,
     args: &[OsString],
-    kind: Kind,
+    how: How,
     mode: Mode,
     lang: Lang,
     close: bool,
@@ -609,16 +661,19 @@ fn run_plain(
         o.exit = EXIT_INTERRUPTED;
         return EXIT_INTERRUPTED;
     }
-    let mut running = match opexe::start(op, args, kind) {
+    let mut running = match opexe::start(op, args, how.env, how.stderr) {
         Ok(r) => r,
         Err(e) => return start_failed(lang, &e, o),
     };
+    o.started = true;
     let code = wait_op(&mut running, false, || {});
-    let stderr_copy = running.stderr_copy();
+    let copy = running.stderr_copy();
     o.signout = Some(if close {
         opexe::close_session(op)
     } else {
         "skipped".to_owned()
     });
-    finish(o, code, mode, &stderr_copy)
+    let code = finish(o, code, mode, &copy);
+    o.stderr = copy;
+    code
 }

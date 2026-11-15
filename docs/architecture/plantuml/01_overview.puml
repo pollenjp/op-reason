@@ -9,16 +9,17 @@ package "WSL" {
   file "~~/.local/state/op-reason/\nlog.jsonl" as WSLLOG
 }
 package "Windows" {
-  component "op-reason.exe\n(the Windows entry,\nfresh process per call)" as WINEXE #E8F1FB
+  component "op-reason.exe\n(entry from Windows,\n--run for calls from WSL;\nfresh process per call)" as WINEXE #E8F1FB
   component "op-reason.cmd\nop-reason.ps1\n(fallback if Smart App Control\nblocks op-reason.exe)" as WINENTRY #F2F2F2
-  component "powershell.exe\nlauncher.ps1\n(fresh process per call)" as LAUNCHER #FFF8DC
-  component "op.exe\n(1Password CLI)" as OPEXE
+  component "powershell.exe\nlauncher.ps1\n(fallback, fresh process per call)" as LAUNCHER #FFF8DC
+  component "op.exe\n(1Password CLI, in a Job Object\nwhen op-reason.exe starts it)" as OPEXE
   component "1Password app\n(approval prompt)" as APP
   component "window + toast\n(caller, place, reason, command)" as WIN #FFE4E1
   file "%LOCALAPPDATA%\\op-reason\\\nlog.jsonl" as WINLOG
 }
 
-WSLBIN --> LAUNCHER : payload (env)\nstdin / stdout / stderr
+WSLBIN --> WINEXE : --run, payload (env)\nstdin / stdout / stderr
+WSLBIN ..> LAUNCHER : same payload, with -File\n(only when the exe\nleft no status file)
 WINENTRY --> LAUNCHER : payload (env)
 LAUNCHER --> WIN : shows
 LAUNCHER --> OPEXE : starts, then\nwhoami + signout --all
@@ -26,6 +27,6 @@ WINEXE --> WIN : shows
 WINEXE --> OPEXE : starts, then\nwhoami + signout --all
 OPEXE --> APP : asks
 WSLBIN --> WSLLOG : start / end / refused
-WINEXE --> WINLOG : same format
+WINEXE --> WINLOG : same format\n(entry face)
 WINENTRY --> WINLOG : same format
 @enduml

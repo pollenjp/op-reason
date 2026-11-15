@@ -1,22 +1,21 @@
-//! The contract between an entry (the WSL binary, the PowerShell entry, or an executable that replaces it) and the
-//! launcher: the payload passed in `OPREASON_PAYLOAD` and the status the launcher writes back. Section 5 of the design
-//! document is the reference; keep the two in step.
+//! The contract between an entry (the WSL binary or the PowerShell entry) and the runner it starts for one call
+//! (`launcher.ps1`, or `op-reason.exe --run`): the payload passed in `OPREASON_PAYLOAD` and the status the runner writes
+//! back. Section 5 of the design document is the reference; keep the two in step.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Environment variable that carries the payload JSON (ASCII only).
 pub const ENV_PAYLOAD: &str = "OPREASON_PAYLOAD";
-/// Environment variable that carries the launcher source (base64 of UTF-8), read by the bootstrap.
-pub const ENV_SCRIPT: &str = "OPREASON_SCRIPT";
-/// Windows named mutex that makes calls from WSL and Windows run one at a time (taken by the launcher).
+/// Windows named mutex that makes calls from WSL and Windows run one at a time (taken by the runner, or by
+/// `op-reason.exe` for the whole call when it is the entry).
 pub const MUTEX_NAME: &str = r"Local\op-reason";
+/// The only argument of `op-reason.exe` when it runs a call for the WSL binary (the payload carries the rest).
+pub const RUN_ARG: &str = "--run";
 /// Version of this contract (`v` in the payload).
 pub const CONTRACT_VERSION: u32 = 1;
 /// The payload must stay below this many characters (a Windows environment variable holds 32767 UTF-16 units).
 pub const PAYLOAD_MAX: usize = 32_000;
-/// `OPREASON_SCRIPT` must stay below this many characters.
-pub const SCRIPT_B64_MAX: usize = 30_000;
 /// Default seconds to wait for the global lock.
 pub const LOCK_WAIT_DEFAULT: u64 = 90;
 
@@ -24,7 +23,8 @@ pub const LOCK_WAIT_DEFAULT: u64 = 90;
 pub const EXIT_USAGE: i32 = 2;
 /// Exit code: the lock wait timed out.
 pub const EXIT_LOCK_TIMEOUT: i32 = 75;
-/// Exit code: `op.exe`, `powershell.exe` or `wslpath` not found.
+/// Exit code: `op.exe`, `op-reason.exe`, `launcher.ps1`, `powershell.exe` or `wslpath` not found, or the runner could
+/// not be started.
 pub const EXIT_MISSING: i32 = 127;
 
 /// What the entry passes to the launcher.
@@ -159,7 +159,8 @@ pub struct Notify {
     pub time: String,
 }
 
-/// What the launcher writes back. Unknown fields are ignored; missing fields are `None`.
+/// What the runner writes back. Unknown fields are ignored; missing fields are `None`. `op-reason.exe --run` writes it
+/// twice: `{"started":false,"error":"","runner":"exe"}` as soon as it has read the payload, then the whole status.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Status {
     /// Whether `op.exe` was started.
@@ -192,6 +193,9 @@ pub struct Status {
     /// `stderr: "scan"` only: `denied`, `timeout` or null.
     #[serde(default, rename = "stderrMatch")]
     pub stderr_match: Option<String>,
+    /// `exe` when `op-reason.exe --run` wrote it (the launcher does not write it).
+    #[serde(default)]
+    pub runner: Option<String>,
 }
 
 impl Status {
@@ -244,6 +248,11 @@ mod tests {
         assert!(Status::parse("junk").is_none());
         assert!(Status::parse("").is_none());
         assert!(Status::parse("{\"started\":\"yes\"}").is_none());
+        let first = Status::parse(r#"{"started":false,"error":"","runner":"exe"}"#).unwrap();
+        assert_eq!(
+            (first.started, first.runner.as_deref()),
+            (false, Some("exe"))
+        );
     }
 
     #[test]

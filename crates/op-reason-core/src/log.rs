@@ -60,6 +60,16 @@ pub struct Watch<'a> {
     pub end: Option<&'a str>,
 }
 
+/// Why a WSL call in `auto` mode moved from `op-reason.exe` to the launcher (`end.fallback`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Fallback {
+    /// `not-found` (no `op-reason.exe`), `not-started` (it could not be started) or `no-status` (it exited without
+    /// writing the status file).
+    pub why: &'static str,
+    /// The exit code of `op-reason.exe` for `no-status`, else null.
+    pub exit: Option<i32>,
+}
+
 /// An `end` record.
 #[derive(Debug, Clone, Serialize)]
 pub struct End<'a> {
@@ -77,6 +87,12 @@ pub struct End<'a> {
     pub others: Option<Value>,
     pub signout: Option<Value>,
     pub watch: Watch<'a>,
+    /// WSL calls: `exe` or `launcher`, whichever ran the call (left out when none ran, and on Windows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runner: Option<&'a str>,
+    /// WSL calls: only when `auto` moved from `op-reason.exe` to the launcher.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<&'a Fallback>,
 }
 
 /// A `refused` record.
@@ -280,10 +296,41 @@ mod tests {
                 start: Some("none"),
                 end: None,
             },
+            runner: None,
+            fallback: None,
         });
         assert_eq!(
             e,
             r#"{"v":1,"id":"i","event":"end","time":"t","epoch":6,"session":"s1","result":"approved","exit":0,"seconds":1,"window":"shown","toast":null,"others":0,"signout":"ok","watch":{"start":"none","end":null}}"#
+        );
+        let fell = Fallback {
+            why: "no-status",
+            exit: Some(1),
+        };
+        let e = line(&End {
+            v: 1,
+            id: "i",
+            event: "end",
+            time: "t",
+            epoch: 6,
+            session: None,
+            result: "approved",
+            exit: 0,
+            seconds: 1,
+            window: None,
+            toast: None,
+            others: None,
+            signout: None,
+            watch: Watch {
+                start: None,
+                end: None,
+            },
+            runner: Some("launcher"),
+            fallback: Some(&fell),
+        });
+        assert!(
+            e.ends_with(r#""watch":{"start":null,"end":null},"runner":"launcher","fallback":{"why":"no-status","exit":1}}"#),
+            "{e}"
         );
         let r = line(&Refused {
             v: 1,

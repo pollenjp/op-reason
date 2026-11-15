@@ -1,5 +1,7 @@
 //! Finding and starting op.exe. stdin and stdout are the caller's handles, passed down untouched; stderr goes
-//! through a pipe that a thread copies to our stderr while keeping a bounded copy (to tell `denied` and `timeout`).
+//! through a pipe that a thread copies to our stderr while keeping a bounded copy (to tell `denied` and `timeout`), or,
+//! for a WSL call whose wrapper keeps that copy itself, is passed down too. op.exe runs in a kill-on-close Job Object
+//! ([`super::job`]).
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -10,9 +12,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+use windows::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
 use op_reason_core::args::Kind;
+use op_reason_core::contract::ENV_PAYLOAD;
+
+use super::job::{self, Job};
 
 /// Overrides the op.exe path (tests, unusual installs).
 pub const OP_EXE_VAR: &str = "OPREASON_OP_EXE";
@@ -62,47 +67,84 @@ pub fn image_name(op: &Path) -> String {
         .unwrap_or_else(|| "op.exe".to_owned())
 }
 
-/// Sets the environment per kind, as the WSL binary does.
-fn apply_env(cmd: &mut Command, kind: Kind) {
-    match kind {
-        Kind::Desktop | Kind::Help => {
-            cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN")
-                .env_remove("OP_CONNECT_HOST")
-                .env_remove("OP_CONNECT_TOKEN");
-        }
-        Kind::ServiceAccount => {
-            cmd.env("OP_BIOMETRIC_UNLOCK_ENABLED", "false");
-        }
-        Kind::Connect => {
-            cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN")
-                .env("OP_BIOMETRIC_UNLOCK_ENABLED", "false");
-        }
-    }
-    cmd.env_remove(OP_EXE_VAR);
+/// op.exe's environment.
+#[derive(Debug, Clone, Copy)]
+pub enum Env {
+    /// Per kind, as the WSL binary sets it (the entry face).
+    Kind(Kind),
+    /// As it came (the runner face: the WSL binary has already set it).
+    AsIs,
 }
 
-/// A running op.exe and the thread that copies its stderr.
+/// op.exe's stderr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stderr {
+    /// Through a pipe, relayed to ours, with a copy kept (the entry face, and the payload's `stderr: "scan"`).
+    Tee,
+    /// Ours, passed down (the payload's `stderr: "inherit"`: the WSL binary relays and copies it).
+    Inherit,
+}
+
+/// Sets the environment. The payload never reaches op.exe.
+fn apply_env(cmd: &mut Command, env: Env) {
+    if let Env::Kind(kind) = env {
+        match kind {
+            Kind::Desktop | Kind::Help => {
+                cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN")
+                    .env_remove("OP_CONNECT_HOST")
+                    .env_remove("OP_CONNECT_TOKEN");
+            }
+            Kind::ServiceAccount => {
+                cmd.env("OP_BIOMETRIC_UNLOCK_ENABLED", "false");
+            }
+            Kind::Connect => {
+                cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN")
+                    .env("OP_BIOMETRIC_UNLOCK_ENABLED", "false");
+            }
+        }
+    }
+    cmd.env_remove(OP_EXE_VAR).env_remove(ENV_PAYLOAD);
+}
+
+/// A running op.exe, the thread that copies its stderr (with [`Stderr::Tee`]) and its Job Object.
 pub struct Running {
     pub child: Child,
-    tee: mpsc::Receiver<Vec<u8>>,
+    tee: Option<mpsc::Receiver<Vec<u8>>>,
+    job: Option<Job>,
 }
 
 /// The longest stderr copy kept for classifying the result (the end of the stream).
 const KEEP: usize = 64 * 1024;
 
-/// Starts op.exe with the caller's stdin and stdout.
-pub fn start(op: &Path, args: &[OsString], kind: Kind) -> std::io::Result<Running> {
+/// Starts op.exe with the caller's stdin and stdout, in a kill-on-close Job Object: created suspended, put into the
+/// job, then resumed (without the job when one cannot be made or joined).
+pub fn start(op: &Path, args: &[OsString], env: Env, stderr: Stderr) -> std::io::Result<Running> {
     let mut cmd = Command::new(op);
     cmd.args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::piped());
-    apply_env(&mut cmd, kind);
+        .stderr(match stderr {
+            Stderr::Tee => Stdio::piped(),
+            Stderr::Inherit => Stdio::inherit(),
+        })
+        .creation_flags(CREATE_SUSPENDED.0);
+    apply_env(&mut cmd, env);
     let mut child = cmd.spawn()?;
-    let mut err = child
-        .stderr
-        .take()
-        .ok_or_else(|| std::io::Error::other("no stderr pipe"))?;
+    let job = Job::new().ok().filter(|j| j.assign(&child).is_ok());
+    if !job::resume(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other(
+            "op.exe was created but could not be resumed",
+        ));
+    }
+    let Some(mut err) = child.stderr.take() else {
+        return Ok(Running {
+            child,
+            tee: None,
+            job,
+        });
+    };
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut copy: Vec<u8> = Vec::new();
@@ -124,16 +166,38 @@ pub fn start(op: &Path, args: &[OsString], kind: Kind) -> std::io::Result<Runnin
         }
         let _ = tx.send(copy);
     });
-    Ok(Running { child, tee: rx })
+    Ok(Running {
+        child,
+        tee: Some(rx),
+        job,
+    })
 }
 
 impl Running {
-    /// The stderr copy, once op.exe has exited. A grandchild that still holds the pipe (an `op run` command left
-    /// in the background) must not hang the call, so this waits at most two seconds.
+    /// The stderr copy, once op.exe has exited (empty with [`Stderr::Inherit`]). A grandchild that still holds the
+    /// pipe (an `op run` command left in the background) must not hang the call, so this waits at most two seconds.
     pub fn stderr_copy(&self) -> Vec<u8> {
         self.tee
-            .recv_timeout(Duration::from_secs(2))
+            .as_ref()
+            .and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
             .unwrap_or_default()
+    }
+
+    /// Stops op.exe and what it started (the whole job when there is one).
+    pub fn kill(&mut self) {
+        match &self.job {
+            Some(job) => job.terminate(),
+            None => {
+                let _ = self.child.kill();
+            }
+        }
+    }
+
+    /// op.exe ended by itself: what it left running is no longer ended with this exe.
+    pub fn release(&self) {
+        if let Some(job) = &self.job {
+            job.release();
+        }
     }
 }
 
@@ -167,7 +231,7 @@ fn quiet(op: &Path, args: &[&str]) -> std::io::Result<(i32, String)> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW.0);
-    apply_env(&mut cmd, Kind::Desktop);
+    apply_env(&mut cmd, Env::Kind(Kind::Desktop));
     let mut child = cmd.spawn()?;
     let err = child.stderr.take();
     let reader = thread::spawn(move || {
