@@ -1,7 +1,8 @@
 #Requires -Version 7
-# Screenshots and timings on a Windows runner, with the fake op.exe: op-reason.exe next to the PowerShell entry of the
-# same tree (-Entry op-reason.ps1, -EntryCmd op-reason.cmd) and its launcher started directly (-Launcher launcher.ps1,
-# the second half of every call through the PowerShell entry). The numbers help to choose a Windows entry (README).
+# Screenshots and timings on a Windows runner, with the fake op.exe: op-reason.exe (its entry face, and its runner face
+# `--run` as a WSL call starts it) next to the PowerShell entry of the same tree (-Entry op-reason.ps1, -EntryCmd
+# op-reason.cmd) and its launcher started directly (-Launcher launcher.ps1: the second half of every call through the
+# PowerShell entry, and the fallback of a WSL call). The numbers help to choose a Windows entry (README).
 #
 #   pwsh -File .github/scripts/windows-exe-shots.ps1 -Exe target\release\op-reason.exe -FakeOp target\debug\op.exe `
 #     -Launcher launcher\launcher.ps1 -Entry windows\op-reason.ps1 -EntryCmd windows\op-reason.cmd -Out shots
@@ -84,16 +85,17 @@ if ($env:USERPROFILE -and $cwd.StartsWith($env:USERPROFILE, [StringComparison]::
   $cwd = '~' + $cwd.Substring($env:USERPROFILE.Length)
 }
 
-# Starts the launcher for one desktop call with the payload of the launcher contract (docs/architecture/README.md).
-function Start-Launcher([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, [hashtable] $Env) {
+# The payload of one desktop call (the launcher contract, docs/architecture/README.md). $Herdr and $Notes are what only a
+# WSL call sends.
+function New-Payload([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, $Herdr = $null, $Notes = @()) {
   $facts = [ordered]@{
     time    = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     caller  = $Caller
-    herdr   = $null
+    herdr   = $Herdr
     place   = [ordered]@{ repo = $repo; branch = $branch; cwd = $cwd }
     reason  = $Reason
     command = $Command
-    notes   = @()
+    notes   = @($Notes)
   }
   $payload = [ordered]@{
     v        = 1
@@ -106,10 +108,21 @@ function Start-Launcher([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller,
     stderr   = 'inherit'
     facts    = $facts
   }
-  $json = $payload | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii
-  $all = @{ OPREASON_PAYLOAD = $json }
+  $payload | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii
+}
+
+# Starts the launcher for one desktop call.
+function Start-Launcher([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, [hashtable] $Env) {
+  $all = @{ OPREASON_PAYLOAD = (New-Payload $OpArgs $Lang $Caller $Reason $Command) }
   if ($Env) { foreach ($k in $Env.Keys) { $all[$k] = $Env[$k] } }
   Start-Proc 'powershell.exe' @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-File', $Launcher) $all
+}
+
+# Starts op-reason.exe --run as a WSL call starts it (without a status file: the payload names none).
+function Start-Run([string] $Payload, [hashtable] $Env) {
+  $all = @{ OPREASON_PAYLOAD = $Payload }
+  if ($Env) { foreach ($k in $Env.Keys) { $all[$k] = $Env[$k] } }
+  Start-Proc $Exe @('--run') $all
 }
 
 # The PowerShell entry as a program or cmd.exe runs it (the shim starts powershell.exe -File op-reason.ps1), and
@@ -160,6 +173,10 @@ $reasonJa = & $u '\u30c7\u30d7\u30ed\u30a4\u306e\u305f\u3081\u306b Proxmox \u306
 $longReason = 'Read the API token of the staging cluster to rotate the deploy key, then write the new key back to the vault item so that the nightly job can pick it up without anyone copying secrets by hand'
 $readArgs = @('read', 'op://Private/proxmox/token')
 $claudeEnv = @{ OPREASON_LANG = 'ja'; CLAUDECODE = '1'; CLAUDE_PID = '4242'; CLAUDE_CODE_SESSION_ID = 'demo' }
+# What a WSL call from Claude Code in a herdr pane sends, after the watchdog cleared a shared approval
+$wslPayload = New-Payload $readArgs 'ja' ([ordered]@{ type = 'claude'; pid = 4242; session = 'demo'; detail = $null }) $reasonJa `
+  'op read op://Private/proxmox/token' ([ordered]@{ workspace = 'w1'; label = (& $u '\u30c7\u30d7\u30ed\u30a4'); pane = 'w1:p2' }) `
+  @([ordered]@{ kind = 'shared-cleared' })
 $scenes = @(
   @{ name = '01-exe-claude-ja'; title = $TitleJa; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
   @{ name = '02-entry-claude-ja'; title = $TitleJa; entry = $true; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
@@ -168,7 +185,8 @@ $scenes = @(
   @{ name = '04-exe-others-ja'; title = $TitleJa; env = @{ OPREASON_LANG = 'ja' }; others = $true;
      args = @('--reason', $reasonJa, 'item', 'get', 'proxmox', '--fields', 'password') },
   @{ name = '05-exe-long-en'; title = $TitleEn; env = @{ OPREASON_LANG = 'en' };
-     args = @('--reason', $longReason, 'item', 'create', '--category', 'login', '--title', 'deploy key', 'username=ci', 'password=not-shown') }
+     args = @('--reason', $longReason, 'item', 'create', '--category', 'login', '--title', 'deploy key', 'username=ci', 'password=not-shown') },
+  @{ name = '06-run-wsl-ja'; title = $TitleJa; run = $wslPayload; env = @{} }
 )
 # Minimize the runner's own windows (its console shows job logs), so that the screen shot shows only our window.
 (New-Object -ComObject Shell.Application).MinimizeAll()
@@ -183,6 +201,8 @@ foreach ($s in $scenes) {
   }
   if ($s.entry) {
     $p = Start-EntryPs1 $s.args (@{ FAKE_SLEEP_MS = '6000' } + $s.env)
+  } elseif ($s.run) {
+    $p = Start-Run $s.run (@{ FAKE_SLEEP_MS = '4000' } + $s.env)
   } else {
     $p = Start-Proc $Exe $s.args (@{ FAKE_SLEEP_MS = '4000' } + $s.env)
   }
@@ -245,6 +265,13 @@ $results += Measure-Runs 'op-reason.exe: help call (op vault --help: op.exe, no 
 }
 $results += Measure-Runs 'op-reason.exe: op-reason --version (no op.exe)' {
   Measure-Whole { Start-Proc $Exe @('--version') @{} }
+}
+$runTiming = New-Payload @('vault', 'list') 'en' $humanCaller 'timing' 'op vault list'
+$results += Measure-Runs 'op-reason.exe --run (as a WSL call starts it, without WSL): start -> window visible' {
+  Measure-Window { Start-Run $runTiming @{ FAKE_SLEEP_MS = '1500' } }
+}
+$results += Measure-Runs 'op-reason.exe --run: whole desktop call (window, toast, op, whoami, signout)' {
+  Measure-Whole { Start-Run $runTiming @{ FAKE_WHOAMI_RC = '0' } }
 }
 $results += Measure-Runs 'PowerShell entry via op-reason.cmd: start -> window visible' {
   Measure-Window { Start-EntryCmd $argsTiming @{ OPREASON_LANG = 'en'; FAKE_SLEEP_MS = '1500' } }

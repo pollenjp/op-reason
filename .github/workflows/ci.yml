@@ -29,7 +29,7 @@ jobs:
         run: nix develop path:./nix --command cargo test --locked --workspace
       - name: Build
         run: nix develop path:./nix --command cargo build --locked --package op-reason
-      - name: Black-box tests (fake powershell.exe and op.exe, the launcher on PowerShell 7, fish)
+      - name: Black-box tests (fake op-reason.exe, powershell.exe and op.exe, the launcher on PowerShell 7, fish)
         run: nix develop path:./nix --command bash tests/run-all.sh target/debug/op-reason
       - name: Shell lint
         run: |
