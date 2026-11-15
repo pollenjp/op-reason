@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# Runs launcher/launcher.ps1 (the script every op-reason call starts in a fresh powershell.exe) on PowerShell 7 for
+# Runs launcher/launcher.ps1 (the fallback runner, started in a fresh powershell.exe) on PowerShell 7 for
 # Linux with a fake op. Ported from the dotfiles' launcher test.
 #
 #   bash tests/launcher.test.sh [<launcher.ps1>]

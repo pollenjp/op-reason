@@ -48,8 +48,9 @@ op --reason "read the staging DB password to run the migration" read "op://Priva
 | op's `[ERROR] … authorization prompt dismissed` | the person denied the prompt | do **not** call again; ask the user with options (retry now, skip, they run it themselves) |
 | op's `[ERROR] … authorization timeout` | nobody answered the prompt | the same: ask, do not call again |
 | exit 75, "Another op call is still waiting for its approval" | another call holds the lock while its prompt is open | tell the user; call again after that prompt is answered |
-| exit 127 | `op.exe`, `powershell.exe` or `wslpath` was not found, or could not be started (the message says which) | tell the user; do not work around it with another op |
-| exit 1 with an `op-reason: launcher:` line (`op-reason.exe`: `could not start op.exe`) | op could not be started | report the line |
+| exit 127 | `op.exe`, `op-reason.exe`, `launcher.ps1`, `powershell.exe` or `wslpath` was not found, or could not be started (the message says which) | tell the user; do not work around it with another op |
+| exit 1 with an `op-reason:` line (`could not start op.exe`, `op-reason: launcher: …`, or `op-reason.exe ended without starting the call`) | op could not be started | report the line |
+| an `op-reason:` line that says the call runs through `launcher.ps1` instead | op-reason.exe did not start (Smart App Control, for example); the call went on through the fallback | nothing to do for this call; mention it to the user once |
 
 Do not retry denied or timed-out calls: every retry shows another prompt, and people who see many prompts start
 approving them out of habit, which defeats the rule "deny any prompt that comes without the window".

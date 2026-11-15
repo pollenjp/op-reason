@@ -2,9 +2,9 @@
 
 日本語版: [manual-verification.ja.md](manual-verification.ja.md)
 
-CI runs op-reason with fake `powershell.exe` and `op.exe` only: the 1Password desktop app cannot run there. These
-checks need a person, a Windows machine with the 1Password app and the 1Password CLI, and WSL. They take about 20
-minutes and show about ten approval prompts.
+CI runs op-reason with fake `op-reason.exe`, `powershell.exe` and `op.exe` only: the 1Password desktop app cannot run
+there, and the Windows runners have no WSL2. These checks need a person, a Windows machine with the 1Password app and
+the 1Password CLI, and WSL. The WSL checks (1–14 and R) take about 30 minutes and show about fifteen approval prompts.
 
 ## Rules while checking
 
@@ -15,14 +15,21 @@ minutes and show about ten approval prompts.
 
 ## Preparation
 
+Unpack the Windows zip (`op-reason-windows.zip` of a release, or the `op-reason-windows` artifact of a pull request's
+Windows exe workflow) into a Windows folder and check its SHA-256 as the README shows. In WSL:
+
 ```sh
 cargo build --release
 export PATH=$PWD/target/release:$PATH
 ln -sf op-reason target/release/op && ln -sf op-reason target/release/op-reason-log
 command -v op            # …/target/release/op
 op.exe --version         # the real 1Password CLI answers
+export OPREASON_EXE=/mnt/c/Users/<you>/<the folder>/op-reason.exe   # not needed when it is on PATH
 export OPREASON_LANG=en  # or ja
 ```
+
+Checks 1–14 run with the default (no `OPREASON_RUNNER`), through `op-reason.exe`. The window is the Direct2D window
+(it looks a little different from the launcher's WPF window).
 
 ## Checks
 
@@ -38,16 +45,30 @@ export OPREASON_LANG=en  # or ja
 | 8 | As check 7, but B with `OPREASON_LOCK_WAIT=10` and A unanswered for 15 seconds, then deny A | B exits with 75 and names A's reason; `op-reason-log` shows `refused (lock wait timed out)` |
 | 9 | `op --reason "manual check 9: template" item template get Login \| op --reason "manual check 9: preview from the template" item create --dry-run --vault Private - >/dev/null`, approve both prompts | Both windows appear, nothing hangs, exit 0; `op-reason-log` shows two `approved`. When the receiver took the lock first, the sender's window has a note that it runs without the lock and its row shows `(lock skipped)` |
 | 10 | `op.exe vault list >/dev/null` (directly), approve; then `op --reason "manual check 10: watchdog" whoami` | Before the call op-reason clears the shared approval: a notification "Cleared a shared 1Password CLI approval"; `op-reason-log` shows `cleared a shared approval`. (`whoami` itself then reports that it is not signed in) |
-| 11 | `timeout 5 op --reason "manual check 11: interrupted" vault list`, do not answer | After 5 seconds the window disappears and the prompt stays: deny it. `op-reason-log` shows `interrupted` |
+| 11 | `timeout 5 op --reason "manual check 11: interrupted" vault list`, do not answer | Note what happens to the window and the prompt (as in R3); deny the prompt if it stays. `op-reason-log` shows `interrupted` |
 | 12 | `op --version`, `op --help`, `op item get --help` | No reason needed, no window, no prompt |
 | 13 | `op item get x` (no reason) | Exit 2, the usage with the hint for AI agents; `op-reason-log` shows `refused (no reason)` |
 | 14 (optional) | With a service account: put the token in `OP_SERVICE_ACCOUNT_TOKEN` without showing it, then `op --reason "manual check 14: service account" vault list >/dev/null` | No window, no prompt, exit 0; `op-reason-log` shows `ok (SA)` |
 
+## Checks from WSL through op-reason.exe
+
+CI cannot start Windows programs from WSL, so these can only be checked by hand. They take about 15 minutes and show
+about six prompts. Where the expectation says "note", nobody has seen it yet: write down what you see.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| R1 | `time op --version` three times, then three times with `OPREASON_RUNNER=launcher` (calls without a reason or a prompt) | Note each `real`. The exe should be much shorter than the launcher (started from Windows directly, the exe takes tens of milliseconds, the launcher about half a second) |
+| R2 | `op --reason "check R2: time to the window" vault list >/dev/null`, approve; then the same with `OPREASON_RUNNER=launcher` | Note how soon the window appears after Enter (at once, about half a second, a second or more), for both |
+| R3 | `op --reason "check R3: TERM" vault list & pid=$!`; when the prompt shows, do not answer and `kill -TERM $pid` | Note: does the window close, does the prompt stay, is anything left in `tasklist.exe /FI "IMAGENAME eq op-reason.exe"` and `tasklist.exe /FI "IMAGENAME eq op.exe"`. `op-reason-log` shows `interrupted` (143). Deny the prompt if it stays. Do the same with `OPREASON_RUNNER=launcher` and note the difference |
+| R4 | Press Ctrl+C in the WSL terminal while the prompt of `op --reason "check R4: Ctrl+C" vault list` is open | Note as in R3. `op-reason-log` shows `interrupted` (130). Does `op.exe whoami` then say that it is not signed in? |
+| R5 | On a machine where Smart App Control blocks `op-reason.exe`: `op --reason "check R5: fallback" vault list >/dev/null`, approve. On a machine where it does not: copy `C:\Windows\System32\whoami.exe` as `op-reason.exe` into an empty folder, put the zip's `launcher.ps1` next to it, point `OPREASON_EXE` at that copy, and do the same | Note what WSL prints (the interop's message, if any, when Windows refuses the exe). Then one line says the call runs through launcher.ps1 instead, and the launcher's window appears. Approve: exit 0. `op-reason-log` shows `approved (fallback)`, and the last call of `op-reason-log --json` has `fallback` in its `end` |
+| R6 | With the setup of R5: `printf 'plain text\n' \| op --reason "check R6: stdin through the fallback" inject`, approve | `plain text` comes out (stdin arrives whole after a fallback) |
+| R7 | With the setup of R5: `OPREASON_RUNNER=launcher op --reason "check R7: launcher only" vault list >/dev/null`, approve | The launcher's window appears without the fallback line (and without a Smart App Control notice) |
+
 ## Checks on Windows: op-reason.exe
 
-Download `op-reason.exe` from a release (or the `op-reason-exe` artifact of a pull request's Windows exe workflow) and
-check its SHA-256 as the README shows. The checks call it by its full name, `op-reason.exe`, so that a PowerShell entry
-on `PATH` cannot answer instead. They take about 15 minutes and show about ten prompts.
+Use `op-reason.exe` from the folder of the R checks, by its full name `op-reason.exe`. They take about 15 minutes and
+show about ten prompts.
 
 | # | Do | Expect |
 | --- | --- | --- |
@@ -59,11 +80,12 @@ on `PATH` cannot answer instead. They take about 15 minutes and show about ten p
 | E6 | As E5 with `$env:OPREASON_LOCK_WAIT = 10` in B and A unanswered for 15 seconds, then deny A | B exits with 75 and names A's reason; `op-reason.exe --log` shows B as `refused (lock wait timed out)` |
 | E7 | `op-reason.exe --reason "check E7: deny" vault list`, **deny** | Exit not 0, op's error on stderr; `op-reason.exe --log` shows `denied` |
 | E8 | Press Ctrl+C while the prompt of `op-reason.exe --reason "check E8: interrupt" vault list` is open | The window disappears; deny the prompt if it stays. `op-reason.exe --log --json` shows `interrupted` with exit 130, and `op.exe whoami` says that it is not signed in |
+| E9 | End `op-reason.exe` in Task Manager while the prompt of `op-reason.exe --reason "check E9: kill" vault list` is open | The window disappears, and `op.exe` ends too, with its prompt (the Job Object). If the prompt stays, note it and deny it |
 
 ## Checks on Windows: the PowerShell entry (fallback)
 
-Use the release zip (or `windows/op-reason.ps1`, `windows/op-reason.cmd` and `launcher/launcher.ps1` from the
-repository, side by side in one folder on `PATH`).
+Add the zip's `powershell-entry` folder to `PATH` in front of the folder of `op-reason.exe` (README, "If Smart App
+Control blocks op-reason.exe").
 
 | # | Do | Expect |
 | --- | --- | --- |

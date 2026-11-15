@@ -86,7 +86,7 @@ calls from Windows and from WSL.
 | `auto` | `op-reason.exe` | Start the exe. When it leaves no status file, start the launcher with the same payload (§4.3). |
 | `auto` | no exe, but `launcher.ps1` and `powershell.exe` | Start the launcher (a fallback: `not-found`). |
 | `auto` | neither | Refuse with 127 (`no-exe`). |
-| `exe` | `op-reason.exe` | Start the exe, never the launcher. |
+| `exe` | `op-reason.exe` | Start the exe, never the launcher (when the exe leaves no status file, one line says so). |
 | `exe` | no exe | Refuse with 127 (`no-exe`). |
 | `launcher` | `launcher.ps1` and `powershell.exe` | Start the launcher, never the exe. |
 | `launcher` | no `launcher.ps1` / no `powershell.exe` | Refuse with 127 (`no-launcher` / `no-powershell`). |
@@ -148,8 +148,9 @@ arguments after `--run` give exit 2. The exe writes no log record in this face: 
 1. Read `OPREASON_PAYLOAD` and remove it from the environment (`op.exe` must not inherit it).
 2. Read the `status` path from the payload, even when the rest of it cannot be used.
 3. Write the status file at once: `{"started":false,"error":"","runner":"exe"}`.
-4. If the payload is empty or not JSON, or has no `status`, or the status file cannot be written: print one
-   `op-reason: --run: …` line on stderr and exit 1 without doing anything else.
+4. If the payload is empty or not JSON, or the status file cannot be written: print one `op-reason: …` line on
+   stderr and exit 1 without doing anything else. A payload without `status` (allowed by the contract; the WSL binary
+   always sends one, except for the toast of `OPREASON_RUNNER=exe`) runs without the first write.
 
 ### 5.2 Checks
 
@@ -237,15 +238,25 @@ an environment variable.
 
 ## 9. The Windows zip
 
-One release asset for Windows, `op-reason-windows.zip` (with `op-reason-windows.zip.sha256`), holds:
+One release asset for Windows, `op-reason-windows.zip` (with `op-reason-windows.zip.sha256`), holds one folder:
 
-- `op-reason.exe` (the Windows entry and the runner for WSL calls; not signed),
-- `launcher.ps1`, `op-reason.ps1`, `op-reason.cmd` (the fallback),
-- `SKILL.md`, `README.md`, `README.ja.md`, `LICENSE-MIT`, `LICENSE-APACHE`.
+```text
+op-reason-windows/
+  op-reason.exe        the Windows entry and the runner of WSL calls (not signed)
+  launcher.ps1         the fallback of WSL calls (looked for next to op-reason.exe)
+  SKILL.md  README.md  README.ja.md  LICENSE-MIT  LICENSE-APACHE
+  powershell-entry/    the PowerShell entry, for Windows where Smart App Control blocks the exe
+    op-reason.ps1  op-reason.cmd  launcher.ps1  SKILL.md
+```
 
-The user unpacks it into one folder and adds that folder to the Windows user `PATH`. The separate `op-reason.exe`
-asset of the C' spec goes away. The script that makes the zip runs in the pull request workflow too (it is the step
-that a tag would otherwise test first).
+The user unpacks it and adds the folder to the Windows user `PATH`; where Smart App Control blocks the exe, also
+`powershell-entry`, in front of it. The PowerShell entry has a folder of its own because PowerShell prefers a `.ps1`
+to an `.exe` of the same name in one folder: `op-reason` typed in PowerShell would run the fallback (or fail under the
+default execution policy, like the well-known `npm.ps1`). The entry finds `launcher.ps1` and `SKILL.md` next to
+itself, so it keeps copies of them, and its code does not change.
+
+The separate `op-reason.exe` asset of the C' spec goes away. The script that makes the zip checks its entries and runs
+in the pull request workflow too (it is the step that a tag would otherwise test first).
 
 Versions: the WSL binary and the zip are installed separately. The payload's `v` is the contract between them: an exe
 that gets another version refuses it with a message to update both sides (§5.2).
@@ -314,4 +325,5 @@ On a Windows machine with WSL (the CI runners have no WSL2 and no 1Password), `d
 | The Job Object in the entry face too | the same `op.exe` start code; a killed exe no longer leaves a prompt behind |
 | The holder file follows the launcher's `Write-Holder` | one rule for both runners |
 | One Windows zip, made by a script that the pull request workflow runs | one install for Windows and WSL; the release step is tested before a tag |
+| The PowerShell entry in a `powershell-entry` folder of the zip, with copies of `launcher.ps1` and `SKILL.md` | PowerShell would pick `op-reason.ps1` over `op-reason.exe` in one folder; the entry's code stays as it is |
 | The separate `op-reason.exe` release asset goes away | one way to install |

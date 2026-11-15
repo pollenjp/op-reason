@@ -14,7 +14,7 @@ skinparam file {
 
 rectangle "How should an AI agent call op?" as Q4
 rectangle "How do I check it with\nthe real 1Password app?" as Q3
-rectangle "How does it work now?\nWhat do the entries and the launcher exchange?" as Q2
+rectangle "How does it work now?\nWhat do the entries and the runners exchange?" as Q2
 rectangle "日本語で読みたい\n(Japanese)" as Q5
 rectangle "What is op-reason?\nHow do I install and use it?" as Q1
 

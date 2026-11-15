@@ -77,6 +77,11 @@ watchdog calls. A prefix that starts with `OP_` would read as a 1Password settin
 
 ## 3. Architecture (plan A')
 
+> Update (2026-11-15): calls from WSL now start `op-reason.exe --run`, and the launcher is their fallback, started with
+> `-File` from the Windows zip; the WSL binary no longer embeds it (`2026-11-15-wsl-through-exe-design.md`). Sections
+> 5.1, 5.4, 5.6, 5.7, 6.1, 8, 9 and 11 are updated for it; the picture below and the rest of this section describe plan
+> A' as first built.
+
 ```
                     WSL                                              Windows
  ┌───────────────────────────────────────┐     ┌──────────────────────────────────────────────────────┐
@@ -212,20 +217,19 @@ the entry in step.
 This section is what C' must follow. "Entry" means the WSL binary, the PowerShell entry, or an executable that replaces
 the PowerShell entry.
 
-### 5.1 Entry → launcher: process and environment
+### 5.1 Entry → runner: process and environment
 
-- Command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text` and then
-  - from WSL: `-EncodedCommand <bootstrap>`, with the launcher source in `OPREASON_SCRIPT`;
-  - from the PowerShell entry: `-File <path of launcher.ps1>`.
-- `OPREASON_SCRIPT`: base64 of the UTF-8 launcher source (byte order mark removed). It must stay below 30000 characters
-  (an environment variable holds at most 32767); a test checks it.
-- The bootstrap (UTF-16LE, base64): sets `$ProgressPreference = 'SilentlyContinue'` (otherwise PowerShell writes CLIXML
-  progress records to stderr), reads and removes `OPREASON_SCRIPT`, decodes it as UTF-8, and runs it in the same scope
-  (`. $scriptblock`) so that the launcher's `exit` becomes the process exit code. On failure it writes one
-  `op-reason: launcher: cannot load the script: …` line to stderr and exits 1.
-- `OPREASON_PAYLOAD`: the payload JSON (5.2), written with ASCII only (non-ASCII as `\uXXXX`). The launcher removes it
-  from its environment before `op.exe` starts. From WSL both variables are added to `WSLENV`.
-- Standard input, output and error of `op.exe` are the launcher's own (no redirection, no PowerShell pipeline touches
+- The runner of a call: from WSL, `op-reason.exe --run` (one fixed argument) by default, and the launcher as its
+  fallback (`OPREASON_RUNNER`, `2026-11-15-wsl-through-exe-design.md` §4); from the PowerShell entry, the launcher.
+- The launcher's command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -File
+  <path of launcher.ps1>` (from WSL, the Windows path of the `launcher.ps1` next to `op-reason.exe`). The launcher sets
+  `$ProgressPreference = 'SilentlyContinue'` in its first line (otherwise PowerShell writes CLIXML progress records to
+  stderr).
+- Until 2026-11-15 the WSL binary started the launcher with `-EncodedCommand <bootstrap>` and the launcher source in
+  `OPREASON_SCRIPT` (base64, comment lines removed, under 30000 characters). That is gone.
+- `OPREASON_PAYLOAD`: the payload JSON (5.2), written with ASCII only (non-ASCII as `\uXXXX`). `op.exe` never gets it
+  (the launcher removes it from its environment, `op-reason.exe` from `op.exe`'s). From WSL it is added to `WSLENV`.
+- Standard input, output and error of `op.exe` are the runner's own (no redirection, no PowerShell pipeline touches
   the bytes), unless the payload asks for `stderr: "scan"` (PR 2, Windows entry).
 - Service mode from WSL: `OP_SERVICE_ACCOUNT_TOKEN` (or `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN`) and
   `OP_BIOMETRIC_UNLOCK_ENABLED=false` are passed with `/w` in `WSLENV`. Desktop and help modes remove all three token
@@ -295,9 +299,12 @@ running. The receiver normally ends later (it reads the sender's output to the e
 the sender's session too. If the receiver ends first (it did not read its input), the sender's session stays bound to
 the sender's launcher, which has exited; it is not usable by other processes and expires with 1Password's time limit.
 
-### 5.4 Launcher → entry: status and exit code
+### 5.4 Runner → entry: status and exit code
 
-The launcher writes the status JSON (UTF-8 without byte order mark) at the end, when `status` is given:
+The runner writes the status JSON (UTF-8 without byte order mark) at the end, when `status` is given. `op-reason.exe
+--run` also writes `{"started":false,"error":"","runner":"exe"}` first, before anything else, and stops without starting
+`op.exe` when it cannot; the WSL binary starts the launcher instead only when no status file exists, so `op.exe` never
+runs twice (`2026-11-15-wsl-through-exe-design.md` §4.3, §5.1):
 
 ```json
 {"started":true,"exit":0,"error":"","window":"shown","toast":"shown","others":0,"signout":"ok","lock":"held","ui":{…}}
@@ -317,7 +324,8 @@ The launcher writes the status JSON (UTF-8 without byte order mark) at the end, 
 | `lock` | `held`, `skipped`, `timeout` (PR 2) |
 | `holder` | PR 2, on `lock-timeout`: who holds the mutex, as one line of text (time, caller, reason, command) |
 | `stderrMatch` | PR 2, `stderr: "scan"` only: `denied`, `timeout` or null |
-| `ui` | the texts the launcher built (title, lines, footer, others, toast), for tests |
+| `runner` | `exe` when `op-reason.exe --run` wrote it (the launcher writes none) |
+| `ui` | the texts the runner built (title, lines, footer, others, toast), for tests |
 
 Exit code: `op.exe`'s exit code; 127 when `op.exe` is missing (and one `op-reason: launcher: op.exe not found: …` line on
 stderr); 1 for other failures before `op.exe` starts; 75 when the mutex wait timed out (PR 2); `notify` exits 0. The
@@ -364,8 +372,10 @@ Records (one JSON object per line, `v: 1`; `time` is local ISO 8601 with offset,
   `launcher-failed` (no status, or `started` false), `interrupted` (stopped by a signal), and from PR 2
   `lock-timeout` (the mutex wait timed out; exit 75). `window`, `toast`, `others`, `signout` come from the status (null
   when missing). `watch` is the WSL watchdog's result at start and end (`none`, `cleared`, `error`, or null when not run).
-- `refused.why`: `no-reason`, `too-long`, `lock-timeout`, `no-op-exe`, `no-powershell`, `no-wslpath`, `interrupted`
-  (stopped before start). (`no-launcher` from the bash version can still appear in old logs.)
+- `end.runner` (WSL calls): `exe` or `launcher`, whichever ran the call. `end.fallback` (only when `auto` moved to the
+  launcher): `{"why": "not-found" | "not-started" | "no-status", "exit": <the exe's code> | null}`.
+- `refused.why`: `no-reason`, `too-long`, `lock-timeout`, `no-op-exe`, `no-exe`, `no-launcher`, `no-powershell`,
+  `no-wslpath`, `interrupted` (stopped before start). (`no-launcher` also appears in old logs of the bash version.)
 - Never written: `op`'s output, tokens, unmasked secret values.
 - Denial and timeout are recognized from `op`'s stderr lines (case-insensitive): `^\[ERROR\] .*authorization prompt dismissed`
   → denied; `^\[ERROR\] .*authoriz.*(timeout|timed out)` → timeout. Only `op`'s `[ERROR]` lines count (a child command's
@@ -378,7 +388,7 @@ Records (one JSON object per line, `v: 1`; `time` is local ISO 8601 with offset,
 | `op`'s code | the call ran |
 | 2 | no reason, empty reason, arguments too long (base64 of the arguments over 28000 characters, or a payload over 32000), unknown shell for `--completion` |
 | 75 | the lock wait timed out (another call is waiting for its approval) |
-| 127 | `op.exe`, `powershell.exe` or `wslpath` not found, or `powershell.exe` could not be started (a message says why) |
+| 127 | `op.exe`, `op-reason.exe` (and its fallback), `launcher.ps1`, `powershell.exe` or `wslpath` not found, or the runner could not be started (a message says why) |
 | 1 | the launcher failed before `op.exe` started |
 | 129, 130, 143 | stopped by SIGHUP, SIGINT, SIGTERM (WSL) |
 
@@ -400,8 +410,9 @@ it to the launcher as `lang`.
    `HERDR_PANE_ID`, and the workspace label from `herdr workspace get <id>` (2-second timeout; optional). Place: repo and
    branch from the files of the git repository that contains the current directory (6.6).
 4. Mode (4.4). Refusals are logged and printed with a short usage that mentions `op-reason --skill` for agents.
-5. Tools: `op.exe` (`OPREASON_OP_EXE`, or `op.exe` in `PATH`; must be a file), `powershell.exe` (`OPREASON_POWERSHELL`,
-   or `powershell.exe` in `PATH`), `wslpath`. Missing → refused, exit 127.
+5. Tools: `op.exe` (`OPREASON_OP_EXE`, or `op.exe` in `PATH`; must be a file), the runner (`OPREASON_RUNNER`:
+   `op-reason.exe` from `OPREASON_EXE` or `PATH`, `launcher.ps1` from its folder, `powershell.exe` from
+   `OPREASON_POWERSHELL` or `PATH`; `2026-11-15-wsl-through-exe-design.md` §4.2), `wslpath`. Missing → refused, exit 127.
 6. Too long: base64 of the arguments over 28000 characters → refused (`too-long`), exit 2.
 7. Signals (SIGINT, SIGTERM, SIGHUP) are handled from here, on a dedicated thread: after `start`, an `end` with
    `interrupted`; before, a `refused` with `interrupted`; exit 130/143/129. Temporary files are removed. Every child
@@ -413,8 +424,9 @@ it to the launcher as `lang`.
 10. Remove leftovers of calls killed by SIGKILL (`<state>/run/*` older than an hour). Write `current.json` when holding
     the lock.
 11. Watchdog at start (6.5), unless the lock was skipped.
-12. Log `start`. Build the payload (5.2) and start the launcher (5.1): stdin is ours (or the drained copy), stdout is
-    ours, stderr is relayed to ours while the last 256 KiB are kept to classify the result.
+12. Log `start`. Build the payload (5.2) and start the runner (5.1): stdin is ours (or the drained copy), stdout is
+    ours, stderr is relayed to ours while the last 256 KiB are kept to classify the result. In `auto` mode, when
+    `op-reason.exe` left no status file, print one line and start the launcher with the same payload and stdin.
 13. Result from the status file and `op`'s exit code (5.6). Watchdog at end, unless the lock was skipped. Log `end`.
 14. Exit with `op`'s exit code.
 
@@ -536,9 +548,9 @@ completion fish`, which the wrapper would refuse). Install it as `~/.config/fish
 
 Changes from the dotfiles version:
 
-- environment names `OPREASON_SCRIPT` and `OPREASON_PAYLOAD`; message prefix `op-reason: launcher:`;
-- `OPREASON_SCRIPT` carries the source without the byte order mark, comment lines and blank lines (the launcher has
-  no multi-line strings), which keeps it well below the limit of an environment variable;
+- environment name `OPREASON_PAYLOAD`; message prefix `op-reason: launcher:`;
+- started with `-File` by both callers (until 2026-11-15 the WSL binary passed the source without comment lines in
+  `OPREASON_SCRIPT` to a bootstrap; since then calls from WSL start it only as the fallback of `op-reason.exe --run`);
 - no `signout --all` for `lock: skipped` calls (5.3);
 - texts built from `facts` in English or Japanese (`lang`); the file is UTF-8 with a byte order mark and may contain
   Japanese text (the WSL path decodes it as UTF-8; `-File` reads the byte order mark);
@@ -566,7 +578,6 @@ crates/op-reason-core/        library, builds for Linux and Windows
   place.rs                    repo and branch from git files
   messages.rs                 English and Japanese texts
   result.rs                   result classification
-  launcher.rs                 embedded launcher, OPREASON_SCRIPT and the bootstrap
   base64.rs, json.rs, time.rs small helpers (ASCII JSON, local time)
 crates/op-reason/             the WSL binary (Linux)
   main.rs                     argv[0] dispatch and wrapper options
@@ -574,8 +585,10 @@ crates/op-reason/             the WSL binary (Linux)
   procfs.rs                   /proc: Claude ancestor, pipe writers, op-reason detection
   lock.rs                     flock waiting with the pipe checks
   signals.rs                  SIGINT/SIGTERM/SIGHUP on a dedicated thread (sigwait)
-  launch.rs                   WSLENV, wslpath, starting the launcher, stderr relay, timeouts
-launcher/launcher.ps1         the shared launcher
+  launch.rs                   WSLENV, wslpath, starting children, timeouts
+  runner.rs                   OPREASON_RUNNER: op-reason.exe --run, the launcher with -File (added 2026-11-15)
+crates/op-reason-win/         op-reason.exe: the Windows entry and the runner of WSL calls (C', its own workspace)
+launcher/launcher.ps1         the shared launcher (the fallback runner)
 windows/                      PR 2: op-reason.ps1, op-reason.cmd
 completions/op.fish           fish completion template
 skill/SKILL.md                the skill file
@@ -608,8 +621,10 @@ dates are checked by hand).
 
 ## 11. Distribution
 
-- GitHub Releases: Linux x86_64 and aarch64 binaries (musl, static) with SHA-256 files; PR 2 adds the Windows zip, and
-  C' adds `op-reason.exe` (3.1). A workflow builds them on a `v*` tag. Tags and releases are made after merge, by the maintainer.
+- GitHub Releases: Linux x86_64 and aarch64 binaries (musl, static) and one Windows zip, `op-reason-windows.zip`
+  (`op-reason.exe`, `launcher.ps1`, the PowerShell entry in `powershell-entry/`, `SKILL.md`, the READMEs and the
+  licenses; `2026-11-15-wsl-through-exe-design.md` §9), each with a SHA-256 file. A workflow builds them on a `v*` tag.
+  Tags and releases are made after merge, by the maintainer.
 - Nix flake: `packages.default` (`op-reason`, `op-reason-log`, fish completion for `op-reason`) and `packages.op` (adds
   the `op` symlink and the fish completion for `op`). The author's dotfiles will take the flake as an input.
 - Not published to crates.io, Homebrew or apt.
@@ -651,4 +666,4 @@ dates are checked by hand).
 | Development tools in `nix/` (read with `path:`), the package flake at the root | the author's conventions |
 | No log viewer on Windows in PR 2 | keep PR 2 to the entry; the format is plain JSON Lines |
 | `lock: skipped` calls do not sign out (5.3) | found by the builder check: the sender's `signout --all` would close the receiver's session mid-call; the receiver's final `signout --all` cleans up |
-| Comment lines are stripped from `OPREASON_SCRIPT` | the launcher with Japanese texts is about 28000 characters of base64 with comments; PR 2 adds code |
+| Comment lines are stripped from `OPREASON_SCRIPT` | the launcher with Japanese texts is about 28000 characters of base64 with comments; PR 2 adds code. (Gone on 2026-11-15 with `OPREASON_SCRIPT`) |
