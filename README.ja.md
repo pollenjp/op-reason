@@ -12,7 +12,7 @@ op-reason は、WSL と Windows で使う [1Password CLI](https://developer.1pas
 3. 1Password の承認の画面と一緒に、誰が・どこで・なぜ・何を打つかを出す窓を出します
 4. 記録に残します (`op-reason-log`)
 
-![アニメーション: WSL の端末で Claude Code が op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" を打つ。画面の右上に op-reason の窓が開き、時刻・呼び手 (Claude Code と process id)・場所・理由・コマンドを、1Password の承認の画面 (素の箱で描いたもの) と一緒に出す。許可を押すと op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る (許可・Claude・理由・コマンド)。](docs/images/readme-1-call.ja.svg)
+![アニメーション: WSL の端末で Claude Code が op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" を打つ。画面の右上に op-reason の窓が開いて時刻・呼び手 (Claude Code と process id)・場所・理由・コマンドを出し、画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る (許可・Claude・理由・コマンド)。](docs/images/readme-1-call.ja.svg)
 
 AI のコーディングエージェント (Claude Code など) に `op` を打たせるために作りました。承認する前に何のための依頼かが分かり、
 1 回の承認が後の依頼に届かず、後からすべての呼び出しを見返せます。
@@ -28,7 +28,7 @@ AI のコーディングエージェント (Claude Code など) に `op` を打�
   ディレクトリ・理由・コマンドを出します。
 - **エージェントが何をしたかが残らない。** op-reason はすべての呼び出し・断り・見つけたことを JSON Lines で記録します。
 
-![アニメーション。2 つの画面を並べる。左は WSL から op だけを使うとき: 端末 1 が op を呼び、1Password の承認の画面で 1 回許可すると、端末 2 が op を呼んだときは画面なしで値が出る。右は op-reason: 呼ぶたびに承認の画面と一緒に op-reason の窓が呼び手と理由を出すので、端末 2 もまた承認を求められ、誰が・なぜが分かる。](docs/images/readme-2-approval-leak.ja.svg)
+![アニメーション。2 つの画面を並べる。左は WSL から op だけを使うとき: 端末 1 が op を呼び、画面の真ん中に出る 1Password の承認の画面で 1 回許可すると、端末 2 が op を呼んだときは画面なしで値が出る。右は op-reason: 呼ぶたびに承認の画面と一緒に、右上の op-reason の窓が呼び手と理由を出すので、端末 2 もまた承認を求められ、誰が・なぜが分かる。](docs/images/readme-2-approval-leak.ja.svg)
 
 ## 仕組み
 

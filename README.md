@@ -13,7 +13,7 @@ Every call
 3. shows a window with who calls, where, why and the command, next to 1Password's approval prompt, and
 4. is recorded in a log (`op-reason-log`).
 
-![Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the staging VM" read "op://Private/proxmox/token". op-reason's window opens at the top right of the screen with the time, the caller (Claude Code and its process id), the place, the reason and the command, next to the 1Password approval prompt (drawn as a plain box). After a click on Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, by Claude, with the reason and the command.](docs/images/readme-1-call.en.svg)
+![Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the staging VM" read "op://Private/proxmox/token". op-reason's window opens at the top right of the screen with the time, the caller (Claude Code and its process id), the place, the reason and the command, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. After a click on Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, by Claude, with the reason and the command.](docs/images/readme-1-call.en.svg)
 
 It was written for AI coding agents (such as Claude Code) that run `op` on your behalf: you see what each request is
 for before you approve it, one approval never covers later requests, and you can review every call afterwards.
@@ -30,7 +30,7 @@ for before you approve it, one approval never covers later requests, and you can
   the repository, branch and directory, the reason and the command.
 - **Nothing records what agents did.** op-reason logs every call, refusal and finding as JSON Lines.
 
-![Animation of two screens side by side. Left, op alone from WSL: terminal 1 calls op and you approve the 1Password prompt once; when terminal 2 calls op, the value comes out with no prompt at all. Right, op-reason: every call opens op-reason's window with the caller and the reason next to the prompt, so terminal 2 is asked again and you see who asks and why.](docs/images/readme-2-approval-leak.en.svg)
+![Animation of two screens side by side. Left, op alone from WSL: terminal 1 calls op and you approve the 1Password prompt in the middle of the screen once; when terminal 2 calls op, the value comes out with no prompt at all. Right, op-reason: every call opens op-reason's window at the top right with the caller and the reason, along with the prompt, so terminal 2 is asked again and you see who asks and why.](docs/images/readme-2-approval-leak.en.svg)
 
 ## How it works
 

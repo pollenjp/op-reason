@@ -6,7 +6,7 @@
 - Each SVG has its own background, so that it reads the same on GitHub's light and dark themes. It uses the
   viewer's fonts (an image cannot load web fonts).
 - With reduced motion (prefers-reduced-motion: reduce), each SVG holds still on the frame that carries its point
-  (scene 1: op-reason's window next to the approval prompt), so that nothing is lost without the motion. Viewers
+  (scene 1: op-reason's window and the approval prompt), so that nothing is lost without the motion. Viewers
   that run no CSS animations show the same frame.
 - op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it, with the texts of
   crates/op-reason-win/src/ui.rs. The refusal and the log table are op-reason's output (the texts of
@@ -257,17 +257,17 @@ TEXTS = {
         "call.desc": (
             'Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the '
             'staging VM" read "op://Private/proxmox/token". op-reason\'s window opens at the top right of the screen '
-            "with the time, the caller (Claude Code and its process id), the place, the reason and the command, next "
-            "to the 1Password approval prompt (drawn as a plain box). After a click on Approve, op prints the value "
-            "(hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: "
-            "approved, by Claude, with the reason and the command."
+            "with the time, the caller (Claude Code and its process id), the place, the reason and the command, and "
+            "the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. After a click on "
+            "Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log "
+            "shows the call as one line: approved, by Claude, with the reason and the command."
         ),
         "call.user": "Create the staging VM on Proxmox.",
         "call.assistant": "I need the Proxmox API token first.",
         "call.hidden": "(the value, hidden here)",
         "call.steps": (
             "Claude Code calls op with a reason",
-            "op-reason's window shows who calls and why, next to 1Password's approval prompt",
+            "op-reason's window shows who calls and why, along with 1Password's approval prompt",
             "You approve, and op prints the value",
             "op-reason signs out, and its window closes",
             "Every call is in the log: op-reason-log",
@@ -275,9 +275,9 @@ TEXTS = {
         "leak.title": "One approval and the next calls: op alone and op-reason",
         "leak.desc": (
             "Animation of two screens side by side. Left, op alone from WSL: terminal 1 calls op and you approve the "
-            "1Password prompt once; when terminal 2 calls op, the value comes out with no prompt at all. Right, "
-            "op-reason: every call opens op-reason's window with the caller and the reason next to the prompt, so "
-            "terminal 2 is asked again and you see who asks and why."
+            "1Password prompt in the middle of the screen once; when terminal 2 calls op, the value comes out with no "
+            "prompt at all. Right, op-reason: every call opens op-reason's window at the top right with the caller and "
+            "the reason, along with the prompt, so terminal 2 is asked again and you see who asks and why."
         ),
         "leak.heads": (("op alone", "op.exe started from WSL"), ("op-reason", "a fresh op-reason.exe for every call")),
         "leak.terminal": ("Terminal 1 · Claude Code", "Terminal 2 · Claude Code"),
@@ -323,10 +323,10 @@ TEXTS = {
         "call.desc": (
             "アニメーション: WSL の端末で Claude Code が "
             'op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" '
-            "を打つ。画面の右上に op-reason の窓が開き、時刻・呼び手 (Claude Code と process id)・場所・理由・"
-            "コマンドを、1Password の承認の画面 (素の箱で描いたもの) と一緒に出す。許可を押すと op が値を出し "
-            "(図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る "
-            "(許可・Claude・理由・コマンド)。"
+            "を打つ。画面の右上に op-reason の窓が開いて時刻・呼び手 (Claude Code と process id)・場所・理由・"
+            "コマンドを出し、画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと "
+            "op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが "
+            "1 行で出る (許可・Claude・理由・コマンド)。"
         ),
         "call.user": "Proxmox に staging の VM を作って",
         "call.assistant": "先に Proxmox の API の token が要る。",
@@ -341,8 +341,8 @@ TEXTS = {
         "leak.title": "1 回の承認と次の呼び出し: op だけと op-reason",
         "leak.desc": (
             "アニメーション。2 つの画面を並べる。左は WSL から op だけを使うとき: 端末 1 が op を呼び、"
-            "1Password の承認の画面で 1 回許可すると、端末 2 が op を呼んだときは画面なしで値が出る。"
-            "右は op-reason: 呼ぶたびに承認の画面と一緒に op-reason の窓が呼び手と理由を出すので、"
+            "画面の真ん中に出る 1Password の承認の画面で 1 回許可すると、端末 2 が op を呼んだときは画面なしで"
+            "値が出る。右は op-reason: 呼ぶたびに承認の画面と一緒に、右上の op-reason の窓が呼び手と理由を出すので、"
             "端末 2 もまた承認を求められ、誰が・なぜが分かる。"
         ),
         "leak.heads": (("op だけ", "WSL から op.exe を起こす"), ("op-reason", "呼ぶたびに新しい op-reason.exe")),
@@ -879,13 +879,16 @@ def desk(x: float, y: float, w: float, h: float, rx: float = 0) -> str:
     return f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="{num(h)}"{r} fill="url(#desk)"/>'
 
 
-def tool_call(command: str, first: int) -> tuple:
-    """Claude Code's Bash tool line for `command`, wrapped after `first` columns: ("Bash(" + line 1, line 2)."""
-    cut = 0
-    for i in range(len(command)):
-        if command[i] == " " and cols(command[:i]) <= first:
-            cut = i
-    return command[:cut], command[cut + 1 :] + ")"
+def wrap(words: str, widths: tuple) -> list:
+    """Wraps at spaces: line i holds at most widths[i] columns (the last width for the lines after)."""
+    lines, line = [], ""
+    for word in words.split(" "):
+        if line and cols(f"{line} {word}") > widths[min(len(lines), len(widths) - 1)]:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}" if line else word
+    return [*lines, line]
 
 
 CALLS = (  # (time, result, seconds, caller, reason, op arguments): the calls of the scenes, as the log has them
@@ -917,41 +920,48 @@ def scene_call(lang: str) -> str:
     tx = TEXTS[lang]
     reason = REASONS[lang]["proxmox"]
     d = 13.5
-    c = Canvas(584, d, rest=2.0)  # without motion: op-reason's window next to the approval prompt, before the click
+    c = Canvas(584, d, rest=2.0)  # without motion: op-reason's window and the approval prompt, before the click
     m = c.m
-    c.add(desk(0, 0, W, 540), taskbar(512, 28, "10:42"))
+    screen_h = 540  # the screen, down to the bottom of the taskbar
+    c.add(desk(0, 0, W, screen_h), taskbar(512, 28, "10:42"))
     t_call, t_window, t_prompt = 0.8, 1.4, 1.55
     t_click, t_value, t_close, t_log, t_table = 5.7, 6.1, 7.5, 8.9, 9.4
 
-    # Claude Code in a WSL terminal: the request, then the Bash tool calls op with a reason
-    term = Term(c, 16, 112, 540, 196, "Claude Code", 12)
-    command = f'op --reason "{reason}" read "{PROXMOX}"'
-    first, second = tool_call(command, 49)
+    # Claude Code in a WSL terminal: the request, then the Bash tool calls op with a reason. op-reason's window (top
+    # right) and the approval prompt (the middle of the screen) come in front of the terminal, so its lines stay left
+    # of them: 45 columns above the prompt, 37 beside it (with "● Bash(" or its indent in front)
+    top = 92
+    command = f'op --reason "{reason}" read "{PROXMOX}")'
+    tool_lines = wrap(command, (38, 38, 30))
+    y_tool = [200 + 18 * i for i in range(len(tool_lines))]
+    y_result = y_tool[-1] + 26
+    term = Term(c, 16, top, 544, y_result + 28 - top, "Claude Code", 12)
     tool = g(
         m.at(t_call),
-        tool_dot(term, 238, m.track([(0.0, f"fill:{TOOL_WAIT}"), (t_value, f"fill:{TOOL_DONE}")])),
-        term.line(238, [("Bash", TERM_FG, True), ("(" + first, TERM_FG)], 2),
-        term.line(256, [(second, TERM_FG)], 7),
+        tool_dot(term, y_tool[0], m.track([(0.0, f"fill:{TOOL_WAIT}"), (t_value, f"fill:{TOOL_DONE}")])),
+        term.line(y_tool[0], [("Bash", TERM_FG, True), ("(" + tool_lines[0], TERM_FG)], 2),
+        *(term.line(y, [(s, TERM_FG)], 7) for y, s in zip(y_tool[1:], tool_lines[1:], strict=True)),
     )
     result = g(
         m.at(t_value),
-        result_hook(term, 282),
-        hidden_value(term, 282, 5, 20),
-        term.line(282, [(tx["call.hidden"], TERM_DIM)], 26),
+        result_hook(term, y_result),
+        hidden_value(term, y_result, 5, 20),
+        term.line(y_result, [(tx["call.hidden"], TERM_DIM)], 26),
     )
     c.add(
         term.frame,
         term.content(
-            term.line(168, [("> ", TERM_DIM), (tx["call.user"], "#ffffff")]),
-            f'<circle cx="{num(term.col(0.5))}" cy="{num(202 - 4)}" r="3.5" fill="#ffffff"/>',
-            term.line(202, [(tx["call.assistant"], TERM_FG)], 2),
+            term.line(148, [("> ", TERM_DIM), (tx["call.user"], "#ffffff")]),
+            f'<circle cx="{num(term.col(0.5))}" cy="{num(174 - 4)}" r="3.5" fill="#ffffff"/>',
+            term.line(174, [(tx["call.assistant"], TERM_FG)], 2),
             tool,
             result,
         ),
     )
 
-    # the 1Password approval prompt (a plain box) and op-reason's window at the top right of the screen
-    box, approve = prompt_box(m, 572, 236, 288, 96, lang, (t_click,))
+    # the 1Password approval prompt (a plain box) in the middle of the screen, op-reason's window at its top right
+    pw, ph = 288, 96
+    box, approve = prompt_box(m, (W - pw) / 2, (screen_h - ph) / 2, pw, ph, lang, (t_click,))
     c.add(g(m.at(t_prompt, t_click + 0.15, 0.2), box))
     values = (
         f"{DAY} 10:42:07",
@@ -999,25 +1009,28 @@ def scene_leak(lang: str) -> str:
     tx = TEXTS[lang]
     r = REASONS[lang]
     d = 12.0
+    # The two screens: op-reason's window at the top right, terminal 1, the approval prompt in the middle of the
+    # screen, terminal 2
+    pw, sy, sh = 422, 62, 416
+    h = sy + sh + 58
     # without motion: terminal 2's call, the value without a prompt on the left, asked again on the right
-    c = Canvas(484, d, rest=6.2)
+    c = Canvas(h, d, rest=6.2)
     m = c.m
-    c.add(f'<rect width="{W}" height="484" fill="#e9edf2"/>')
+    c.add(f'<rect width="{W}" height="{h}" fill="#e9edf2"/>')
     calls = (  # (call, prompt and window, click, value, window closes): terminal 1, then terminal 2
         (0.6, 1.2, 2.9, 3.0, 3.6),
         (5.0, 5.5, 7.3, 7.4, 8.0),
     )
     step2 = 4.6
-    pw, sy = 422, 62
     for side, px in enumerate((12, 446)):
         reason = side == 1
         head, sub = tx["leak.heads"][side]
         c.add(text(px + 4, 32, head, 16, INK, True), text(px + 4, 52, sub, 12, MUTED))
-        c.add(desk(px, sy, pw, 364, 8))
+        c.add(desk(px, sy, pw, sh, 8))
         presses, moves, clicks = [], [], []
-        rest = (px + 384, sy + 318)
+        rest = (px + 384, sy + 372)
         for k, (t_call, t_ask, t_click, t_value, _) in enumerate(calls):
-            ty = sy + 104 + k * 96
+            ty = sy + 96 + k * 152
             term = Term(c, px + 10, ty, pw - 20, 88, tx["leak.terminal"][k], 11, small=True)
             item = PROXMOX if k == 0 else DB
             if reason:
@@ -1052,7 +1065,8 @@ def scene_leak(lang: str) -> str:
                 moves.append((t_click + 0.4, t_click + 1.2, rest))
         # the prompt (each call that asks) and op-reason's window (each call)
         spans = [(a, v) for (_, a, _, v, _), asks in zip(calls, (True, reason), strict=True) if asks]
-        box, approve = prompt_box(m, px + 97, sy + 292, 228, 64, lang, tuple(presses), small=True)
+        bw, bh = 228, 64
+        box, approve = prompt_box(m, px + (pw - bw) / 2, sy + (sh - bh) / 2, bw, bh, lang, tuple(presses), small=True)
         c.add(g(m.shown(spans, 0.2), box))
         if reason:
             for k, (_, t_ask, _, _, t_close) in enumerate(calls):
@@ -1063,8 +1077,8 @@ def scene_leak(lang: str) -> str:
         c.add(mouse(m, rest, moves), *(ripple(m, approve, t) for t in clicks))
         before, after = tx["leak.steps"][side]
         c.add(
-            g(m.at(0.0, step2, 0.2), text(px + 4, 452, before, 13, INK)),
-            g(m.at(step2, None, 0.2), text(px + 4, 452, after, 13, GREEN if reason else RED, True)),
+            g(m.at(0.0, step2, 0.2), text(px + 4, sy + sh + 26, before, 13, INK)),
+            g(m.at(step2, None, 0.2), text(px + 4, sy + sh + 26, after, 13, GREEN if reason else RED, True)),
         )
     return c.render(tx["leak.title"], tx["leak.desc"])
 
