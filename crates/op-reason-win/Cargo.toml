@@ -28,7 +28,7 @@ strip = true
 
 [package]
 name = "op-reason-win"
-description = "op-reason for Windows as one exe (plan C'): reason, lock, window, op.exe, sign-out and record in one process"
+description = "op-reason for Windows as one exe (plan C'): the Windows entry, and the runner of calls from WSL"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -66,6 +66,7 @@ features = [
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",

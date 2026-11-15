@@ -28,11 +28,12 @@ pub enum Acquired {
     Interrupted,
 }
 
-/// Takes the mutex, waiting up to `wait` in 250 ms slices. `on_wait` runs once when the first try fails;
-/// `interrupted` is polled between slices.
+/// Takes the mutex, waiting up to `wait` in 250 ms slices. `on_wait` runs once, `notice_after` after the first try
+/// failed (zero: at once; the runner waits a second, as the launcher does); `interrupted` is polled between slices.
 pub fn acquire(
     name: &str,
     wait: Duration,
+    notice_after: Duration,
     on_wait: impl FnOnce(),
     interrupted: impl Fn() -> bool,
 ) -> windows::core::Result<Acquired> {
@@ -43,9 +44,15 @@ pub fn acquire(
     if got(unsafe { WaitForSingleObject(h, 0) }) {
         return Ok(Acquired::Held(Held(h)));
     }
-    on_wait();
-    let deadline = Instant::now() + wait;
+    let started = Instant::now();
+    let deadline = started + wait;
+    let mut on_wait = Some(on_wait);
     loop {
+        if started.elapsed() >= notice_after
+            && let Some(f) = on_wait.take()
+        {
+            f();
+        }
         if interrupted() {
             // SAFETY: we own the handle and do not hold the mutex.
             unsafe {

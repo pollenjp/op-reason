@@ -1,8 +1,9 @@
 //! A stand-in for op.exe in tests. Never talks to 1Password.
 //!
 //! - `FAKE_OP_DIR`: each call takes the next free number `n` and writes `call.<n>` (the arguments) and `env.<n>`
-//!   (which variables it saw). Windows arguments are written as UTF-16LE units separated by a NUL unit, so the test
-//!   can compare them exactly (unpaired surrogates included); elsewhere as UTF-8 bytes separated by NUL.
+//!   (which variables it saw, and `PID=` its process id). Windows arguments are written as UTF-16LE units separated by
+//!   a NUL unit, so the test can compare them exactly (unpaired surrogates included); elsewhere as UTF-8 bytes
+//!   separated by NUL.
 //! - `whoami`: exits with `FAKE_WHOAMI_RC` (default 1, "not signed in").
 //! - `signout`: prints `SIGNOUT-OUT` and `SIGNOUT-ERR`, exits 0.
 //! - anything else: copies stdin to stdout, sleeps `FAKE_SLEEP_MS`, prints `FAKE_STDERR` (default
@@ -60,10 +61,12 @@ fn record(dir: &Path, args: &[OsString]) {
             "OP_CONNECT_TOKEN",
             "OP_BIOMETRIC_UNLOCK_ENABLED",
             "OPREASON_OP_EXE",
+            "OPREASON_PAYLOAD",
         ]
         .iter()
         .map(|k| seen(k))
-        .collect::<String>();
+        .collect::<String>()
+            + &format!("PID={}\n", std::process::id());
         let _ = fs::write(dir.join(format!("env.{n}")), env);
         return;
     }
