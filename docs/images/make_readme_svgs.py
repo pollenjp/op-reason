@@ -72,13 +72,17 @@ WIN_OUTER = 520.0  # OUTER_WIDTH
 WIN_W = WIN_OUTER - 2 * 7  # the frame as seen: Windows draws nothing in the outer 7 DIPs on both sides
 WIN_RIGHT = 16 + 8  # SCREEN_MARGIN, then the invisible part of the frame on the right
 WIN_CAPTION = 30.0  # the caption of the tool window, below the top border line
-PAD_LEFT, PAD_TOP, PAD_BOTTOM, LINE_GAP = 14.0, 10.0, 12.0, 2.0
+PAD_LEFT, PAD_TOP, PAD_RIGHT, PAD_BOTTOM, LINE_GAP = 14.0, 10.0, 14.0, 12.0, 2.0
+TEXT_W = WIN_W - 2 - PAD_LEFT - PAD_RIGHT  # 476: the client area (the frame less its border lines) less the paddings
 TITLE_SIZE, BODY_SIZE = 16.0, 12.0
+SWITCH_SIZE = 11.0  # the language switch, at the right end of the footer's last line
 SEGOE_ASCENT = 2210 / 2048  # Segoe UI: DirectWrite puts the baseline this far (em) below the top of a line,
 SEGOE_LINE = (2210 + 514) / 2048  # and a line is this tall
 WIN_BG = "#ffffe0"  # LIGHT_YELLOW
 WIN_INK = "#000000"  # BLACK
 WIN_FOOTER = "#b22222"  # FIREBRICK
+WIN_LINK = "#0066cc"  # LINK_BLUE: the language not shown, the one a click switches to
+WIN_BAR = "#808080"  # GRAY: the bar between the languages
 WIN_CAPTION_BG = "#f3f3f3"
 WIN_CAPTION_INK = "#9a9a9a"  # an inactive caption: the window never takes the focus
 WIN_CLOSE = "#dadada"
@@ -111,6 +115,15 @@ WINDOW = {  # crates/op-reason-win/src/ui.rs
         "footer": "この窓が出ていない 1Password の承認は拒否してください",
     },
 }
+SWITCH = (("English", "en"), (" | ", None), ("日本語", "ja"))  # ui.rs: SWITCH_LABELS
+# The footer as DirectWrite wraps it: window.rs lays it out narrower by the switch (78.7 DIPs in Segoe UI, with Yu
+# Gothic UI for 日本語) and SWITCH_GAP, so the English one takes two lines (as in the screenshots of the windows-exe
+# workflow). The switch sits on the baseline of the last line.
+FOOTER_LINES = {
+    "en": ("Deny any 1Password approval prompt that comes without this", "window"),
+    "ja": ("この窓が出ていない 1Password の承認は拒否してください",),
+}
+JA_WIDTH = 3 * SWITCH_SIZE  # 日本語: three full-width characters, the end of the switch
 PREFIX = "op-reason: "  # crates/op-reason-core/src/messages.rs
 USAGE_SHORT = {  # messages.rs: usage_short, printed with a refusal
     "en": (
@@ -184,6 +197,8 @@ def sources() -> dict:
     ui = ['"Claude Code (pid {pid})"', '"{repo} ({branch}) · {place}"']
     for t in WINDOW.values():
         ui += [f'"{v}"' for v in t.values()]
+    for s, lang in SWITCH:
+        ui.append(f'("{s}", ' + (f"Some(Lang::{lang.title()}))" if lang else "None)"))
     messages = [f'"{PREFIX}"']
     for lang in LANGS:
         messages += list(USAGE_SHORT[lang])
@@ -206,16 +221,24 @@ def sources() -> dict:
         f"const OUTER_WIDTH: f32 = {WIN_OUTER:.1f};",
         f"const PAD_LEFT: f32 = {PAD_LEFT:.1f};",
         f"const PAD_TOP: f32 = {PAD_TOP:.1f};",
+        f"const PAD_RIGHT: f32 = {PAD_RIGHT:.1f};",
         f"const PAD_BOTTOM: f32 = {PAD_BOTTOM:.1f};",
         f"const LINE_GAP: f32 = {LINE_GAP:.1f};",
         "const SCREEN_MARGIN: f32 = 16.0;",
         f"const TITLE_SIZE: f32 = {TITLE_SIZE:.1f};",
         f"const BODY_SIZE: f32 = {BODY_SIZE:.1f};",
+        f"const SWITCH_SIZE: f32 = {SWITCH_SIZE:.1f};",
+        "const SWITCH_GAP: f32 = 12.0;",
         "const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);",
         "const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);",
         "const FIREBRICK: D2D1_COLOR_F = rgb(0xB2, 0x22, 0x22);",
+        "const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);",
+        "const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);",
         'w!("Segoe UI")',
         'format!("{label}: ")',
+        # the switch on the footer's last baseline, the footer narrower by it
+        "Some((PAD_LEFT + self.width, top + self.paras[i].last_baseline))",
+        "(width - taken - SWITCH_GAP).max(width / 2.0)",
     ]
     return {
         "crates/op-reason-win/src/ui.rs": ui,
@@ -682,28 +705,48 @@ def result_hook(t: Term, y: float) -> str:
     )
 
 
-def window_layout(lines: int) -> tuple:
-    """The client height of op-reason's window and the baselines of its title, its lines and its footer (window.rs:
-    each paragraph is LINE_GAP below the one above, plus LINE_GAP)."""
+def window_layout(lines: int, footer_lines: int) -> tuple:
+    """The client height of op-reason's window and the baselines of its title, its lines and the lines of its footer
+    (window.rs: each paragraph is LINE_GAP below the one above, plus LINE_GAP)."""
     y, base = PAD_TOP, []
-    for size in [TITLE_SIZE] + [BODY_SIZE] * (lines + 1):
+    for size, n in [(TITLE_SIZE, 1)] + [(BODY_SIZE, 1)] * lines + [(BODY_SIZE, footer_lines)]:
         y += LINE_GAP
-        base.append(y + size * SEGOE_ASCENT)
-        y += size * SEGOE_LINE + LINE_GAP
+        base += [y + size * (SEGOE_ASCENT + k * SEGOE_LINE) for k in range(n)]
+        y += n * size * SEGOE_LINE + LINE_GAP
     return y + PAD_BOTTOM, base
 
 
-def op_window(c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tuple = ()) -> tuple:
-    """op-reason's window with its frame's top left at (x, y). `bands`: (line, from, to) to light up a line.
+def switch(x: float, y: float, lang: str) -> str:
+    """The language switch, ending at `x` on the baseline `y`: `lang` bold and black, the other language blue and
+    underlined (the link), the bar gray."""
+    parts = []
+    for s, code in SWITCH:
+        if code is None:
+            parts.append(f'<tspan fill="{WIN_BAR}">{esc(s)}</tspan>')
+        elif code == lang:
+            parts.append(f'<tspan class="b" fill="{WIN_INK}">{esc(s)}</tspan>')
+        else:
+            parts.append(f'<tspan fill="{WIN_LINK}" text-decoration="underline">{esc(s)}</tspan>')
+    return (
+        f'<text x="{num(x)}" y="{num(y)}" font-size="{num(SWITCH_SIZE)}" text-anchor="end" xml:space="preserve">'
+        f"{''.join(parts)}</text>"
+    )
 
-    Returns the parts and the height.
+
+def op_window(c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tuple = ()) -> tuple:
+    """op-reason's window in `lang` with its frame's top left at (x, y). `bands`: (line, from, to) to light up a line.
+
+    Returns the parts, the height and the middle of 日本語 at the end of the switch (where a click switches an English
+    window to Japanese).
     """
     t = WINDOW[lang]
     labels = (t["time"], t["caller"], t["place"], t["reason"], t["command"])
-    client_h, base = window_layout(len(labels))
+    footer = FOOTER_LINES[lang]
+    client_h, base = window_layout(len(labels), len(footer))
     h = 1 + WIN_CAPTION + client_h + 1
     cx, cy = x + 1, y + 1 + WIN_CAPTION
     tx = cx + PAD_LEFT
+    right = tx + TEXT_W
     cid = c.clip(cx, cy, WIN_W - 2, client_h)
     bx = x + WIN_W - 2 - 19
     out = [
@@ -731,9 +774,11 @@ def op_window(c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tu
             f'<text x="{num(tx)}" y="{num(cy + base[i + 1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_INK}">'
             f'<tspan class="b">{esc(label)}: </tspan>{esc(value)}</text>'
         )
-    out.append(text(tx, cy + base[-1], t["footer"], BODY_SIZE, WIN_FOOTER, True))
+    for k, s in enumerate(footer):
+        out.append(text(tx, cy + base[len(labels) + 1 + k], s, BODY_SIZE, WIN_FOOTER, True))
+    out.append(switch(right, cy + base[-1], lang))
     out.append("</g>")
-    return "".join(out), h
+    return "".join(out), h, (right - JA_WIDTH / 2, cy + base[-1] - SWITCH_SIZE * 0.38)
 
 
 def mini_window(x: float, y: float, w: float, lang: str, caller: str, reason: str) -> str:
@@ -920,16 +965,19 @@ def scene_call(lang: str) -> str:
     tx = TEXTS[lang]
     reason = REASONS[lang]["proxmox"]
     d = 13.5
-    c = Canvas(584, d, rest=2.0)  # without motion: op-reason's window and the approval prompt, before the click
+    # the screen, down to the bottom of the taskbar: tall enough for the approval prompt in its middle to clear the
+    # bottom of op-reason's window (the English one, a line taller)
+    screen_h = 576
+    # without motion: op-reason's window and the approval prompt, before the click
+    c = Canvas(screen_h + 44, d, rest=2.0)
     m = c.m
-    screen_h = 540  # the screen, down to the bottom of the taskbar
-    c.add(desk(0, 0, W, screen_h), taskbar(512, 28, "10:42"))
+    c.add(desk(0, 0, W, screen_h), taskbar(screen_h - 28, 28, "10:42"))
     t_call, t_window, t_prompt = 0.8, 1.4, 1.55
     t_click, t_value, t_close, t_log, t_table = 5.7, 6.1, 7.5, 8.9, 9.4
 
     # Claude Code in a WSL terminal: the request, then the Bash tool calls op with a reason. op-reason's window (top
     # right) and the approval prompt (the middle of the screen) come in front of the terminal, so its lines stay left
-    # of them: 45 columns above the prompt, 37 beside it (with "● Bash(" or its indent in front)
+    # of them: 45 columns beside the window, 37 beside the prompt (with "● Bash(" or its indent in front)
     top = 92
     command = f'op --reason "{reason}" read "{PROXMOX}")'
     tool_lines = wrap(command, (38, 38, 30))
@@ -970,36 +1018,38 @@ def scene_call(lang: str) -> str:
         reason,
         f"op read {PROXMOX}",
     )
-    win, _ = op_window(c, W - WIN_RIGHT - WIN_W, 16, lang, values, bands=((1, 2.3, 3.1), (3, 3.2, 4.5)))
+    win, _, _ = op_window(c, W - WIN_RIGHT - WIN_W, 16, lang, values, bands=((1, 2.3, 3.1), (3, 3.2, 4.5)))
     hidden, shown = "opacity:0;transform:translateY(-8px)", "opacity:1;transform:translateY(0)"
     c.add(g(m.at(t_window, t_close, 0.3, hidden=hidden, shown=shown), win))
 
     # afterwards, op-reason-log shows the call
-    log = Term(c, 16, 356, 848, 118, "Ubuntu", 10.5)
+    ly = screen_h - 184  # its top
+    log = Term(c, 16, ly, 848, 118, "Ubuntu", 10.5)
     table = log_table(lang, CALLS[:1])
-    rows = [log.line(424 + 16 * i, [(cell, TERM_FG)], at) for i, row in enumerate(table) for at, cell in row]
+    rows = [log.line(ly + 68 + 16 * i, [(cell, TERM_FG)], at) for i, row in enumerate(table) for at, cell in row]
     c.add(
         g(
             m.at(t_log, None, 0.3),
             log.frame,
             log.content(
-                log.prompt(408, "op-reason-log"),
-                g(m.at(t_log, t_table), log.caret(408, cols(f"{PROMPT_PATH}$ op-reason-log"))),
+                log.prompt(ly + 52, "op-reason-log"),
+                g(m.at(t_log, t_table), log.caret(ly + 52, cols(f"{PROMPT_PATH}$ op-reason-log"))),
                 g(
                     m.at(t_table),
-                    log.band(440, 0, max(at + cols(cell) for at, cell in table[1]), m.band(9.7, 11.6)),
+                    log.band(ly + 84, 0, max(at + cols(cell) for at, cell in table[1]), m.band(9.7, 11.6)),
                     *rows,
-                    log.prompt(456),
-                    log.caret(456, cols(f"{PROMPT_PATH}$ ")),
+                    log.prompt(ly + 100),
+                    log.caret(ly + 100, cols(f"{PROMPT_PATH}$ ")),
                 ),
             ),
         )
     )
 
+    rest = screen_h - 46  # the mouse's height before and after the click, between the log and the taskbar
     c.add(
-        mouse(m, (650, 494), ((4.8, 5.6, approve), (6.3, 7.1, (690, 494)))),
+        mouse(m, (650, rest), ((4.8, 5.6, approve), (6.3, 7.1, (690, rest)))),
         ripple(m, approve, t_click),
-        captions(c, 540, 44, list(zip((0.0, t_window, 4.8, 6.9, 8.6), tx["call.steps"], strict=True))),
+        captions(c, screen_h, 44, list(zip((0.0, t_window, 4.8, 6.9, 8.6), tx["call.steps"], strict=True))),
     )
     return c.render(tx["call.title"], tx["call.desc"])
 
@@ -1189,6 +1239,11 @@ def check_sources() -> list:
     for rel, needles in sources().items():
         body = (ROOT / rel).read_text(encoding="utf-8")
         problems += [f"{rel} no longer has {n!r}" for n in needles if n not in body]
+    problems += [
+        f"FOOTER_LINES[{lang!r}] is not the footer of WINDOW[{lang!r}]"
+        for lang in LANGS
+        if " ".join(FOOTER_LINES[lang]) != WINDOW[lang]["footer"]
+    ]
     return problems
 
 
