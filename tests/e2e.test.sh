@@ -25,6 +25,9 @@
 #   pipe: in "op … | op …" with the receiver holding the lock, the sender's launcher does not sign out
 #   auto: an op-reason.exe that writes no status → the real launcher runs the call once (end runner launcher, fallback
 #     no-status, one stderr line)
+#   the language chosen in the window: the launcher reads settings.json (on Linux, ~/.local/share/op-reason) and reports
+#     it as chosenLang; the binary keeps it in <state>/lang.json and the next call speaks it despite OPREASON_LANG; a
+#     removed settings.json makes the launcher report null, and the copy goes too
 #
 # ## How
 #
@@ -205,6 +208,32 @@ else
     "whoami=${whoami_calls} signout=${signout_calls} send_signout=${send_signout} $(cat "${log}")"
 fi
 unset FAKE_WHOAMI_RC
+
+echo "== The language chosen in the window"
+reset
+settings_file=${HOME}/.local/share/op-reason/settings.json
+mkdir -p "$(dirname "${settings_file}")"
+printf '%s' '{"v":1,"lang":"en"}' >"${settings_file}"
+export OPREASON_LANG=ja
+run_op chosen --reason "窓で English を選んである" item get x
+copied=$(cat "${XDG_STATE_HOME}/op-reason/lang.json" 2>/dev/null)
+run_op chosen-refused item get x
+if [[ ${copied} == '{"v":1,"lang":"en"}' && $(<"${work}/chosen-refused.err") == *"There is no reason (--reason)"* ]]; then
+  ok "the launcher's chosenLang reaches lang.json, and the next call speaks it despite OPREASON_LANG=ja"
+else
+  ng "the launcher's chosenLang reaches lang.json, and the next call speaks it despite OPREASON_LANG=ja" \
+    "copy=${copied} err=$(cat "${work}/chosen-refused.err")"
+fi
+rm -f "${settings_file}"
+run_op unchosen --reason "選んだ言語を消した" item get x
+run_op unchosen-refused item get x
+if [[ ! -e ${XDG_STATE_HOME}/op-reason/lang.json && $(<"${work}/unchosen-refused.err") == *"理由 (--reason) がありません"* ]]; then
+  ok "without settings.json the launcher reports null: the copy goes and OPREASON_LANG counts again"
+else
+  ng "without settings.json the launcher reports null: the copy goes and OPREASON_LANG counts again" \
+    "copy=$(cat "${XDG_STATE_HOME}/op-reason/lang.json" 2>&1) err=$(cat "${work}/unchosen-refused.err")"
+fi
+unset OPREASON_LANG
 
 echo "== auto: an op-reason.exe that writes no status"
 reset

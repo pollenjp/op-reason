@@ -82,6 +82,11 @@ pub struct Status {
     /// The texts of the window and the toast (the launcher's `ui`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui: Option<Value>,
+    /// The language chosen in the window (`settings.json`) when the status is written: `Some(Some(code))`,
+    /// `Some(None)` (null) when nothing is chosen, `None` (left out) when it cannot be told (design
+    /// `2026-11-15-language-toggle-design.md` §5).
+    #[serde(rename = "chosenLang", skip_serializing_if = "Option::is_none")]
+    pub chosen_lang: Option<Option<&'static str>>,
 }
 
 impl Default for Status {
@@ -100,6 +105,7 @@ impl Default for Status {
             stderr_match: None,
             runner: "exe",
             ui: None,
+            chosen_lang: None,
         }
     }
 }
@@ -193,6 +199,28 @@ mod tests {
             args(&p).unwrap_err(),
             "argument 4 of the payload is not base64"
         );
+    }
+
+    #[test]
+    fn the_status_says_which_language_is_chosen() {
+        let with = |chosen| Status {
+            chosen_lang: chosen,
+            ..Status::default()
+        };
+        assert!(
+            !with(None).text().contains("chosenLang"),
+            "left out when it cannot be told"
+        );
+        let none = with(Some(None)).text();
+        assert!(none.ends_with(r#","chosenLang":null}"#), "{none}");
+        let ja = with(Some(Some("ja"))).text();
+        assert!(ja.ends_with(r#","chosenLang":"ja"}"#), "{ja}");
+        use op_reason_core::lang::Lang;
+        assert_eq!(
+            contract::Status::parse(&ja).unwrap().chosen(),
+            Some(Some(Lang::Ja))
+        );
+        assert_eq!(contract::Status::parse(&none).unwrap().chosen(), Some(None));
     }
 
     #[test]

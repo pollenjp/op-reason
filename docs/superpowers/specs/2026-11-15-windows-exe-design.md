@@ -61,7 +61,7 @@ lists every difference.
 | Record | `%LOCALAPPDATA%\op-reason\log.jsonl`, `v: 1` `start`/`end`/`refused`, rotation at 1 MiB under `log.lock` | §5.6 |
 | Result | `approved`, `ok`, `denied`, `timeout` (from op's `[ERROR]` lines), `failed`, `launcher-failed`, `interrupted` | §5.6 |
 | Exit codes | op's code; 2; 75; 127; 1; 130/129 when interrupted | §5.7 |
-| Language | `OPREASON_LANG`, then `LC_ALL`/`LC_MESSAGES`/`LANG`, then the Windows UI language | §5.8 |
+| Language | `OPREASON_LANG`, then `LC_ALL`/`LC_MESSAGES`/`LANG`, then the Windows UI language (since `2026-11-15-language-toggle-design.md`: the language chosen in the window, then `OPREASON_LANG`, then English) | §5.8 |
 | Window and toast text | the same texts as `launcher.ps1`'s table, built from the same facts | §5.2 `facts`, §8 |
 | Caller, place | Claude Code, Windows Terminal tab, process chain; repo and branch from `.git` files | §6.6, §7 |
 | Watchdog | none (no shared parent process on Windows) | §7 |

@@ -2,6 +2,7 @@
 //!
 //! Build the fake first: `cargo build -p fake-op` (it lands next to the test binaries' parent, `target\debug\op.exe`;
 //! `OPREASON_TEST_FAKE_OP` overrides the path). Desktop-mode tests really show the window on the runner's desktop.
+//! One test clicks the window's language switch with the real mouse: it runs only where `CI` is set.
 #![cfg(windows)]
 
 use std::ffi::{OsStr, OsString};
@@ -1164,4 +1165,223 @@ fn killing_the_exe_ends_op_exe() {
         sb.payload("desktop", &["vault", "list"]).to_string(),
     );
     killing_the_exe_ends_op(&sb, cmd);
+}
+
+// ---- The language chosen in the window (design 2026-11-15-language-toggle-design.md)
+
+impl Sandbox {
+    /// `%LOCALAPPDATA%\op-reason\settings.json` of this sandbox.
+    fn settings_file(&self) -> PathBuf {
+        self.root
+            .join("lad")
+            .join("op-reason")
+            .join("settings.json")
+    }
+
+    fn set_settings(&self, text: &str) {
+        let f = self.settings_file();
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(f, text).unwrap();
+    }
+}
+
+#[test]
+fn the_entry_face_speaks_the_chosen_language_before_opreason_lang() {
+    let _g = serial();
+    let sb = Sandbox::new("lang-entry");
+    sb.set_settings(r#"{"v":1,"lang":"ja"}"#);
+    let out = sb.run(&[s("vault"), s("list")], &[("OPREASON_LANG", "en")], b"");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(err.contains("理由 (--reason) がありません"), "{err}");
+    sb.set_settings("{broken");
+    let out = sb.run(&[s("vault"), s("list")], &[("OPREASON_LANG", "en")], b"");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("There is no reason (--reason)"),
+        "a broken settings.json is no choice: {err}"
+    );
+    let out = sb.run(
+        &[s("vault"), s("list")],
+        &[("OPREASON_LANG", ""), ("LANG", "ja_JP.UTF-8")],
+        b"",
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("There is no reason (--reason)"),
+        "LANG no longer chooses Japanese: {err}"
+    );
+}
+
+#[test]
+fn run_follows_the_chosen_language_and_reports_it() {
+    let _g = serial();
+    let sb = Sandbox::new("lang-run");
+    let p = sb.payload("desktop", &["vault", "list"]).to_string();
+    let out = sb.run_payload(&p, &[], b"");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    assert_eq!(st["ui"]["title"], "1Password CLI approval request", "{st}");
+    assert!(
+        st.get("chosenLang").is_some_and(serde_json::Value::is_null),
+        "nothing chosen: chosenLang null: {st}"
+    );
+    sb.set_settings(r#"{"v":1,"lang":"ja","later":[1]}"#);
+    let out = sb.run_payload(&p, &[("OPREASON_LANG", "en")], b"");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    assert_eq!(
+        st["ui"]["title"], "1Password CLI の承認の依頼",
+        "the chosen language beats the payload's en: {st}"
+    );
+    assert_eq!(st["chosenLang"], "ja", "{st}");
+    assert_eq!(
+        fs::read_to_string(sb.settings_file()).unwrap(),
+        r#"{"v":1,"lang":"ja","later":[1]}"#,
+        "a call without a click leaves the file alone"
+    );
+    let mut n = sb.payload("notify", &[]);
+    n["notify"] = serde_json::json!({"kind": "shared-approval", "when": "end", "cleared": false, "time": "12:00:00"});
+    n["lock"] = "skipped".into();
+    sb.run_payload(&n.to_string(), &[], b"");
+    let st = sb.status();
+    assert_eq!(
+        st["ui"]["title"], "共有の 1Password CLI の承認を消せませんでした",
+        "{st}"
+    );
+    sb.set_settings("not json");
+    sb.run_payload(&p, &[], b"");
+    let st = sb.status();
+    assert_eq!(st["ui"]["title"], "1Password CLI approval request", "{st}");
+    assert!(
+        st["chosenLang"].is_null(),
+        "a broken file: chosenLang null: {st}"
+    );
+}
+
+mod click {
+    //! A real click on the window's switch, through the mouse of the desktop (CI only).
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetClientRect, GetForegroundWindow, GetWindowTextW, IsWindowVisible,
+        SetCursorPos,
+    };
+    use windows::core::{PCWSTR, w};
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn mouse_event(flags: u32, dx: u32, dy: u32, data: u32, extra: usize);
+    }
+    const LEFTDOWN: u32 = 0x0002;
+    const LEFTUP: u32 = 0x0004;
+
+    /// The approval window, once visible.
+    pub fn window() -> Option<HWND> {
+        // SAFETY: plain Win32 queries with valid arguments.
+        unsafe {
+            let h = FindWindowW(w!("op-reason-approval"), PCWSTR::null()).ok()?;
+            IsWindowVisible(h).as_bool().then_some(h)
+        }
+    }
+
+    pub fn title(h: HWND) -> String {
+        let mut buf = [0u16; 256];
+        // SAFETY: valid buffer.
+        let n = unsafe { GetWindowTextW(h, &mut buf) };
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    }
+
+    pub fn foreground() -> HWND {
+        // SAFETY: no arguments.
+        unsafe { GetForegroundWindow() }
+    }
+
+    /// Clicks `日本語`, the right end of the switch: 26 DIPs left of the client area's right edge (its 14 DIP padding,
+    /// then about the middle of the word) and 21 DIPs above its bottom (its 12 DIP padding and 2 DIP gap, then a little
+    /// above the footer's last baseline). Returns where it clicked, for the failure message.
+    pub fn click_japanese(h: HWND) -> String {
+        // SAFETY: Win32 calls with valid arguments; the window belongs to another process of this desktop.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(h, &mut rc);
+            let k = GetDpiForWindow(h).max(96) as f32 / 96.0;
+            let mut pt = POINT {
+                x: rc.right - (26.0 * k).round() as i32,
+                y: rc.bottom - (21.0 * k).round() as i32,
+            };
+            let client = pt;
+            let _ = ClientToScreen(h, &mut pt);
+            let _ = SetCursorPos(pt.x, pt.y);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            mouse_event(LEFTDOWN, 0, 0, 0, 0);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            mouse_event(LEFTUP, 0, 0, 0, 0);
+            format!(
+                "client {}x{} at {k}x, clicked client ({}, {}) = screen ({}, {})",
+                rc.right, rc.bottom, client.x, client.y, pt.x, pt.y
+            )
+        }
+    }
+}
+
+#[test]
+fn a_click_on_the_switch_changes_the_language_and_leaves_the_focus_where_it_was() {
+    if std::env::var_os("CI").is_none() {
+        eprintln!("skipped: it moves the mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("lang-click");
+    let p = sb.payload("desktop", &["vault", "list"]).to_string();
+    let mut child = sb
+        .command(&[s("--run")], &[("FAKE_SLEEP_MS", "8000")])
+        .env("OPREASON_PAYLOAD", &p)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn op-reason.exe --run");
+    assert!(
+        wait_until(Duration::from_secs(10), || click::window().is_some()),
+        "the window appears"
+    );
+    let h = click::window().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(click::title(h), "1Password CLI approval request");
+    let before = click::foreground();
+    let at = click::click_japanese(h);
+    let switched = wait_until(Duration::from_secs(3), || {
+        click::title(h) == "1Password CLI の承認の依頼"
+    });
+    let after = click::foreground();
+    let settings = fs::read_to_string(sb.settings_file()).unwrap_or_default();
+    let _ = child.wait();
+    let st = sb.status();
+    assert!(
+        switched,
+        "the caption switches to Japanese ({at}; caption now {:?})",
+        click::title(h)
+    );
+    assert_eq!(
+        settings, r#"{"v":1,"lang":"ja"}"#,
+        "the choice is written down"
+    );
+    assert_eq!(
+        after, before,
+        "the foreground window is the same as before the click ({at})"
+    );
+    assert_ne!(after, h, "the window did not take the focus");
+    assert_eq!(
+        st["chosenLang"], "ja",
+        "the status reports the choice: {st}"
+    );
+    assert_eq!(
+        st["ui"]["title"], "1Password CLI approval request",
+        "ui keeps the texts the call started with: {st}"
+    );
 }

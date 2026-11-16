@@ -13,6 +13,8 @@
 #     runs anyway and does not sign out
 #   - stderr "scan": op's stderr reaches the launcher's stderr and a denial is reported in status.stderrMatch
 #   - service mode passes OP_SERVICE_ACCOUNT_TOKEN and runs neither whoami nor signout
+#   - the language chosen in op-reason.exe's window (%LOCALAPPDATA%\op-reason\settings.json) beats the payload's lang
+#     and is reported as status chosenLang; without the file, the payload's language and chosenLang null
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
@@ -261,6 +263,26 @@ $r = Invoke-Launcher (New-Payload 'service' @('vault', 'list') 'en') 'service'
 $calls = @(Get-Calls)
 $st = Get-Status
 Check 'service passes the token and runs neither whoami nor signout' ($calls.Count -eq 1 -and $calls[0].sa -eq 'tok-test' -and $st.signout -eq 'skipped') ("calls=$($calls.Count) status=" + ($st | ConvertTo-Json -Compress))
+
+Write-Host "== The language chosen in op-reason.exe's window"
+$settingsFile = Join-Path $env:LOCALAPPDATA 'op-reason\settings.json'
+[void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $settingsFile))
+[System.IO.File]::WriteAllText($settingsFile, '{"v":1,"lang":"en"}')
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+$r = Invoke-Launcher (New-Payload 'desktop' @('item', 'get', 'x') 'ja' 'held' 90 'inherit' (New-Facts 'human' 'r' 'op item get x')) 'chosen'
+$st = Get-Status
+Check 'settings.json en beats the payload ja and is reported as chosenLang (the file is left as it was)' (
+  $r.rc -eq 0 -and $st.ui.title -ceq '1Password CLI approval request' -and $st.chosenLang -ceq 'en' -and
+  [System.IO.File]::ReadAllText($settingsFile) -ceq '{"v":1,"lang":"en"}') ("status=" + ($st | ConvertTo-Json -Compress -Depth 5))
+Remove-Item -Force $settingsFile
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+$r = Invoke-Launcher (New-Payload 'desktop' @('item', 'get', 'x') 'ja' 'held' 90 'inherit' (New-Facts 'human' 'r' 'op item get x')) 'unchosen'
+$st = Get-Status
+Check 'without settings.json: the payload language and chosenLang null' (
+  $r.rc -eq 0 -and $st.ui.title -ceq '1Password CLI の承認の依頼' -and $null -eq $st.chosenLang -and
+  @($st.PSObject.Properties.Name) -contains 'chosenLang') ("status=" + ($st | ConvertTo-Json -Compress -Depth 5))
 
 Write-Host '== Screenshots'
 $shotCases = @(

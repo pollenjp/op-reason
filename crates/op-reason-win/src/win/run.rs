@@ -2,6 +2,10 @@
 //! does with it what `launcher.ps1` does: the mutex and its holder file, the window and the toast, `op.exe`, the
 //! sign-out and the status file (design `2026-11-15-wsl-through-exe-design.md` §5, A' spec §5.1–§5.5). The WSL binary
 //! writes the records; this face writes none.
+//!
+//! The language: the one chosen in the window (`settings.json`) first, then the payload's `lang`. The final status
+//! says what `settings.json` holds as `chosenLang`, so that the WSL binary can keep its copy (design
+//! `2026-11-15-language-toggle-design.md` §2 and §5).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -11,7 +15,7 @@ use op_reason_core::args::Mode;
 use op_reason_core::contract::{self, Payload};
 use op_reason_core::lang::Lang;
 use op_reason_core::result::{self, StderrMatch};
-use op_reason_core::{messages, time};
+use op_reason_core::{messages, settings, time};
 
 use super::app::{self, How, Outcome};
 use super::{console, holder, mutex, opexe, toast};
@@ -24,13 +28,24 @@ fn say(line: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{}{line}", messages::PREFIX);
 }
 
-/// Where the status goes (nowhere when the payload has no `status`).
-struct Out(Option<PathBuf>);
+/// Where the status goes (nowhere when the payload has no `status`), and the settings file whose choice it reports.
+struct Out {
+    path: Option<PathBuf>,
+    settings: Option<PathBuf>,
+}
 
 impl Out {
-    /// Writes the whole status (failures are ignored, as in the launcher: the first write already left the trace).
+    /// Writes the whole status (failures are ignored, as in the launcher: the first write already left the trace),
+    /// with `chosenLang` read from the settings file now (after any click in this call): left out when it cannot be
+    /// read.
     fn write(&self, st: &Status) {
-        if let Some(p) = &self.0 {
+        if let Some(p) = &self.path {
+            let mut st = st.clone();
+            st.chosen_lang = self
+                .settings
+                .as_deref()
+                .and_then(|f| settings::read(f).ok())
+                .map(|chosen| chosen.map(Lang::code));
             let _ = std::fs::write(p, st.text());
         }
     }
@@ -55,13 +70,16 @@ pub fn run() -> i32 {
     // The first write comes before anything else. When the WSL binary finds no status file afterwards, it starts the
     // launcher instead: so nothing with an effect may happen unless the file was written.
     let out = match payload::status_path(&raw) {
-        Ok(path) => Out(path.map(PathBuf::from)),
+        Ok(path) => Out {
+            path: path.map(PathBuf::from),
+            settings: app::settings_file(),
+        },
         Err(e) => {
             say(&e);
             return 1;
         }
     };
-    if let Some(path) = &out.0
+    if let Some(path) = &out.path
         && let Err(e) = std::fs::write(path, payload::FIRST_STATUS)
     {
         say(&format!(
@@ -74,7 +92,7 @@ pub fn run() -> i32 {
         Ok(p) => p,
         Err(e) => return out.fail(Status::default(), e, 1),
     };
-    let lang = Lang::from_code(&p.lang);
+    let lang = app::chosen().unwrap_or_else(|| Lang::from_code(&p.lang));
     if p.mode == "notify" {
         return notify(&p, lang, &out);
     }
@@ -111,11 +129,11 @@ fn holder_reason_command(p: &Payload) -> (String, String) {
 fn call(p: &Payload, lang: Lang, out: &Out) -> i32 {
     let mut st = Status::default();
     let texts = if p.mode == "desktop" {
-        p.facts.as_ref().map(|f| ui::build(f, lang))
+        p.facts.as_ref().map(ui::Both::build)
     } else {
         None
     };
-    st.ui = texts.as_ref().map(ui::Texts::json);
+    st.ui = texts.as_ref().map(|t| t.get(lang).json());
     let args = match payload::args(p) {
         Ok(a) => a,
         Err(e) => return out.fail(st, e, 1),
