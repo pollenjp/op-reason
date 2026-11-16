@@ -2,3 +2,5 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.png binary
+# made by docs/images/make_readme_svgs.py: collapsed in diffs, left out of the language statistics
+docs/images/*.svg linguist-generated=true

@@ -12,6 +12,8 @@ op-reason は、WSL と Windows で使う [1Password CLI](https://developer.1pas
 3. 1Password の承認の画面と一緒に、誰が・どこで・なぜ・何を打つかを出す窓を出します
 4. 記録に残します (`op-reason-log`)
 
+![アニメーション: WSL の端末で Claude Code が op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" を打つ。画面の右上に op-reason の窓が開いて時刻・呼び手 (Claude Code と process id)・場所・理由・コマンドを出し、画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る (許可・Claude・理由・コマンド)。](docs/images/readme-1-call.ja.svg)
+
 AI のコーディングエージェント (Claude Code など) に `op` を打たせるために作りました。承認する前に何のための依頼かが分かり、
 1 回の承認が後の依頼に届かず、後からすべての呼び出しを見返せます。
 
@@ -25,6 +27,8 @@ AI のコーディングエージェント (Claude Code など) に `op` を打�
   WSL からは「wslhost」) しか出しません。op-reason の窓は、呼び手 (人か、process id つきの Claude Code)・repo・branch・
   ディレクトリ・理由・コマンドを出します。
 - **エージェントが何をしたかが残らない。** op-reason はすべての呼び出し・断り・見つけたことを JSON Lines で記録します。
+
+![アニメーション。2 つの画面を並べる。左は WSL から op だけを使うとき: 端末 1 が op を呼び、画面の真ん中に出る 1Password の承認の画面で 1 回許可すると、端末 2 が op を呼んだときは画面なしで値が出る。右は op-reason: 呼ぶたびに承認の画面と一緒に、右上の op-reason の窓が呼び手と理由を出すので、端末 2 もまた承認を求められ、誰が・なぜが分かる。](docs/images/readme-2-approval-leak.ja.svg)
 
 ## 仕組み
 
@@ -176,6 +180,8 @@ op --reason "staging の VM を作るのに Proxmox の API の token を読む"
 - 引数なしの `op` は wrapper の使い方を出します。
 - **op-reason の窓が出ていない 1Password CLI の承認の画面は、拒否してください。**
 
+![アニメーション: 理由 (--reason) の無い op read "op://Private/proxmox/token" は、窓も承認の画面も出る前にすぐ断られる。短い使い方と「op-reason: 理由 (--reason) がありません。人が打つときも要ります。」が出て、echo $? で終了コード 2 が出る。](docs/images/readme-3-no-reason.ja.svg)
+
 例は symlink の `op` で書いています。`op-reason` の名前で呼んでも同じ動きで、`--help` と `--version` を単独で渡したとき
 だけ wrapper 自身のものになります。Windows では `op-reason` と打ちます。
 
@@ -198,6 +204,8 @@ op-reason-log --all        # 残っている記録を全部
 op-reason-log --json       # 1 呼び出し 1 行の JSON (理由とコマンドを切らない)
 ```
 
+![アニメーション: op-reason-log が 1 呼び出し 1 行で、時刻・結果 (許可・断った (理由なし)・拒否)・秒・呼び手 (Claude か人)・理由・コマンドを出す。呼び手・理由・結果の列が順に光る。](docs/images/readme-4-log.ja.svg)
+
 記録は WSL では `${XDG_STATE_HOME:-~/.local/state}/op-reason/log.jsonl`、Windows では `%LOCALAPPDATA%\op-reason\log.jsonl`
 です (1 MiB で `log.1.jsonl` へ回します。Windows の `op-reason --log` も同じ option を取ります)。`op` の出力と
 token は書かず、`--session`・`--secret-key` と `name=value` の引数の値は伏せます。記録の形は
@@ -214,6 +222,8 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
 画面からフォーカスを奪いません。次の呼び出しからは、窓・通知・文・`op-reason-log` がその言語になります (Windows でも
 WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残ります。消すと `OPREASON_LANG` に戻ります (WSL
 では控えの `~/.local/state/op-reason/lang.json` も消すか、次の呼び出しが消すのを待ってください)。
+
+![アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、選んだ言語は %LOCALAPPDATA%\op-reason\settings.json に残る。許可したあとの次の呼び出しは、窓が日本語で開く。](docs/images/readme-5-language.ja.svg)
 
 ### 終了コード
 
@@ -269,13 +279,18 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 ## 開発
 
 ```sh
-nix develop path:./nix                       # Rust・pwsh・fish・jq・shellcheck・shfmt
+nix develop path:./nix                       # Rust・pwsh・fish・jq・shellcheck・shfmt・python3
 cargo test --workspace                       # 単体テストと呼び出しの表
 cargo build && bash tests/run-all.sh         # 偽の op-reason.exe・powershell.exe・op.exe での黒箱のテスト
+python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/*.svg)
 # op-reason.exe は別の Cargo workspace: crates/op-reason-win で、Windows なら `cargo build -p fake-op` のあと
 # `cargo test --workspace` (Linux では Windows に依らない部分だけ)
 ```
 
+- README の動く図は `docs/images/make_readme_svgs.py` (標準ライブラリだけの Python) で作ります。文言や配置を
+  直すときは SVG ではなく script を直し、devShell の中で流して作り直してください。図の文は op-reason の文 (窓・断り・
+  記録の表) の写しです。CI が流す `--check` は、SVG が script の出力と違うときと、写した文が Rust のソースから
+  消えたときに落ちます。
 - 本物の 1Password で確かめる手順: [docs/manual-verification.ja.md](docs/manual-verification.ja.md)
 - 設計: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md) (英語)。
   `op-reason.exe` は [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md) (英語)、

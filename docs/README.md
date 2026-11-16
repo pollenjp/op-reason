@@ -14,3 +14,6 @@
 ## Diagrams
 
 The diagrams are PlantUML (`plantuml/`, `architecture/plantuml/`) rendered to SVG in `out/`.
+
+The animations of the READMEs are SVGs in `images/`, made by `images/make_readme_svgs.py`: change the script, not the
+SVGs ([README.md, Development](../README.md#development)).

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="292" viewBox="0 0 880 292" role="img" aria-labelledby="title desc">
+<!-- Made by docs/images/make_readme_svgs.py: change the script, not this file -->
+<title id="title">op-reason: 理由の無い呼び出し</title>
+<desc id="desc">アニメーション: 理由 (--reason) の無い op read &quot;op://Private/proxmox/token&quot; は、窓も承認の画面も出る前にすぐ断られる。短い使い方と「op-reason: 理由 (--reason) がありません。人が打つときも要ります。」が出て、echo $? で終了コード 2 が出る。</desc>
+<style>
+text{font-family:"Segoe UI", "Yu Gothic UI", Meiryo, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", "Noto Sans JP", system-ui, sans-serif}
+.m{font-family:"Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Noto Sans Mono", "Noto Sans Mono CJK JP", "BIZ UDGothic", ui-monospace, monospace}
+.b{font-weight:700}
+.tb{transform-box:fill-box;transform-origin:50% 50%}
+.blink{animation:blink 1s step-end infinite}@keyframes blink{50%{opacity:0}}
+@keyframes k1{0%{opacity:1;animation-timing-function:step-end}5.56%{opacity:0;animation-timing-function:step-end}100%{opacity:0}}
+.k1{opacity:0;animation:k1 9s infinite}
+@keyframes k2{0%{opacity:0;animation-timing-function:step-end}5.56%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k2{opacity:1;animation:k2 9s infinite}
+@keyframes k3{0%{opacity:0;animation-timing-function:step-end}5.56%{opacity:1;animation-timing-function:step-end}11.11%{opacity:0;animation-timing-function:step-end}100%{opacity:0}}
+.k3{opacity:0;animation:k3 9s infinite}
+@keyframes k4{0%{opacity:0;animation-timing-function:step-end}11.11%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k4{opacity:1;animation:k4 9s infinite}
+@keyframes k5{0%{opacity:0;animation-timing-function:step-end}11.11%{opacity:0;animation-timing-function:ease}13.89%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k5{opacity:1;animation:k5 9s infinite}
+@keyframes k6{0%{opacity:0;animation-timing-function:step-end}24.44%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k6{opacity:1;animation:k6 9s infinite}
+@keyframes k7{0%{opacity:0;animation-timing-function:step-end}24.44%{opacity:1;animation-timing-function:step-end}28.89%{opacity:0;animation-timing-function:step-end}100%{opacity:0}}
+.k7{opacity:0;animation:k7 9s infinite}
+@keyframes k8{0%{opacity:0;animation-timing-function:step-end}28.89%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k8{opacity:1;animation:k8 9s infinite}
+@keyframes k9{0%{opacity:0;animation-timing-function:step-end}28.89%{opacity:0;animation-timing-function:ease}31.67%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k9{opacity:1;animation:k9 9s infinite}
+@keyframes k10{0%{opacity:1;animation-timing-function:step-end}11.11%{opacity:1;animation-timing-function:ease-out}13.33%{opacity:0;animation-timing-function:step-end}100%{opacity:0}}
+.k10{opacity:0;animation:k10 9s infinite}
+@keyframes k11{0%{opacity:0;animation-timing-function:step-end}11.11%{opacity:0;animation-timing-function:ease-out}13.33%{opacity:1;animation-timing-function:step-end}28.89%{opacity:1;animation-timing-function:ease-out}31.11%{opacity:0;animation-timing-function:step-end}100%{opacity:0}}
+.k11{opacity:0;animation:k11 9s infinite}
+@keyframes k12{0%{opacity:0;animation-timing-function:step-end}28.89%{opacity:0;animation-timing-function:ease-out}31.11%{opacity:1;animation-timing-function:step-end}100%{opacity:1}}
+.k12{opacity:1;animation:k12 9s infinite}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+<defs><linearGradient id="desk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4c6a8c"/><stop offset="1" stop-color="#93b2cf"/></linearGradient><filter id="shadow" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity=".3"/></filter><clipPath id="canvas"><rect width="880" height="292" rx="10"/></clipPath><clipPath id="c1"><rect x="12" y="12" width="856" height="224" rx="8"/></clipPath><clipPath id="c2"><rect x="13" y="42" width="854" height="193"/></clipPath></defs>
+<g clip-path="url(#canvas)">
+<rect x="0" y="0" width="880" height="248" fill="url(#desk)"/>
+<rect x="12" y="12" width="856" height="224" rx="8" fill="#0c0c0c" filter="url(#shadow)"/><g clip-path="url(#c1)"><rect x="12" y="12" width="856" height="30" fill="#202020"/><path d="M20,42V23a6,6 0 0 1 6,-6H166a6,6 0 0 1 6,6V42Z" fill="#0c0c0c"/><text x="32" y="33" font-size="12" fill="#e6e6e6">Ubuntu</text><g stroke="#9a9a9a" stroke-width="1" fill="none"><line x1="790" y1="29" x2="798" y2="29"/><rect x="818.5" y="24.5" width="8" height="8"/><path d="M846,25l8,8M854,25l-8,8"/></g></g><rect x="12.5" y="12.5" width="855" height="223" rx="7.5" fill="none" stroke="#3a3a3a"/>
+<g clip-path="url(#c2)"><text x="26" y="62" font-size="11" fill="#3b8eea" class="m" textLength="70.91" lengthAdjust="spacing" xml:space="preserve">~/src/infra</text><text x="96.91" y="62" font-size="11" fill="#cccccc" class="m" textLength="6.45" lengthAdjust="spacing" xml:space="preserve">$</text><g class="k1"><rect class="blink" x="109.8" y="52.54" width="6.45" height="12.1" fill="#cccccc"/></g><g class="k2"><text x="109.8" y="62" font-size="11" fill="#cccccc" class="m" textLength="232.06" lengthAdjust="spacing" xml:space="preserve">op read &quot;op://Private/proxmox/token&quot;</text></g><g class="k3"><rect class="blink" x="341.85" y="52.54" width="6.45" height="12.1" fill="#cccccc"/></g><g class="k4"><rect x="22" y="162.78" width="426.99" height="15.62" rx="3" fill="#fbbf24" fill-opacity=".26" class="k5"/><text x="26" y="78" font-size="11" fill="#cccccc" class="m" textLength="341.64" lengthAdjust="spacing" xml:space="preserve">使い方: op --reason &quot;&lt;なぜ op を呼ぶか&gt;&quot; &lt;op の引数…&gt;</text><text x="38.89" y="94" font-size="11" fill="#cccccc" class="m" textLength="683.28" lengthAdjust="spacing" xml:space="preserve">この op は、呼ぶ理由を必須にした wrapper (op-reason) です。理由は 1Password の承認の画面と一緒に出る窓と、</text><text x="38.89" y="110" font-size="11" fill="#cccccc" class="m" textLength="541.46" lengthAdjust="spacing" xml:space="preserve">記録 (op-reason-log) に残ります。何のために何を読む・書くかを 1 文で書いてください。</text><text x="38.89" y="126" font-size="11" fill="#cccccc" class="m" textLength="676.83" lengthAdjust="spacing" xml:space="preserve">例: op --reason &quot;infra の VM を作るのに Proxmox の API の token を読む&quot; read &quot;op://Private/proxmox/token&quot;</text><text x="38.89" y="142" font-size="11" fill="#cccccc" class="m" textLength="670.38" lengthAdjust="spacing" xml:space="preserve">理由なしで通るのは --version と help (--help・-h・help) だけです。詳しい使い方は引数なしの op で出ます。</text><text x="38.89" y="158" font-size="11" fill="#cccccc" class="m" textLength="412.54" lengthAdjust="spacing" xml:space="preserve">AI エージェントは `op-reason --skill` で手引きを読んでください。</text><text x="26" y="174" font-size="11" fill="#cccccc" class="m" textLength="418.99" lengthAdjust="spacing" xml:space="preserve">op-reason: 理由 (--reason) がありません。人が打つときも要ります。</text></g><g class="k6"><text x="26" y="190" font-size="11" fill="#3b8eea" class="m" textLength="70.91" lengthAdjust="spacing" xml:space="preserve">~/src/infra</text><text x="96.91" y="190" font-size="11" fill="#cccccc" class="m" textLength="6.45" lengthAdjust="spacing" xml:space="preserve">$</text><text x="109.8" y="190" font-size="11" fill="#cccccc" class="m" textLength="45.12" lengthAdjust="spacing" xml:space="preserve">echo $?</text></g><g class="k7"><rect class="blink" x="154.92" y="180.54" width="6.45" height="12.1" fill="#cccccc"/></g><g class="k8"><rect x="22" y="194.78" width="14.45" height="15.62" rx="3" fill="#fbbf24" fill-opacity=".26" class="k9"/><text x="26" y="206" font-size="11" fill="#ffffff" class="m b" textLength="6.45" lengthAdjust="spacing" xml:space="preserve">2</text><text x="26" y="222" font-size="11" fill="#3b8eea" class="m" textLength="70.91" lengthAdjust="spacing" xml:space="preserve">~/src/infra</text><text x="96.91" y="222" font-size="11" fill="#cccccc" class="m" textLength="6.45" lengthAdjust="spacing" xml:space="preserve">$</text><rect class="blink" x="109.8" y="212.54" width="6.45" height="12.1" fill="#cccccc"/></g></g>
+<rect y="248" width="880" height="44" fill="#111827"/><g class="k10"><circle cx="28" cy="270" r="11" fill="#fbbf24"/><text x="28" y="274.5" font-size="12.5" fill="#111827" class="b" text-anchor="middle">1</text><text x="48" y="275" font-size="14" fill="#f9fafb">理由 (--reason) の無い op</text></g><g class="k11"><circle cx="28" cy="270" r="11" fill="#fbbf24"/><text x="28" y="274.5" font-size="12.5" fill="#111827" class="b" text-anchor="middle">2</text><text x="48" y="275" font-size="14" fill="#f9fafb">すぐ断る: 窓も承認の画面も出ない</text></g><g class="k12"><circle cx="28" cy="270" r="11" fill="#fbbf24"/><text x="28" y="274.5" font-size="12.5" fill="#111827" class="b" text-anchor="middle">3</text><text x="48" y="275" font-size="14" fill="#f9fafb">終了コードは 2。断ったことも記録に残る</text></g>
+</g>
+</svg>
