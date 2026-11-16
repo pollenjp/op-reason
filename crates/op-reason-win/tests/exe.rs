@@ -1359,7 +1359,13 @@ fn a_click_on_the_switch_changes_the_language_and_leaves_the_focus_where_it_was(
         click::title(h) == "1Password CLI の承認の依頼"
     });
     let after = click::foreground();
-    let settings = fs::read_to_string(sb.settings_file()).unwrap_or_default();
+    // The window writes the file after it has switched (`choose` in src/win/window.rs): the new caption does not mean
+    // that the file is there yet, so wait for the file too
+    let read = || fs::read_to_string(sb.settings_file()).unwrap_or_default();
+    let written = wait_until(Duration::from_secs(5), || {
+        read() == r#"{"v":1,"lang":"ja"}"#
+    });
+    let settings = read();
     let _ = child.wait();
     let st = sb.status();
     assert!(
@@ -1367,9 +1373,9 @@ fn a_click_on_the_switch_changes_the_language_and_leaves_the_focus_where_it_was(
         "the caption switches to Japanese ({at}; caption now {:?})",
         click::title(h)
     );
-    assert_eq!(
-        settings, r#"{"v":1,"lang":"ja"}"#,
-        "the choice is written down"
+    assert!(
+        written,
+        "the choice is written down within 5 s of the switch (settings.json now {settings:?})"
     );
     assert_eq!(
         after, before,
