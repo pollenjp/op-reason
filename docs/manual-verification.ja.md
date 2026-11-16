@@ -65,6 +65,24 @@ CI では WSL から Windows の program を起こせないので、ここは手
 | R6 | R5 の形のまま `printf 'plain text\n' \| op --reason "確認 R6: 回避でも stdin" inject`、許可 | `plain text` と出る (回避しても stdin が欠けずに届く) |
 | R7 | R5 の形のまま `OPREASON_RUNNER=launcher op --reason "確認 R7: launcher だけ" vault list >/dev/null`、許可 | 「打ち直します」の行が出ずに launcher の窓が出る (Smart App Control の通知も出ない) |
 
+## 窓の表示の言語を確かめること
+
+既定は英語で、`op-reason.exe` の窓の右下の切り替え `English | 日本語` で選びます
+([2026-11-15-language-toggle-design.md](superpowers/specs/2026-11-15-language-toggle-design.md))。CI は Windows の runner の
+マウスで切り替えを押しますが、その横に 1Password の画面は出せません。約 10 分かかり、画面は 7 回ほど出ます。始める前に、
+WSL で `unset OPREASON_LANG; rm -f ~/.local/state/op-reason/lang.json`、PowerShell で
+`Remove-Item "$env:LOCALAPPDATA\op-reason\settings.json" -ErrorAction SilentlyContinue` を打ちます。
+
+| # | すること | 見込み |
+| --- | --- | --- |
+| L1 | `LANG=ja_JP.UTF-8 op --reason "check L1: English by default" vault list >/dev/null`、許可 | 窓と通知が英語 (`LANG` では日本語にならない)。窓の右下に `English \| 日本語`。English は黒の太字、日本語は青の下線つき。マウスの矢印は日本語の上でだけ手の形になる |
+| L2 | `op --reason "確認 L2: 切り替え" vault list >/dev/null`。画面が出ている間に op-reason の窓の日本語を押し、応える前に画面の様子を見る | 窓がその場で日本語になり (題・ラベル・足元の行。今度は日本語が太字で English が押せる側)、右上の位置は変わらない。フォーカスを奪わない: 画面が前面の窓のまま (画面の題の帯は前面の色のまま、op-reason の窓の題の帯は灰色のまま) で、キーボードも画面に届く (文字を入れる欄があれば、そこでカーソルが点滅し続ける。パスワードは打たない)。許可する。`Get-Content "$env:LOCALAPPDATA\op-reason\settings.json"` が `{"v":1,"lang":"ja"}` |
+| L3 | `op --reason "確認 L3: 覚えている" vault list >/dev/null`、許可。続けて `op item get x` (理由なし) と `op-reason-log` | 窓と通知が始めから日本語。断るときの文と `op-reason-log` も日本語。`cat ~/.local/state/op-reason/lang.json` が `{"v":1,"lang":"ja"}` |
+| L4 | `OPREASON_LANG=en op --reason "確認 L4: 選んだ方が OPREASON_LANG より先" vault list >/dev/null`、許可 | 日本語のまま |
+| L5 | `op --reason "確認 L5: 英語に戻す" vault list >/dev/null` の窓で English を押し、許可。続けて PowerShell で `op-reason.exe --reason "check L5 from Windows" vault list > $null`、許可 | Windows から呼んだ窓が英語で、切り替えもある (WSL と Windows で選んだ言語は 1 つ)。`op-reason.exe --log` も英語 |
+| L6 | `OPREASON_RUNNER=launcher OPREASON_LANG=ja op --reason "確認 L6: launcher も選んだ言語を読む" vault list >/dev/null`、許可 | launcher の窓 (WPF の方) が、選んだ言語の英語で出て、切り替えは無い |
+| L7 | この節の始めのとおりに 2 つのファイルを消す。`OPREASON_LANG=ja op --reason "確認 L7: 戻す" vault list >/dev/null`、許可。`unset OPREASON_LANG` してもう一度、許可 | 1 回目は日本語 (選んでいない間は `OPREASON_LANG` が効く)、2 回目は英語 |
+
 ## Windows で確かめること: op-reason.exe
 
 R の確認で展開したフォルダーの `op-reason.exe` を使います。`op-reason.exe` と名前を全部書いて呼びます。約 15 分かかり、

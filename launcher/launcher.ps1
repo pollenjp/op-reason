@@ -17,7 +17,11 @@
 #   args64    op's arguments, each one UTF-8 then base64 (PowerShell 7's ConvertFrom-Json turns date-like strings into
 #             DateTime, so plain strings would not round-trip in the tests on pwsh)
 #   status    path of the status JSON written at the end (optional)
-#   lang      en | ja: the language of the window and the toast
+#   lang      en | ja: the language of the window and the toast, unless one was chosen in op-reason.exe's window
+#             (%LOCALAPPDATA%\op-reason\settings.json, {"v":1,"lang":"en"|"ja"}): the chosen one comes first. This
+#             script only reads that file (it has no switch) and reports what it holds as status chosenLang (en, ja,
+#             or null when nothing is chosen), from which the WSL executable keeps its copy
+#             (docs/superpowers/specs/2026-11-15-language-toggle-design.md)
 #   lock      held: take the named mutex Local\op-reason, so that calls from WSL and Windows run one at a time;
 #             skipped: do not (the sender of a pipe whose receiver holds the lock), and do not close the sessions
 #   lockWait  seconds to wait for the named mutex
@@ -254,6 +258,7 @@ function Get-Short([string]$s, [int]$n) {
 
 function Write-Status {
   if (-not $script:statusPath) { return }
+  $script:status.chosenLang = Get-ChosenLang
   try {
     $json = $script:status | ConvertTo-Json -Compress -Depth 6
     [System.IO.File]::WriteAllText($script:statusPath, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -456,6 +461,20 @@ function Get-StateDir {
   return (Join-Path $base 'op-reason')
 }
 
+# The language chosen in op-reason.exe's window: en or ja from settings.json in the state directory, $null when nothing
+# is chosen (no file, not a JSON object, no or an unknown lang). Any v is read. Only op-reason.exe writes the file.
+function Get-ChosenLang {
+  try {
+    $path = Join-Path (Get-StateDir) 'settings.json'
+    if (-not [System.IO.File]::Exists($path)) { return $null }
+    $settings = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json
+    if ($settings -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    $chosen = $settings.lang
+    if ($chosen -is [string] -and ($chosen -ceq 'en' -or $chosen -ceq 'ja')) { return $chosen }
+  } catch { }
+  return $null
+}
+
 # The holder of the mutex as one line in the call's language (from holder.json; "(unknown)" when it cannot be read).
 function Get-HolderLine($T) {
   try {
@@ -609,6 +628,8 @@ try {
   $payload = ConvertFrom-Payload $raw
   $mode = [string]$payload.mode
   $lang = [string]$payload.lang
+  $chosen = Get-ChosenLang
+  if ($chosen) { $lang = $chosen }
   if ($payload.status) { $script:statusPath = [string]$payload.status }
   # A call that did not wait for the lock (the sender of a pipe whose receiver holds it) leaves the sessions alone:
   # signout --all would close the receiver's session while the receiver's op.exe still runs. The receiver ends later

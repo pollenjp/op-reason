@@ -15,6 +15,7 @@
 #   - a held mutex: exit 75 and an end record with lock-timeout
 #   - service account: op gets the token and OP_BIOMETRIC_UNLOCK_ENABLED=false; kind service-account
 #   - --skill and --version
+#   - the language chosen in op-reason.exe's window (settings.json) beats OPREASON_LANG; a broken file counts as none
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
@@ -184,6 +185,23 @@ $logText = [System.IO.File]::ReadAllText($log)
 Check 'service account: op gets the token and OP_BIOMETRIC_UNLOCK_ENABLED=false; kind service-account; no token in the log' (
   $rc -eq 0 -and $calls.Count -eq 1 -and $calls[0].sa -eq 'tok-SECRET' -and $calls[0].bio -eq 'false' -and
   $start.kind -eq 'service-account' -and -not $logText.Contains('tok-SECRET')) ("rc=$rc calls=" + ($calls | ConvertTo-Json -Compress))
+
+Write-Host "== The language chosen in op-reason.exe's window"
+$settingsFile = Join-Path $env:LOCALAPPDATA 'op-reason\settings.json'
+[void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $settingsFile))
+[System.IO.File]::WriteAllText($settingsFile, '{"v":1,"lang":"ja"}')
+Reset-Fake
+$errFile = Join-Path $work 'chosen.err'
+$rc = Invoke-Cmd ('"' + $shim + '" item get a 2> "' + $errFile + '"')
+$chosenErr = [System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($settingsFile, 'not json')
+$errFile = Join-Path $work 'chosen-broken.err'
+$rc2 = Invoke-Cmd ('"' + $shim + '" item get a 2> "' + $errFile + '"')
+$brokenErr = [System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)
+Remove-Item -Force $settingsFile
+Check 'settings.json ja beats OPREASON_LANG=en; a broken file counts as no choice' (
+  $rc -eq 2 -and $chosenErr.Contains('理由 (--reason) がありません') -and $rc2 -eq 2 -and
+  $brokenErr.Contains('There is no reason (--reason)')) ("chosen: $chosenErr`nbroken: $brokenErr")
 
 Write-Host '== Wrapper options'
 Reset-Fake

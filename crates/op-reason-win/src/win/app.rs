@@ -12,10 +12,9 @@ use op_reason_core::args::{self, Invocation, Kind, Mode, Parsed, Plan, Refusal};
 use op_reason_core::contract::{self, Facts, FactsCaller, Place, Status};
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::log::{self, Caller, Watch};
-use op_reason_core::{logview, messages, place, result, time};
+use op_reason_core::{logview, messages, place, result, settings, time};
 use serde_json::Value;
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Globalization::GetUserDefaultUILanguage;
 use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::{
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
@@ -23,7 +22,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::opexe::{self, Found, Running};
 use super::{console, holder, mutex, procs, toast, window};
-use crate::ui::Texts;
 use crate::{cmdline, ui};
 
 /// The version of op-reason.
@@ -59,23 +57,27 @@ pub(super) fn state_dir() -> Option<PathBuf> {
     env_nonempty("LOCALAPPDATA").map(|d| PathBuf::from(d).join("op-reason"))
 }
 
-/// `OPREASON_LANG`, then `LC_ALL`/`LC_MESSAGES`/`LANG` (the core's rule), then the user's Windows UI language (the A'
-/// PowerShell entry uses the UI culture).
+/// `%LOCALAPPDATA%\op-reason\settings.json`, where the window's switch keeps the chosen language.
+pub(super) fn settings_file() -> Option<PathBuf> {
+    state_dir().map(|d| d.join(settings::SETTINGS_FILE))
+}
+
+/// The language chosen in the window, when there is one (a missing or broken file is no choice).
+pub(super) fn chosen() -> Option<Lang> {
+    settings_file().and_then(|f| settings::read(&f).ok().flatten())
+}
+
+/// Writes down the language chosen with the window's switch; quiet when it cannot (design
+/// `2026-11-15-language-toggle-design.md` §4).
+fn remember(lang: Lang) {
+    if let Some(file) = settings_file() {
+        let _ = settings::write(&file, lang);
+    }
+}
+
+/// The chosen language, then `OPREASON_LANG`, then English. The Windows display language and `LANG` no longer count.
 fn resolve_lang() -> Lang {
-    if ["OPREASON_LANG", "LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .any(|k| env_nonempty(k).is_some())
-    {
-        return lang::from_env();
-    }
-    // SAFETY: no arguments; reads the user's setting.
-    let id = unsafe { GetUserDefaultUILanguage() };
-    // primary language 0x11 = LANG_JAPANESE
-    if id & 0x3ff == 0x11 {
-        Lang::Ja
-    } else {
-        Lang::En
-    }
+    lang::pick(chosen())
 }
 
 /// Entry point of `op-reason.exe`. Returns the exit code.
@@ -456,7 +458,7 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         env: opexe::Env::Kind(kind),
         stderr: opexe::Stderr::Tee,
     };
-    let texts = ui::build(&facts, lang);
+    let texts = ui::Both::build(&facts);
     let code = match mode {
         Mode::Desktop => run_desktop(&op, &parsed.op_args, how, lang, Some(&texts), true, &mut o),
         Mode::Help => run_plain(&op, &parsed.op_args, how, mode, lang, true, &mut o),
@@ -549,13 +551,14 @@ fn start_failed(lang: Lang, err: &std::io::Error, o: &mut Outcome) -> i32 {
 }
 
 /// Desktop mode: window, toast, op.exe, then sign-out (when `close`). Without texts (a payload without facts) no window
-/// and no toast, as in the launcher.
+/// and no toast, as in the launcher. The window starts in `lang`; its switch moves to the other language and writes
+/// the choice down. The toast stays in `lang`.
 pub(super) fn run_desktop(
     op: &Path,
     args: &[OsString],
     how: How,
     lang: Lang,
-    texts: Option<&Texts>,
+    texts: Option<&ui::Both>,
     close: bool,
     o: &mut Outcome,
 ) -> i32 {
@@ -564,7 +567,7 @@ pub(super) fn run_desktop(
     let me = std::env::current_exe().ok();
     let own = std::process::id();
     let mut others = procs::count_named(&image, &[own], me.as_deref()) as i64;
-    let win = match texts.map(|t| window::Window::create(t, others > 0)) {
+    let win = match texts.map(|t| window::Window::create(t, lang, others > 0, Box::new(remember))) {
         None => {
             o.window = Some("skipped".to_owned());
             None
@@ -592,7 +595,7 @@ pub(super) fn run_desktop(
             None
         }
     };
-    let pending = texts.map(|t| toast::start(t.toast.clone()));
+    let pending = texts.map(|t| toast::start(t.get(lang).toast.clone()));
     let toast_result = |pending: Option<toast::Pending>| {
         pending.map_or_else(|| "skipped".to_owned(), toast::Pending::result)
     };

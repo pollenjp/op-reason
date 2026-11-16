@@ -34,6 +34,10 @@
 #       place "o/r (feat/x) · ~/w", footer with この窓が出ていない, toast of 3 texts (理由: … cut at 100 characters)
 #     - English: labels Time, Caller, Place, Reason, Command, caller "Human (terminal)", footer "… without this window"
 #     - notify: toast title and body for cleared and not cleared, before and after the call
+#   The language chosen in op-reason.exe's window (settings.json in the launcher's state directory: on Linux,
+#     ~/.local/share/op-reason): it beats the payload's lang in the window and toast texts (desktop and notify) and is
+#     reported as status.chosenLang; no file or a broken file → the payload's language and chosenLang null; the launcher
+#     never writes the file
 #   stderr scan: op's stderr reaches the launcher's stderr; a denial or a timeout from op's [ERROR] lines is reported in
 #     status.stderrMatch (a child's "Connection timed out" is not); stdin and stdout stay binary-safe
 #   The named mutex Local\op-reason (.NET supports named mutexes on Linux too): a call takes it (status lock held) and
@@ -290,6 +294,37 @@ if [[ ${title} == "Could not clear a shared 1Password CLI approval" && ${body} =
 else
   ng "notify toast texts for cleared / not cleared, before / after the call" "en=${title} / ${body} ja=$(status_field '.ui')"
 fi
+
+echo "== The language chosen in op-reason.exe's window"
+settings_file=${HOME}/.local/share/op-reason/settings.json
+mkdir -p "$(dirname "${settings_file}")"
+rm -f "${settings_file}"
+FACTS=${claude_facts} run nochoice "$(FACTS=${claude_facts} payload desktop "${fake_op}" item get x)"
+nochoice=$(status_field '[.ui.title, (.chosenLang | tostring), (has("chosenLang") | tostring)] | join(" / ")')
+printf '%s' '{"v":1,"lang":"en"}' >"${settings_file}"
+FACTS=${claude_facts} run chosen-en "$(FACTS=${claude_facts} payload desktop "${fake_op}" item get x)"
+chosen_en=$(status_field '[.ui.title, .ui.lines[0][0], .ui.toast[0], .chosenLang] | join(" / ")')
+if [[ ${nochoice} == "1Password CLI の承認の依頼 / null / true" &&
+  ${chosen_en} == "1Password CLI approval request / Time / 1Password CLI approval request / en" &&
+  $(<"${settings_file}") == '{"v":1,"lang":"en"}' ]]; then
+  ok "settings.json en beats the payload's ja and is reported as chosenLang; without it, the payload's language and null"
+else
+  ng "settings.json en beats the payload's ja and is reported as chosenLang; without it, the payload's language and null" \
+    "no file: ${nochoice} | en: ${chosen_en} | file: $(cat "${settings_file}")"
+fi
+printf 'broken {' >"${settings_file}"
+FACTS=${claude_facts} run chosen-broken "$(FACTS=${claude_facts} payload desktop "${fake_op}" item get x)"
+broken=$(status_field '[.ui.title, (.chosenLang | tostring)] | join(" / ")')
+printf '%s' '{"v":9,"lang":"ja","later":true}' >"${settings_file}"
+run notify-chosen "$(notify_payload en start true)"
+if [[ ${broken} == "1Password CLI の承認の依頼 / null" && $(status_field '.ui.toast[0]') == 共有の\ 1Password\ CLI\ の承認を消しました &&
+$(status_field '.chosenLang') == ja ]]; then
+  ok "a broken settings.json counts as no choice; a later format's lang is still read (notify toast)"
+else
+  ng "a broken settings.json counts as no choice; a later format's lang is still read (notify toast)" \
+    "broken: ${broken} | notify: $(cat "${work}/status.json" 2>&1)"
+fi
+rm -f "${settings_file}"
 
 echo "== stderr scan (the Windows entry)"
 STDERR_MODE=scan FAKE_RC=1 FAKE_ERR_TEXT="[ERROR] 2026/11/08 00:00:00 authorization prompt dismissed, please try again" \

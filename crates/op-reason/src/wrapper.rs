@@ -18,7 +18,7 @@ use op_reason_core::contract::{
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::log::{self, Caller, Fallback};
 use op_reason_core::messages::FallbackWhy;
-use op_reason_core::{base64, logview, messages, place, result, time};
+use op_reason_core::{base64, logview, messages, place, result, settings, time};
 
 use crate::launch::{self, print_stderr, print_stdout};
 use crate::lock::{self, Holder, Outcome};
@@ -57,6 +57,34 @@ pub fn state_dir() -> PathBuf {
                 .join(".local/state")
         });
     base.join("op-reason")
+}
+
+/// The language of this invocation: the copy of the language chosen in the window (`<state>/lang.json`), then
+/// `OPREASON_LANG`, then English (design `2026-11-15-language-toggle-design.md` §2).
+fn wsl_lang() -> Lang {
+    lang::pick(
+        settings::read(&state_dir().join(settings::COPY_FILE))
+            .ok()
+            .flatten(),
+    )
+}
+
+/// Keeps the copy of the language chosen in the window in step with what the runner said in its status: `en` or `ja`
+/// → written (when it changes), null → removed, nothing (an older runner) or anything else → left as it is (design
+/// §5).
+fn remember_choice(state_dir: &Path, status: Option<&Status>) {
+    let path = state_dir.join(settings::COPY_FILE);
+    match status.and_then(Status::chosen) {
+        Some(Some(chosen)) => {
+            if settings::read(&path).ok().flatten() != Some(chosen) {
+                let _ = settings::write(&path, chosen);
+            }
+        }
+        Some(None) => {
+            let _ = settings::remove(&path);
+        }
+        None => {}
+    }
 }
 
 /// The fish completion for `command`.
@@ -197,7 +225,7 @@ impl Drop for CleanUp {
 
 /// Runs the wrapper for one invocation and returns the exit code.
 pub fn run(name: Name, argv: Vec<OsString>) -> i32 {
-    let lang = lang::from_env();
+    let lang = wsl_lang();
     let env = |key: &str| std::env::var(key).ok();
     let (parsed, plan) = args::plan(name, &argv, &env);
     let (mode, kind) = match plan {
@@ -248,14 +276,7 @@ pub fn log_viewer(argv: &[OsString]) -> i32 {
         .unwrap_or_else(time::epoch_now);
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
-    logview::run(
-        argv,
-        &state_dir(),
-        now,
-        lang::from_env(),
-        &mut out,
-        &mut err,
-    )
+    logview::run(argv, &state_dir(), now, wsl_lang(), &mut out, &mut err)
 }
 
 /// The caller, the place and the masked arguments.
@@ -729,6 +750,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
     let status = fs::read_to_string(&status_file)
         .ok()
         .and_then(|t| Status::parse(&t));
+    remember_choice(&call.state_dir, status.as_ref());
     let result = result::classify(status.as_ref(), op_rc, mode, &stderr_tail);
     if result == "lock-timeout" {
         let holder = status

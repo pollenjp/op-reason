@@ -22,6 +22,8 @@
 # pending; 127 = op.exe, powershell.exe or the launcher not found; 1 = the launcher failed before op.exe started.
 # A call stopped by Ctrl+C is logged as interrupted (exit 130) when PowerShell lets the cleanup run.
 #
+# Language: the one chosen in op-reason.exe's window (%LOCALAPPDATA%\op-reason\settings.json, read only), then
+# OPREASON_LANG, then English (docs/superpowers/specs/2026-11-15-language-toggle-design.md).
 # Environment: OPREASON_LANG (en | ja), OPREASON_LOCK_WAIT (seconds, default 90), OPREASON_OP_EXE (op.exe),
 # OPREASON_POWERSHELL (powershell.exe). Set by the shim: OPREASON_ENTRY=cmd, OPREASON_ENTRY_NAME (its file name).
 # For tests: OPREASON_ENTRY_PLAN_ONLY=1 prints the plan as JSON and exits.
@@ -33,15 +35,27 @@ $script:Version = '0.1.0'
 
 # --- Language and texts
 
-function Get-Lang {
-  $v = $env:OPREASON_LANG
-  if ($v) {
-    if ($v.ToLowerInvariant().StartsWith('ja')) { return 'ja' }
-    return 'en'
-  }
+# The language chosen in op-reason.exe's window: en or ja from settings.json, $null when nothing is chosen (no file, not
+# a JSON object, no or an unknown lang). Any v is read. Only op-reason.exe writes the file.
+function Get-ChosenLang {
   try {
-    if ((Get-UICulture).TwoLetterISOLanguageName -eq 'ja') { return 'ja' }
+    $path = Join-Path (Get-StateDir) 'settings.json'
+    if (-not [System.IO.File]::Exists($path)) { return $null }
+    $settings = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json
+    if ($settings -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    $chosen = $settings.lang
+    if ($chosen -is [string] -and ($chosen -ceq 'en' -or $chosen -ceq 'ja')) { return $chosen }
   } catch { }
+  return $null
+}
+
+# The chosen language, then OPREASON_LANG (ja... is Japanese, anything else English), then English. The Windows display
+# language and LANG no longer count.
+function Get-Lang {
+  $chosen = Get-ChosenLang
+  if ($chosen) { return $chosen }
+  $v = $env:OPREASON_LANG
+  if ($v -and $v.ToLowerInvariant().StartsWith('ja')) { return 'ja' }
   return 'en'
 }
 

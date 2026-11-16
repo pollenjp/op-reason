@@ -1,6 +1,9 @@
 //! The window and toast texts, built from the same facts and the same table as the A' launcher (`Build-Ui`,
 //! `Build-NotifyUi` and `Get-Texts` in `launcher/launcher.ps1`). A test reads that table out of the launcher and fails
 //! when the two drift apart, so the PowerShell window and this one keep saying the same thing.
+//!
+//! The window of `op-reason.exe` also switches language ([`Both`], [`SWITCH_LABELS`], [`switch_hit`]; design
+//! `2026-11-15-language-toggle-design.md` §4). The launcher's window has no switch.
 
 use op_reason_core::contract::{Facts, Notify};
 use op_reason_core::lang::Lang;
@@ -29,6 +32,104 @@ impl Texts {
             "toast": self.toast,
         })
     }
+}
+
+/// The texts of one desktop call in both languages: the window's switch moves between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Both {
+    pub en: Texts,
+    pub ja: Texts,
+}
+
+impl Both {
+    /// [`build`] in English and in Japanese.
+    pub fn build(f: &Facts) -> Both {
+        Both {
+            en: build(f, Lang::En),
+            ja: build(f, Lang::Ja),
+        }
+    }
+
+    /// The texts in `lang`.
+    pub fn get(&self, lang: Lang) -> &Texts {
+        match lang {
+            Lang::En => &self.en,
+            Lang::Ja => &self.ja,
+        }
+    }
+}
+
+/// The language switch at the right of the footer: each language by its own name, with a bar between them. The
+/// language shown is drawn bold; the other one is the link that switches.
+pub const SWITCH_LABELS: [(&str, Option<Lang>); 3] = [
+    ("English", Some(Lang::En)),
+    (" | ", None),
+    ("日本語", Some(Lang::Ja)),
+];
+
+/// A rectangle in DIPs of the client area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Rect {
+    /// Whether the point is inside (the right and bottom edges excluded).
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.left && x < self.right && y >= self.top && y < self.bottom
+    }
+}
+
+/// One part of the switch as laid out: its width, its line height and baseline (DIPs, from DirectWrite), and the
+/// language it stands for (none for the bar).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwitchPart {
+    pub width: f32,
+    pub height: f32,
+    pub baseline: f32,
+    pub lang: Option<Lang>,
+}
+
+/// Where each part of the switch goes: the switch ends at `right`, its parts on the baseline `baseline` (all in DIPs).
+/// Returns the top left corner of each part's line box.
+pub fn switch_origins(parts: &[SwitchPart], right: f32, baseline: f32) -> Vec<(f32, f32)> {
+    let mut x = right - parts.iter().map(|p| p.width).sum::<f32>();
+    parts
+        .iter()
+        .map(|p| {
+            let at = (x, baseline - p.baseline);
+            x += p.width;
+            at
+        })
+        .collect()
+}
+
+/// The language a click at (`x`, `y`) chooses: the part of the language not `shown`, its line box widened by
+/// `pad_x` on each side and `pad_y` above and below. `None` elsewhere, and on the language shown.
+pub fn switch_hit(
+    parts: &[SwitchPart],
+    right: f32,
+    baseline: f32,
+    shown: Lang,
+    (pad_x, pad_y): (f32, f32),
+    (x, y): (f32, f32),
+) -> Option<Lang> {
+    parts
+        .iter()
+        .zip(switch_origins(parts, right, baseline))
+        .find_map(|(p, (left, top))| {
+            let lang = p.lang.filter(|l| *l != shown)?;
+            let r = Rect {
+                left: left - pad_x,
+                top: top - pad_y,
+                right: left + p.width + pad_x,
+                bottom: top + p.height + pad_y,
+            };
+            r.contains(x, y).then_some(lang)
+        })
 }
 
 /// The toast of a `notify` call (a shared approval found by the WSL watchdog).
@@ -439,6 +540,78 @@ mod tests {
         });
         assert_eq!(caller_short(Some(&f), Lang::Ja), "人 · lab");
         assert_eq!(caller_short(None, Lang::En), "Human");
+    }
+
+    #[test]
+    fn both_languages_for_the_switch() {
+        let both = Both::build(&facts());
+        assert_eq!(both.get(Lang::En).title, "1Password CLI approval request");
+        assert_eq!(both.get(Lang::Ja).title, "1Password CLI の承認の依頼");
+        assert_eq!(both.get(Lang::Ja), &build(&facts(), Lang::Ja));
+        assert_eq!(both.en.lines.len(), both.ja.lines.len());
+        let labels: Vec<&str> = SWITCH_LABELS.iter().map(|(t, _)| *t).collect();
+        assert_eq!(labels.concat(), "English | 日本語");
+    }
+
+    fn parts() -> Vec<SwitchPart> {
+        // English 40 wide, the bar 12, 日本語 34 (a taller line from a fallback font, its baseline lower)
+        vec![
+            SwitchPart {
+                width: 40.0,
+                height: 15.0,
+                baseline: 12.0,
+                lang: Some(Lang::En),
+            },
+            SwitchPart {
+                width: 12.0,
+                height: 15.0,
+                baseline: 12.0,
+                lang: None,
+            },
+            SwitchPart {
+                width: 34.0,
+                height: 18.0,
+                baseline: 14.0,
+                lang: Some(Lang::Ja),
+            },
+        ]
+    }
+
+    #[test]
+    fn the_switch_ends_at_the_right_edge_on_one_baseline() {
+        let at = switch_origins(&parts(), 500.0, 100.0);
+        assert_eq!(at, vec![(414.0, 88.0), (454.0, 88.0), (466.0, 86.0)]);
+    }
+
+    #[test]
+    fn only_the_language_not_shown_is_clickable_with_some_room_around_it() {
+        let hit = |shown, x, y| switch_hit(&parts(), 500.0, 100.0, shown, (4.0, 3.0), (x, y));
+        // 日本語 spans x 466..500, y 86..104 (+4 / +3 around it)
+        assert_eq!(hit(Lang::En, 480.0, 95.0), Some(Lang::Ja));
+        assert_eq!(
+            hit(Lang::En, 462.5, 83.5),
+            Some(Lang::Ja),
+            "inside the room around it"
+        );
+        assert_eq!(hit(Lang::En, 503.9, 106.9), Some(Lang::Ja));
+        assert_eq!(
+            hit(Lang::En, 504.0, 95.0),
+            None,
+            "past the room on the right"
+        );
+        assert_eq!(hit(Lang::En, 480.0, 107.0), None, "below the room");
+        assert_eq!(
+            hit(Lang::En, 420.0, 95.0),
+            None,
+            "English is shown: not a link"
+        );
+        assert_eq!(hit(Lang::En, 459.0, 95.0), None, "the bar");
+        assert_eq!(hit(Lang::Ja, 420.0, 95.0), Some(Lang::En));
+        assert_eq!(
+            hit(Lang::Ja, 480.0, 95.0),
+            None,
+            "日本語 is shown: not a link"
+        );
     }
 
     #[test]

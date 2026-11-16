@@ -121,6 +121,23 @@ The window and toast texts are a Rust copy of the launcher's table (`crates/op-r
 
 There is no shared-approval watchdog on Windows (no shared parent process).
 
+## Language
+
+English by default. The language chosen in the window of `op-reason.exe` comes first, then `OPREASON_LANG`; `LANG`
+and the Windows display language do not count
+([2026-11-15-language-toggle-design.md](../superpowers/specs/2026-11-15-language-toggle-design.md)).
+
+- The window's switch (`English | 日本語`, at the right of the footer) lays the window out again in the other language
+  and writes `%LOCALAPPDATA%\op-reason\settings.json` (`{"v":1,"lang":"en"|"ja"}`, through a temporary file). The
+  window stays inactive: the 1Password prompt keeps the focus.
+- `op-reason.exe` (both faces), the launcher and the PowerShell entry read it; a missing or broken file means nothing
+  is chosen. The runners prefer it over the payload's `lang`, and write what it holds into the status as `chosenLang`.
+- The WSL executable cannot read `%LOCALAPPDATA%`: it keeps a copy, `<state>/lang.json`, from each status's
+  `chosenLang` (written for `en`/`ja`, removed for null, untouched when missing), and uses it before `OPREASON_LANG`
+  for its messages, the payload's `lang` and `op-reason-log`.
+- A call keeps the language it started with for its own messages; a click takes effect in the window at once and in
+  every later call.
+
 ## The runner contract
 
 The entries that start a runner (the WSL executable and the PowerShell entry) and the runners (`op-reason.exe --run`
@@ -147,14 +164,15 @@ The runner's command line: `op-reason.exe --run` (one fixed argument), or `power
 | `op` | Windows path of `op.exe` |
 | `args64` | `op`'s arguments, each UTF-8 then base64 |
 | `status` | path for the status JSON |
-| `lang` | `en`, `ja` |
+| `lang` | `en`, `ja`: what the entry decided (the runner prefers the language chosen in the window) |
 | `lock` | `held` (take the Windows mutex) or `skipped` (do not, and do not sign out) |
 | `lockWait` | seconds to wait for the mutex |
 | `stderr` | `inherit`, or `scan` (the runner relays `op.exe`'s stderr and reports `stderrMatch`; used by the Windows entry) |
 | `facts` | desktop only: `time`, `caller` (`type`, `pid`, `session`, `detail`), `herdr` (`workspace`, `label`, `pane`) or null, `place` (`repo`, `branch`, `cwd`), `reason` (≤ 200 characters), `command` (masked, ≤ 300), `notes` (`shared-cleared`; `lock-skipped` with `holderReason`) |
 | `notify` | notify only: `kind` (`shared-approval`), `when` (`start`, `end`), `cleared`, `time` |
 
-The runner builds every text of the window and the toast from `facts` and `notify`, in `lang`.
+The runner builds every text of the window and the toast from `facts` and `notify`, in the language chosen in the
+window (`settings.json`) or else in `lang`.
 
 ### Status (written by the runner)
 
@@ -162,7 +180,8 @@ The runner builds every text of the window and the toast from `facts` and `notif
 `failed: …`), `others` (other `op.exe` seen), `signout` (`ok`, `not-signed-in`, `skipped`, `failed: …`), `lock` (`held`,
 `skipped`, `timeout`; `failed` from `op-reason.exe` when the mutex cannot be used), `holder` (one line, on a timeout),
 `stderrMatch` (`denied`, `timeout`; scan mode), `runner` (`exe` from `op-reason.exe`; the launcher writes none), `ui`
-(the texts it built). `op-reason.exe` writes the status twice: at once, and at the end. The runner exits with `op`'s
+(the texts it built), `chosenLang` (`en`, `ja`, or null: what `settings.json` holds when the status is written; missing
+when the runner cannot tell). `op-reason.exe` writes the status twice: at once, and at the end. The runner exits with `op`'s
 code, 127 when `op.exe` is missing, 75 when the mutex wait runs out, 1 for other failures before `op.exe` starts, 0 for
 `notify`.
 
@@ -196,7 +215,12 @@ A call's `start` and `end` share `id`. Denied and timed-out approvals are recogn
 `<state>` = `${XDG_STATE_HOME:-~/.local/state}/op-reason/` (mode 0700): `log.jsonl`, `log.1.jsonl`, `log.lock`, `lock`,
 `current.json` (while a call holds the lock), `run/<id>/status.json` and `run/<id>/notify-<when>.json` (during a call;
 the runner writes them through the `\\wsl.localhost\…` path; leftovers older than an hour are removed unless the
-process of their call still runs). Drained stdin and the stderr tail stay in memory.
+process of their call still runs), `lang.json` (the copy of the language chosen in the window). Drained stdin and the
+stderr tail stay in memory.
+
+On Windows, `%LOCALAPPDATA%\op-reason\` holds the log (`log.jsonl`, `log.1.jsonl`, `log.lock`), `holder.json` (while a
+call holds the mutex), `settings.json` (the language chosen in the window) and, for calls through the PowerShell entry,
+`run/<id>/status.json`.
 
 ## Tests
 
@@ -212,7 +236,7 @@ process of their call still runs). Drained stdin and the stderr tail stay in mem
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the window and its screenshots) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
 | `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1`, its usage, the payload and status of `--run`, the command-line length |
-| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object) |
+| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) |
 | `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |
 | [manual-verification.md](../manual-verification.md) | checks with the real 1Password app (by hand) |

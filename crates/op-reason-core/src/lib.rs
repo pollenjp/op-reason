@@ -4,7 +4,7 @@
 //! - [`contract`]: the payload the entry passes to the runner and the status the runner writes back
 //! - [`log`]: log records and appending with rotation; [`logview`]: the log viewer
 //! - [`place`]: the repository and branch of a directory, read from git files
-//! - [`lang`] and [`messages`]: English and Japanese texts
+//! - [`lang`] and [`messages`]: English and Japanese texts; [`settings`]: the language chosen in the window
 //! - [`result`]: the result of a call from the status, the exit code and `op`'s stderr
 
 pub mod args;
@@ -17,4 +17,5 @@ pub mod logview;
 pub mod messages;
 pub mod place;
 pub mod result;
+pub mod settings;
 pub mod time;

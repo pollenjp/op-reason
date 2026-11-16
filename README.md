@@ -218,6 +218,14 @@ is described in [docs/architecture/README.md](docs/architecture/README.md).
 Agents that have not seen op-reason before should run `op-reason --skill` once: it explains how to call `op` with a
 reason and what to do when a call is denied or times out (do not retry; ask the user).
 
+### Language
+
+English by default. Click **日本語** (or **English**) at the bottom right of the window to switch: the window changes
+at once, without taking the focus from the 1Password prompt, and every later call uses that language for the window,
+the notification, the messages and `op-reason-log`, on Windows and on WSL. The choice is kept in
+`%LOCALAPPDATA%\op-reason\settings.json`; delete it to go back to `OPREASON_LANG` (on WSL, also delete the copy
+`~/.local/state/op-reason/lang.json`, or let the next call remove it).
+
 ### Exit codes
 
 | Code | Meaning |
@@ -233,7 +241,7 @@ reason and what to do when a call is denied or times out (do not retry; ask the 
 
 | Variable | Meaning |
 | --- | --- |
-| `OPREASON_LANG` | `en` or `ja`: language of messages, the window and the log viewer. Default: from `LC_ALL`, `LC_MESSAGES`, `LANG` (`ja…` → Japanese), on Windows then the display language, otherwise English |
+| `OPREASON_LANG` | `en` or `ja`: language of messages, the window and the log viewer while none was chosen in the window ([Language](#language)). Default: English (`LANG` and the Windows display language do not count) |
 | `OPREASON_LOCK_WAIT` | seconds to wait for another call's approval (default 90, below the 120-second default timeout of Claude Code's Bash tool) |
 | `OPREASON_OP_EXE` | path of `op.exe` (default: `op.exe` in `PATH`) |
 | `OPREASON_EXE` | WSL: path of `op-reason.exe` (default: `op-reason.exe` in `PATH`); `launcher.ps1` is looked for in its folder |
@@ -289,7 +297,9 @@ python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (do
 - The checks with the real 1Password app are listed in [docs/manual-verification.md](docs/manual-verification.md).
 - The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md);
   `op-reason.exe`: [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md);
-  calls from WSL through it: [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md).
+  calls from WSL through it: [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md);
+  the window's language: [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md).
+- What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 - Where to read what: [docs/README.md](docs/README.md).
 
 ## License
