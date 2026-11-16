@@ -226,6 +226,8 @@ the notification, the messages and `op-reason-log`, on Windows and on WSL. The c
 `%LOCALAPPDATA%\op-reason\settings.json`; delete it to go back to `OPREASON_LANG` (on WSL, also delete the copy
 `~/.local/state/op-reason/lang.json`, or let the next call remove it).
 
+![Animation: op-reason's window opens in English, its default, at the top right of the screen, with English | 日本語 at the right of its last line, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now bold and English is the link. The prompt keeps the focus, and the choice is kept in %LOCALAPPDATA%\op-reason\settings.json. After the approval, the next call opens its window in Japanese.](docs/images/readme-5-language.en.svg)
+
 ### Exit codes
 
 | Code | Meaning |

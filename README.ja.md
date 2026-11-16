@@ -223,6 +223,8 @@ op-reason を初めて使うエージェントは、最初に `op-reason --skill
 WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残ります。消すと `OPREASON_LANG` に戻ります (WSL
 では控えの `~/.local/state/op-reason/lang.json` も消すか、次の呼び出しが消すのを待ってください)。
 
+![アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、選んだ言語は %LOCALAPPDATA%\op-reason\settings.json に残る。許可したあとの次の呼び出しは、窓が日本語で開く。](docs/images/readme-5-language.ja.svg)
+
 ### 終了コード
 
 | コード | 意味 |

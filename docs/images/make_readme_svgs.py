@@ -9,9 +9,10 @@
   (scene 1: op-reason's window and the approval prompt), so that nothing is lost without the motion. Viewers
   that run no CSS animations show the same frame.
 - op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it, with the texts of
-  crates/op-reason-win/src/ui.rs. The refusal and the log table are op-reason's output (the texts of
-  crates/op-reason-core/src/messages.rs and logview.rs). The 1Password approval prompt is a plain box: it copies
-  neither the look nor the words of 1Password's screen.
+  crates/op-reason-win/src/ui.rs (and its language switch). The refusal and the log table are op-reason's output
+  (the texts of crates/op-reason-core/src/messages.rs and logview.rs), the saved choice of a language is the file of
+  crates/op-reason-core/src/settings.rs. The 1Password approval prompt is a plain box: it copies neither the look
+  nor the words of 1Password's screen.
 - Names are examples only (repository, directory, process ids).
 
 To change a text or the layout, change this script and run it again; do not edit the SVGs. Standard library only.
@@ -124,6 +125,7 @@ FOOTER_LINES = {
     "ja": ("この窓が出ていない 1Password の承認は拒否してください",),
 }
 JA_WIDTH = 3 * SWITCH_SIZE  # 日本語: three full-width characters, the end of the switch
+SETTINGS = ("%LOCALAPPDATA%\\op-reason\\settings.json", '{"v":1,"lang":"ja"}')  # crates/op-reason-core/src/settings.rs
 PREFIX = "op-reason: "  # crates/op-reason-core/src/messages.rs
 USAGE_SHORT = {  # messages.rs: usage_short, printed with a refusal
     "en": (
@@ -240,11 +242,18 @@ def sources() -> dict:
         "Some((PAD_LEFT + self.width, top + self.paras[i].last_baseline))",
         "(width - taken - SWITCH_GAP).max(width / 2.0)",
     ]
+    settings = [
+        SETTINGS[0],
+        'pub const SETTINGS_FILE: &str = "settings.json";',
+        "pub const VERSION: u64 = 1;",
+        'format!(r#"{{"v":{VERSION},"lang":{lang_json}}}"#)',
+    ]
     return {
         "crates/op-reason-win/src/ui.rs": ui,
         "crates/op-reason-win/src/win/window.rs": window,
         "crates/op-reason-core/src/messages.rs": messages,
         "crates/op-reason-core/src/logview.rs": logview,
+        "crates/op-reason-core/src/settings.rs": settings,
     }
 
 
@@ -340,6 +349,22 @@ TEXTS = {
             "What happened: approved, refused, denied… (Result)",
             "Who, why and the result of every call",
         ),
+        "lang.title": "op-reason: choosing the language in the window",
+        "lang.desc": (
+            "Animation: op-reason's window opens in English, its default, at the top right of the screen, with "
+            "English | 日本語 at the right of its last line, and the 1Password approval prompt (drawn as a plain box) "
+            "opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now "
+            "bold and English is the link. The prompt keeps the focus, and the choice is kept in "
+            "%LOCALAPPDATA%\\op-reason\\settings.json. After the approval, the next call opens its window in Japanese."
+        ),
+        "lang.badge": "The prompt keeps the focus",
+        "lang.saved": "Kept for the next calls",
+        "lang.steps": (
+            "op-reason's window is in English by default",
+            "Click 日本語 at the window's bottom right",
+            "The window turns Japanese at once, and the 1Password prompt keeps the focus",
+            "The next call is in Japanese too: the window, the notification, the messages and op-reason-log",
+        ),
     },
     "ja": {
         "call.title": "op-reason: 1 回の呼び出し",
@@ -401,6 +426,22 @@ TEXTS = {
             "なぜ: --reason で渡した理由 (理由)",
             "どうなったか: 許可・断った・拒否… (結果)",
             "呼び出しごとに、誰が・なぜ・どうなったか",
+        ),
+        "lang.title": "op-reason: 窓で表示の言語を選ぶ",
+        "lang.desc": (
+            "アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。"
+            "画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で"
+            "日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、"
+            "選んだ言語は %LOCALAPPDATA%\\op-reason\\settings.json に残る。許可したあとの次の呼び出しは、窓が"
+            "日本語で開く。"
+        ),
+        "lang.badge": "フォーカスは承認の画面のまま",
+        "lang.saved": "次の呼び出しのために覚える",
+        "lang.steps": (
+            "op-reason の窓は、既定では英語で出る",
+            "窓の右下の 日本語 を押す",
+            "窓はその場で日本語に変わり、フォーカスは承認の画面のまま",
+            "次の呼び出しも日本語: 窓・通知・端末の文・op-reason-log",
         ),
     },
 }
@@ -733,8 +774,11 @@ def switch(x: float, y: float, lang: str) -> str:
     )
 
 
-def op_window(c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tuple = ()) -> tuple:
-    """op-reason's window in `lang` with its frame's top left at (x, y). `bands`: (line, from, to) to light up a line.
+def op_window(
+    c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tuple = (), switch_band: tuple = ()
+) -> tuple:
+    """op-reason's window in `lang` with its frame's top left at (x, y). `bands`: (line, from, to) to light up a line;
+    `switch_band`: (from, to) to light up the language switch.
 
     Returns the parts, the height and the middle of 日本語 at the end of the switch (where a click switches an English
     window to Japanese).
@@ -767,6 +811,11 @@ def op_window(c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tu
             f'<rect x="{num(cx + 5)}" y="{num(top - 1)}" width="{num(WIN_W - 12)}" '
             f'height="{num(BODY_SIZE * SEGOE_LINE + 2)}" rx="3" fill="{BAND}" fill-opacity=".45"'
             f"{c.m.band(start, end)}/>"
+        )
+    if switch_band:  # wide enough for the widest fonts' English | 日本語
+        out.append(
+            f'<rect x="{num(right - 104)}" y="{num(cy + base[-1] - 14)}" width="108" height="19" rx="3" fill="{BAND}" '
+            f'fill-opacity=".45"{c.m.band(*switch_band)}/>'
         )
     out.append(text(tx, cy + base[0], t["title"], TITLE_SIZE, WIN_INK, True))
     for i, (label, value) in enumerate(zip(labels, values, strict=True)):
@@ -810,8 +859,11 @@ def button(x: float, y: float, w: float, h: float, label: str, size: float, prim
     )
 
 
-def prompt_box(m: Motion, x: float, y: float, w: float, h: float, lang: str, presses: tuple, small: bool = False):
-    """The 1Password approval prompt, as a plain box (a padlock, a title and two buttons).
+def prompt_box(
+    m: Motion, x: float, y: float, w: float, h: float, lang: str, presses: tuple, small: bool = False, focus=False
+):
+    """The 1Password approval prompt, as a plain box (a padlock, a title and two buttons). `focus`: ringed as the
+    window that has the focus.
 
     Returns the parts and the center of the approve button.
     """
@@ -827,9 +879,14 @@ def prompt_box(m: Motion, x: float, y: float, w: float, h: float, lang: str, pre
         f'stroke="{MUTED}" stroke-width="1.7"/>'
         f'<rect x="{num(lx)}" y="{num(ly + 6)}" width="13" height="10" rx="2" fill="{MUTED}"/>'
     )
+    ring = (
+        f'<rect x="{num(x - 2.5)}" y="{num(y - 2.5)}" width="{num(w + 5)}" height="{num(h + 5)}" rx="10" fill="none" '
+        f'stroke="{APPROVE}" stroke-width="2"/>'
+    )
     out = [
         f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="{num(h)}" rx="8" fill="#ffffff" stroke="{LINE}" '
         'filter="url(#shadow)"/>',
+        ring if focus else "",
         lock,
         text(lx + 21, ly + 14, p["title"], size, INK, True),
         f'<line x1="{num(x + 1)}" y1="{num(by - (4.5 if small else 9.5))}" x2="{num(x + w - 1)}" '
@@ -849,10 +906,17 @@ ARROW = (
     '<path d="M0,0V18L5,13L8.5,21L11.5,19.8L8,12H15Z" fill="#fff" stroke="#000" stroke-width="1.4" '
     'stroke-linejoin="round"/>'
 )
+# The hand that Windows shows over a link (op-reason's window shows it over the language it switches to), its
+# fingertip at (0, 0)
+HAND = (
+    '<path d="M-1.8,13.4V1.8A1.8,1.8 0 0 1 1.8,1.8V8.6A1.6,1.6 0 0 1 5,8.6V9.6A1.6,1.6 0 0 1 8.2,9.6V11'
+    "A1.4,1.4 0 0 1 11,11V15.6C11,18.6 9.6,21 7,21H2.6C1,21 0,20.2 -0.8,19L-5,13.9A1.3,1.3 0 0 1 -3.2,12.2Z"
+    'M1.8,8.6V11.6M5,9.6V12M8.2,11V12.6" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/>'
+)
 
 
-def mouse(m: Motion, start: tuple, moves: tuple) -> str:
-    """The mouse pointer: (from, to, where) moves.
+def mouse(m: Motion, start: tuple, moves: tuple, hand: tuple = ()) -> str:
+    """The mouse pointer: (from, to, where) moves. `hand`: (from, to) spans when it is the hand, not the arrow.
 
     Its place at the rest time is an attribute and the animation moves it from there, so that a viewer that runs no
     CSS transforms still draws it in its place.
@@ -871,7 +935,8 @@ def mouse(m: Motion, start: tuple, moves: tuple) -> str:
         stops.append((t0, shift(pos), MOVE))
         stops.append((t1, shift(to), STEP))
         pos = to
-    return f'<g transform="translate({num(base[0])},{num(base[1])})">{g(m.keyframes(stops), ARROW)}</g>'
+    shape = g(m.shown(list(hand), hidden=SHOWN, shown=HIDDEN), ARROW) + g(m.shown(list(hand)), HAND) if hand else ARROW
+    return f'<g transform="translate({num(base[0])},{num(base[1])})">{g(m.keyframes(stops), shape)}</g>'
 
 
 def ripple(m: Motion, at: tuple, t: float) -> str:
@@ -1222,11 +1287,115 @@ def scene_log(lang: str) -> str:
     return c.render(tx["log.title"], tx["log.desc"])
 
 
+def scene_lang(lang: str) -> str:
+    """The language switch: an English window, a click on 日本語, the window in Japanese at once with the focus left on
+    the approval prompt, and the next call in Japanese."""
+    tx = TEXTS[lang]
+    r = REASONS[lang]
+    d = 14.0
+    screen_h = 576  # as in the one-call scene: the prompt in the middle clears the English window
+    # without motion: just after the click, the window in Japanese, the prompt with the focus, the saved choice
+    c = Canvas(screen_h + 44, d, rest=4.8)
+    m = c.m
+    c.add(desk(0, 0, W, screen_h), taskbar(screen_h - 28, 28, "10:43"))
+    t_call, t_window, t_prompt = 0.6, 1.2, 1.35
+    t_lang = 3.7  # the click on 日本語
+    t_switch = t_lang + 0.05
+    t_click, t_value, t_close = 6.6, 6.95, 7.6  # the approval of the first call
+    t_call2, t_window2 = 8.6, 9.2  # the next call
+
+    # Claude Code below: the first call, its value, then the next call
+    ty = screen_h - 196
+    term = Term(c, 16, ty, 848, 158, "Claude Code", 12)
+    y1, y_value, y2 = ty + 54, ty + 80, ty + 108
+
+    def bash(y: float, reason: str, item: str, done: float | None) -> str:
+        changes = [(0.0, f"fill:{TOOL_WAIT}")] + ([(done, f"fill:{TOOL_DONE}")] if done else [])
+        return tool_dot(term, y, m.track(changes)) + term.line(
+            y, [("Bash", TERM_FG, True), (f'(op --reason "{reason}" read "{item}")', TERM_FG)], 2
+        )
+
+    c.add(
+        term.frame,
+        term.content(
+            g(m.at(t_call), bash(y1, r["proxmox"], PROXMOX, t_value)),
+            g(
+                m.at(t_value),
+                result_hook(term, y_value),
+                hidden_value(term, y_value, 5, 20),
+                term.line(y_value, [(tx["call.hidden"], TERM_DIM)], 26),
+            ),
+            g(m.at(t_call2), bash(y2, r["db"], DB, None)),
+        ),
+    )
+
+    # the approval prompt in the middle of the screen, ringed as the window with the focus; a glow and a note on it
+    # after the click on the switch
+    pw, ph = 288, 96
+    px, py = (W - pw) / 2, (screen_h - ph) / 2
+    box, approve = prompt_box(m, px, py, pw, ph, lang, (t_click,), focus=True)
+    glow = (
+        f'<rect x="{num(px - 4)}" y="{num(py - 4)}" width="{num(pw + 8)}" height="{num(ph + 8)}" rx="11" fill="none" '
+        f'stroke="{APPROVE}" stroke-width="8" stroke-opacity=".35"{m.band(t_switch, 5.2)}/>'
+    )
+    badge_w = len(tx["lang.badge"]) * (13.2 if lang == "ja" else 8) + 24  # room for the widest fonts
+    bx, by = W / 2 - badge_w / 2, py + ph + 12
+    badge = (
+        f'<path d="M{num(W / 2 - 6)},{num(by)}l6,-6l6,6Z" fill="{APPROVE}"/>'
+        f'<rect x="{num(bx)}" y="{num(by)}" width="{num(badge_w)}" height="24" rx="12" fill="{APPROVE}"/>'
+        + text(W / 2, by + 16.5, tx["lang.badge"], 12.5, "#ffffff", True, "middle")
+    )
+    c.add(
+        g(m.shown([(t_prompt, t_click + 0.15), (t_window2 + 0.15, None)], 0.2), box, glow),
+        g(m.at(t_switch + 0.15, t_click, 0.2), badge),
+    )
+
+    # op-reason's window at the top right: English, then Japanese at once after the click (it keeps its top right
+    # corner and takes its new height); the next call's window opens in Japanese, its switch lit up
+    wx = W - WIN_RIGHT - WIN_W
+    first = (f"{DAY} 10:42:07", "Claude Code (pid 4242)", PLACE, r["proxmox"], f"op read {PROXMOX}")
+    second = (f"{DAY} 10:43:18", "Claude Code (pid 4242)", PLACE, r["db"], f"op read {DB}")
+    win_en, _, link = op_window(c, wx, 16, "en", first)
+    win_ja, _, _ = op_window(c, wx, 16, "ja", first)
+    win_next, _, _ = op_window(c, wx, 16, "ja", second, switch_band=(t_window2 + 0.5, 11.6))
+    slide = {"hidden": "opacity:0;transform:translateY(-8px)", "shown": "opacity:1;transform:translateY(0)"}
+    c.add(
+        g(m.at(t_window, t_close, 0.3, **slide), g(m.at(0.0, t_switch), win_en), g(m.at(t_switch), win_ja)),
+        g(m.at(t_window2, None, 0.3, **slide), win_next),
+    )
+
+    # the choice, kept for the next calls
+    card = (
+        f'<rect x="16" y="16" width="318" height="70" rx="8" fill="#111827" fill-opacity=".92"/>'
+        f'<path d="M30,30h12l4,4v14h-16Z" fill="none" stroke="{BAND}" stroke-width="1.6" stroke-linejoin="round"/>'
+        f'<path d="M33,40l3,3l6,-6" fill="none" stroke="{BAND}" stroke-width="1.8"/>'
+        + text(56, 43, tx["lang.saved"], 12.5, "#f9fafb", True)
+        + mono(30, 64, SETTINGS[0], 11, "#d1d5db")
+        + mono(30, 79, SETTINGS[1], 11, BAND, True)
+    )
+    c.add(g(m.at(t_switch + 0.6, None, 0.3), card))
+
+    rest = (800, 300)  # the mouse before and after: on the desktop, under the window and right of the prompt
+    c.add(
+        mouse(
+            m,
+            rest,
+            ((2.4, 3.2, link), (5.6, 6.4, approve), (7.0, 7.8, rest)),
+            hand=((3.2, t_switch),),  # over 日本語 until the window has switched (日本語 is then the language shown)
+        ),
+        ripple(m, link, t_lang),
+        ripple(m, approve, t_click),
+        captions(c, screen_h, 44, list(zip((0.0, 2.4, t_switch, t_close + 0.2), tx["lang.steps"], strict=True))),
+    )
+    return c.render(tx["lang.title"], tx["lang.desc"])
+
+
 SCENES = (
     ("readme-1-call", scene_call),
     ("readme-2-approval-leak", scene_leak),
     ("readme-3-no-reason", scene_refuse),
     ("readme-4-log", scene_log),
+    ("readme-5-language", scene_lang),
 )
 
 
