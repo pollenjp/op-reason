@@ -1,7 +1,7 @@
 name: Release
 
-# Builds the release assets when a v* tag is pushed and attaches them to a draft release. The maintainer reviews the
-# draft and publishes it.
+# Builds the release assets when a v* tag is pushed and attaches them to a draft release, whose notes start with the
+# version's section of CHANGELOG.md. The maintainer reviews the draft and publishes it.
 on:
   push:
     tags: ["v*"]
@@ -72,14 +72,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Before the download: the checkout would remove what is in its folder
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
+      # The version's section of CHANGELOG.md, then what the assets are. Fails, and makes no draft, unless the tag
+      # names the version of Cargo.toml, crates/op-reason-win and the PowerShell entry, and CHANGELOG.md has its
+      # section. ci.yml runs the same script on every pull request.
+      - name: Release notes
+        run: |
+          bash .github/scripts/release-notes.sh "${GITHUB_REF_NAME}" >"${RUNNER_TEMP}/notes.md"
+          cat "${RUNNER_TEMP}/notes.md"
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
           gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --draft --verify-tag \
-            --title "${GITHUB_REF_NAME}" --notes "See the README for installation. op-reason-<arch>-linux is the WSL executable. op-reason-windows.zip holds op-reason.exe (the Windows entry, and the window of calls from WSL; not signed) and the PowerShell fallback for machines where Smart App Control blocks op-reason.exe. Install both on a WSL machine. Each asset has a .sha256 file."
+            --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/notes.md"
