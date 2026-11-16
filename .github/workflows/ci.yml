@@ -31,6 +31,15 @@ jobs:
         run: nix develop path:./nix --command cargo build --locked --package op-reason
       - name: Black-box tests (fake op-reason.exe, powershell.exe and op.exe, the launcher on PowerShell 7, fish)
         run: nix develop path:./nix --command bash tests/run-all.sh target/debug/op-reason
+      # The script that release.yml runs (linted here; its test is among tests/*.sh), then run outside the development
+      # shell as there: the versions agree and CHANGELOG.md has their section. The notes it prints are those that a tag
+      # of this version would get.
+      - name: Release notes
+        run: |
+          nix develop path:./nix --command shellcheck -x .github/scripts/release-notes.sh
+          nix develop path:./nix --command shfmt -d .github/scripts/release-notes.sh
+          bash tests/release-notes.test.sh
+          bash .github/scripts/release-notes.sh
       - name: Shell lint
         run: |
           nix develop path:./nix --command shellcheck -x tests/*.sh
