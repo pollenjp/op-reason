@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-16
 
 - **The window chooses the language.** The window of `op-reason.exe` has a switch, `English | 日本語`, at its bottom
   right. A click switches the window at once, without taking the focus from the 1Password prompt, and remembers the
