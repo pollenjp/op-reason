@@ -54,7 +54,7 @@ pub fn snapshot() -> Vec<Proc> {
 }
 
 /// The creation time of a process (100-ns units), when we may open it.
-fn created(pid: u32) -> Option<u64> {
+pub(crate) fn created(pid: u32) -> Option<u64> {
     // SAFETY: the handle is closed before returning; out parameters are on the stack.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -106,7 +106,7 @@ pub fn lineage(procs: &[Proc]) -> Vec<(u32, String)> {
 }
 
 /// The full path of a process's image, when we may open it.
-fn image_path(pid: u32) -> Option<String> {
+pub(crate) fn image_path(pid: u32) -> Option<String> {
     let mut buf = [0u16; 32_768];
     let mut len = buf.len() as u32;
     // SAFETY: the buffer and its length live across the call; the handle is closed before returning.

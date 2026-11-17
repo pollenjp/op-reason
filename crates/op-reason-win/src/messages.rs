@@ -152,6 +152,46 @@ pub fn ssh_name(lang: Lang) -> String {
     }
 }
 
+/// The relay started: where it listens and where it passes requests on.
+pub fn relay_started(lang: Lang, mode: &str, pipe: &str, upstream: &str) -> String {
+    match lang {
+        Lang::En => {
+            format!("the SSH relay listens on {pipe} ({mode}) and passes requests on to {upstream}")
+        }
+        Lang::Ja => {
+            format!("SSH の中継が {pipe} で待ち受けています ({mode})。依頼は {upstream} へ渡します")
+        }
+    }
+}
+
+/// Another relay runs in this logon session.
+pub fn relay_running(lang: Lang) -> String {
+    match lang {
+        Lang::En => "another SSH relay runs in this logon session (op-reason.exe --ssh-agent --status names it); stop it first to start one with other options".to_owned(),
+        Lang::Ja => "このログオン セッションでは別の SSH の中継が動いています (op-reason.exe --ssh-agent --status で分かります)。別の option で起こすなら、先にそれを止めてください".to_owned(),
+    }
+}
+
+/// The relay's pipe could not be created (another program has the name).
+pub fn relay_pipe_taken(lang: Lang, pipe: &str, err: &str) -> String {
+    match lang {
+        Lang::En => format!("cannot serve {pipe}: {err} (another program may have the name)"),
+        Lang::Ja => format!(
+            "{pipe} で待ち受けられません: {err} (ほかのプログラムがその名前を使っているかもしれません)"
+        ),
+    }
+}
+
+/// `--status`: what answers on the pipe.
+pub fn relay_status(lang: Lang, pipe: &str, pid: Option<u32>) -> String {
+    match (lang, pid) {
+        (Lang::En, Some(pid)) => format!("the SSH relay answers on {pipe} (pid {pid})"),
+        (Lang::En, None) => format!("nothing answers on {pipe}"),
+        (Lang::Ja, Some(pid)) => format!("SSH の中継が {pipe} で答えています (pid {pid})"),
+        (Lang::Ja, None) => format!("{pipe} で答えるものはありません"),
+    }
+}
+
 /// op.exe could not be started (after `start` was written).
 pub fn start_failed(lang: Lang, err: &str) -> String {
     match lang {
@@ -183,6 +223,19 @@ mod tests {
                 }
             }
             assert!(full.contains("op-reason 9.8.7"), "{full}");
+        }
+    }
+
+    #[test]
+    fn the_relay_says_where_it_listens() {
+        for lang in [Lang::En, Lang::Ja] {
+            let p = r"\\.\pipe\x";
+            assert!(relay_started(lang, "per-call", p, "u").contains(p));
+            assert!(relay_started(lang, "per-call", p, "u").contains("per-call"));
+            assert!(relay_pipe_taken(lang, p, "Access is denied").contains("Access is denied"));
+            assert!(relay_status(lang, p, Some(42)).contains("42"));
+            assert!(relay_status(lang, p, None).contains(p));
+            assert!(relay_running(lang).contains("--status"));
         }
     }
 

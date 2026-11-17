@@ -70,7 +70,7 @@ pub(super) fn chosen() -> Option<Lang> {
 
 /// Writes down the language chosen with the window's switch; quiet when it cannot (design
 /// `2026-11-15-language-toggle-design.md` §4).
-fn remember(lang: Lang) {
+pub(super) fn remember(lang: Lang) {
     if let Some(file) = settings_file() {
         let _ = settings::write(&file, lang);
     }
@@ -109,6 +109,13 @@ pub fn run() -> i32 {
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
     let rest: Vec<OsString> = argv.collect();
+    // The SSH relay (design 2026-11-17-ssh-relay-design.md)
+    if rest
+        .first()
+        .is_some_and(|a| a == crate::relay_opts::RELAY_ARG)
+    {
+        return super::relay::run(&rest[1..]);
+    }
     // The runner face: the WSL binary starts `op-reason.exe --run` with the call in OPREASON_PAYLOAD
     if rest.first().is_some_and(|a| a == contract::RUN_ARG) {
         if rest.len() > 1 {
