@@ -415,6 +415,7 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         caller: &ctx.caller,
         reason: &args::clip(&ctx.reason, 500, "…"),
         args: &ctx.masked,
+        refs: None,
     }));
 
     // Closing the console ends the process a few seconds after the handler: the hook writes `end` (timed then) and
@@ -452,6 +453,7 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         reason: args::clip(&ctx.reason, 200, "…"),
         command: args::clip(&ctx.display, 300, "…"),
         notes: Vec::new(),
+        refs: None,
     };
     let mut o = Outcome::default();
     let how = How {

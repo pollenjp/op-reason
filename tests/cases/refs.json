@@ -1,0 +1,194 @@
+{
+  "about": "The op:// references a call reads (docs/superpowers/specs/2026-11-17-refs-in-window-design.md, section 2). Read by the Rust core tests (crates/op-reason-core/tests/refs.rs) and by the PowerShell entry's test (tests/windows/entry-plan.test.ps1, in plan-only mode, with the files written to a scratch directory that is the current directory). args: op's arguments (the reason already taken out). files: path -> content. stdin: the template read from stdin; the PowerShell entry never reads stdin, so it skips the cases with powershell false. expect.list: every distinct reference, in the order first seen; from: the sources that gave one; account: the last --account value. links: whether a reference opens an item (vault and item IDs) or not (null).",
+  "cases": [
+    {
+      "name": "an argument that is a reference",
+      "args": ["read", "op://Private/proxmox/token"],
+      "expect": { "list": ["op://Private/proxmox/token"], "from": [{ "kind": "args" }] }
+    },
+    {
+      "name": "no reference",
+      "args": ["vault", "list"],
+      "expect": { "list": [], "from": [] }
+    },
+    {
+      "name": "the arguments after -- are the command's, not op's",
+      "args": ["run", "--", "echo", "op://not/read/here"],
+      "expect": { "list": [], "from": [] }
+    },
+    {
+      "name": "a template file: enclosed and unenclosed references",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": {
+        "app.tpl": "db_password: {{ op://app-prod/db/password }}\nuser={{op://app-prod/db/user}}\nurl: postgres://op://app-prod/db/host\ntoken=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/credential\n"
+      },
+      "expect": {
+        "list": [
+          "op://app-prod/db/password",
+          "op://app-prod/db/user",
+          "op://app-prod/db/host",
+          "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/credential"
+        ],
+        "from": [{ "kind": "file", "name": "app.tpl" }]
+      }
+    },
+    {
+      "name": "op:// after a letter, a digit, -, +, \\ or . is not a reference",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "xop://a/b/c 1op://a/b/c -op://a/b/c +op://a/b/c \\op://a/b/c .op://a/b/c (op://ok/b/c)" },
+      "expect": { "list": ["op://ok/b/c"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "escaped text is not read",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "{{ \"op://not/read/here\" }} and {{ \"say \\\"op://x/y/z\\\"\" }} but op://read/this/one" },
+      "expect": { "list": ["op://read/this/one"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "an enclosed reference keeps its spaces",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "password: {{  op://My Vault/My Item/password  }}\n" },
+      "expect": { "list": ["op://My Vault/My Item/password"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "an unclosed {{ leaves an unenclosed reference",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "a={{ op://v/i/f\nb=}}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "variables stay as they are written",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": {
+        "app.tpl": "a={{ op://$APP_ENV/db/password }}\nb=op://${VAULT}/item/field\nc=op://vault/${ITEM:-default}/field\nd=op://$9/x/y\n"
+      },
+      "expect": {
+        "list": ["op://$APP_ENV/db/password", "op://${VAULT}/item/field", "op://vault/${ITEM:-default}/field"],
+        "from": [{ "kind": "file", "name": "app.tpl" }]
+      }
+    },
+    {
+      "name": "a query belongs to the reference; a comma or a bracket ends it",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "op://v/i/totp?attribute=otp, (op://v/i/f), op://v/i/f." },
+      "expect": {
+        "list": ["op://v/i/totp?attribute=otp", "op://v/i/f", "op://v/i/f."],
+        "from": [{ "kind": "file", "name": "app.tpl" }]
+      }
+    },
+    {
+      "name": "--in-file= names the template",
+      "args": ["inject", "--in-file=app.tpl"],
+      "files": { "app.tpl": "x={{ op://v/i/f }}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "-i with the value attached",
+      "args": ["inject", "-iapp.tpl"],
+      "files": { "app.tpl": "x={{ op://v/i/f }}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "-i= with the value attached",
+      "args": ["inject", "-i=app.tpl"],
+      "files": { "app.tpl": "x={{ op://v/i/f }}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "-i in a group of short flags",
+      "args": ["inject", "-fi", "app.tpl", "-o", "out.env"],
+      "files": { "app.tpl": "x={{ op://v/i/f }}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "global flags before the subcommand, and a template in a folder",
+      "args": ["--account", "acct", "--config", "cfg", "inject", "--out-file", "out.env", "--in-file", "conf/app.tpl"],
+      "files": { "conf/app.tpl": "x={{ op://v/i/f }}" },
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }], "account": "acct" }
+    },
+    {
+      "name": "a template on stdin",
+      "args": ["inject"],
+      "stdin": "x={{ op://Private/db/password }}\ny=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/token\n",
+      "powershell": false,
+      "expect": {
+        "list": ["op://Private/db/password", "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/token"],
+        "from": [{ "kind": "stdin" }]
+      }
+    },
+    {
+      "name": "with -i, stdin is not the template",
+      "args": ["inject", "-i", "app.tpl"],
+      "files": { "app.tpl": "x={{ op://v/i/f }}" },
+      "stdin": "y={{ op://not/the/template }}",
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "file", "name": "app.tpl" }] }
+    },
+    {
+      "name": "env files of op run",
+      "args": ["run", "--env-file", ".env", "--env-file=more.env", "--", "printenv", "op://not/op/s"],
+      "files": {
+        ".env": "# a comment\nexport DB_PASSWORD=op://app-prod/db/password\nAPI_KEY=\"op://app-prod/api/key with space\"\nPLAIN=value # op://not/a/comment\nTPL=user-{{ op://app-prod/db/user }}\n\nSINGLE='op://app-prod/single/quoted'\n",
+        "more.env": "TOKEN=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/token\n"
+      },
+      "expect": {
+        "list": [
+          "op://app-prod/db/password",
+          "op://app-prod/api/key with space",
+          "op://app-prod/db/user",
+          "op://app-prod/single/quoted",
+          "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/token"
+        ],
+        "from": [{ "kind": "env-file", "name": ".env" }, { "kind": "env-file", "name": "more.env" }]
+      }
+    },
+    {
+      "name": "the last --account counts",
+      "args": ["--account=first", "read", "--account", "second", "op://v/i/f"],
+      "expect": { "list": ["op://v/i/f"], "from": [{ "kind": "args" }], "account": "second" }
+    },
+    {
+      "name": "each reference once, in the order first seen, arguments first",
+      "args": ["inject", "op://v/i/z", "--in-file", "app.tpl"],
+      "files": { "app.tpl": "a=op://v/i/b\nb=op://v/i/a\nc=op://v/i/b\nd=op://v/i/z\n" },
+      "expect": {
+        "list": ["op://v/i/z", "op://v/i/b", "op://v/i/a"],
+        "from": [{ "kind": "args" }, { "kind": "file", "name": "app.tpl" }]
+      }
+    },
+    {
+      "name": "a file that cannot be read gives nothing",
+      "args": ["inject", "-i", "missing.tpl"],
+      "expect": { "list": [], "from": [] }
+    },
+    {
+      "name": "control characters and direction marks become spaces",
+      "args": ["read", "op://v/i/f\u0007\u202eevil"],
+      "expect": { "list": ["op://v/i/f  evil"], "from": [{ "kind": "args" }] }
+    }
+  ],
+  "links": [
+    {
+      "ref": "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password",
+      "vault": "abcdefghijklmnopqrstuvwxyz",
+      "item": "0123456789abcdefghijklmnop"
+    },
+    {
+      "ref": "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/section/field?attribute=otp",
+      "vault": "abcdefghijklmnopqrstuvwxyz",
+      "item": "0123456789abcdefghijklmnop"
+    },
+    {
+      "ref": "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop",
+      "vault": "abcdefghijklmnopqrstuvwxyz",
+      "item": "0123456789abcdefghijklmnop"
+    },
+    { "ref": "op://Private/proxmox/token", "vault": null, "item": null },
+    { "ref": "op://ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789abcdefghijklmnop/password", "vault": null, "item": null },
+    { "ref": "op://abcdefghijklmnopqrstuvwxy/0123456789abcdefghijklmnop/password", "vault": null, "item": null },
+    { "ref": "op://abcdefghijklmnopqrstuvwxyz0/0123456789abcdefghijklmnop/password", "vault": null, "item": null },
+    { "ref": "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnopq/password", "vault": null, "item": null },
+    { "ref": "op://abcdefghijklmnopqrstuvwxyz/$ITEM/password", "vault": null, "item": null },
+    { "ref": "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop.x", "vault": null, "item": null },
+    { "ref": "op://$VAULT/0123456789abcdefghijklmnop/password", "vault": null, "item": null }
+  ]
+}

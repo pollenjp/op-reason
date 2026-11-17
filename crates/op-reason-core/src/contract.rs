@@ -97,6 +97,35 @@ pub struct Facts {
     /// Extra lines for the window.
     #[serde(default)]
     pub notes: Vec<Note>,
+    /// The `op://` references the call reads, when there are any (design `2026-11-17-refs-in-window-design.md` §3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<Refs>,
+}
+
+/// The `op://` references of a call: `facts.refs` (the first 8) and the log's `start.refs` (all, up to 1000).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Refs {
+    /// How many distinct references the call reads.
+    pub total: usize,
+    /// The sources that gave at least one.
+    #[serde(default)]
+    pub from: Vec<RefSource>,
+    /// The references, in the order first seen.
+    #[serde(default)]
+    pub list: Vec<String>,
+    /// The call's last `--account` value (the payload only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// Where references came from.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RefSource {
+    /// `args`, `file` (the template of `op inject`), `stdin` (its template on stdin) or `env-file` (of `op run`).
+    pub kind: String,
+    /// `file` and `env-file`: the file's last path component.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// The caller as the window shows it.
@@ -362,6 +391,21 @@ mod tests {
                     kind: "shared-cleared".into(),
                     holder_reason: None,
                 }],
+                refs: Some(Refs {
+                    total: 2,
+                    from: vec![
+                        RefSource {
+                            kind: "args".into(),
+                            name: None,
+                        },
+                        RefSource {
+                            kind: "file".into(),
+                            name: Some("設定.tpl".into()),
+                        },
+                    ],
+                    list: vec!["op://v/i/f".into(), "op://金庫/項目/欄".into()],
+                    account: Some("my".into()),
+                }),
             }),
             notify: None,
         };
@@ -370,7 +414,21 @@ mod tests {
         assert!(json.contains(r#""lockWait":90"#));
         assert!(json.contains(r#""type":"human""#));
         assert!(!json.contains("holderReason"));
+        assert!(json.contains(r#""from":[{"kind":"args"},{"kind":"file","name":"#));
         let back: Payload = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn facts_without_refs_have_no_refs_field_and_old_payloads_read() {
+        let f = Facts::default();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("refs"), "{json}");
+        let back: Facts = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.refs, None);
+        let refs: Refs =
+            serde_json::from_str(r#"{"total":1,"list":["op://a/b/c"],"later":true}"#).unwrap();
+        assert_eq!(refs.from, Vec::new());
+        assert_eq!(refs.account, None);
     }
 }

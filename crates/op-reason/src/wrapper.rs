@@ -589,6 +589,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         reason: args::clip(&call.reason, 200, "…"),
         command: args::clip(&call.display, 300, "…"),
         notes,
+        refs: None,
     });
     // The runner needs both Windows paths: with an empty status path it could not leave the trace that keeps the
     // fallback from running op.exe a second time
@@ -648,6 +649,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             caller: &call.caller,
             reason: &args::clip(&call.reason, 500, "…"),
             args: &call.masked,
+            refs: None,
         }),
     );
 

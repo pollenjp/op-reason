@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::contract::Herdr;
+use crate::contract::{Herdr, Refs};
 use crate::time::Now;
 
 /// The log is renamed to `log.1.jsonl` when it reaches this size.
@@ -51,6 +51,9 @@ pub struct Start<'a> {
     pub caller: &'a Caller,
     pub reason: &'a str,
     pub args: &'a [String],
+    /// The `op://` references the call reads, when there are any (design `2026-11-17-refs-in-window-design.md` §3.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refs: Option<&'a Refs>,
 }
 
 /// The watchdog results in an `end` record.
@@ -273,10 +276,39 @@ mod tests {
             caller: &c,
             reason: "r",
             args: &args,
+            refs: None,
         });
         assert_eq!(
             s,
             r#"{"v":1,"id":"i","event":"start","time":"t","epoch":5,"session":null,"mode":"desktop","kind":"desktop","lock":"held","caller":{"type":"claude","claude_pid":999,"herdr":{"workspace":"wX","label":"作業 1 テスト","pane":"wX:p1"},"cwd":"/w","repo":"o/r","branch":"feat/x"},"reason":"r","args":["item","get"]}"#
+        );
+        let refs = Refs {
+            total: 2,
+            from: vec![crate::contract::RefSource {
+                kind: "stdin".into(),
+                name: None,
+            }],
+            list: vec!["op://v/i/a".into(), "op://v/i/b".into()],
+            account: None,
+        };
+        let with = line(&Start {
+            v: 1,
+            id: "i",
+            event: "start",
+            time: "t",
+            epoch: 5,
+            session: None,
+            mode: "desktop",
+            kind: "desktop",
+            lock: "held",
+            caller: &c,
+            reason: "r",
+            args: &args,
+            refs: Some(&refs),
+        });
+        assert!(
+            with.ends_with(r#""args":["item","get"],"refs":{"total":2,"from":[{"kind":"stdin"}],"list":["op://v/i/a","op://v/i/b"]}}"#),
+            "{with}"
         );
         let e = line(&End {
             v: 1,

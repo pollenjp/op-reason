@@ -455,6 +455,7 @@ mod tests {
                 kind: "lock-skipped".into(),
                 holder_reason: Some("why".into()),
             }],
+            refs: None,
         }
     }
 

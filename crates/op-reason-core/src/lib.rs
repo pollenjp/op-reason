@@ -6,6 +6,7 @@
 //! - [`place`]: the repository and branch of a directory, read from git files
 //! - [`lang`] and [`messages`]: English and Japanese texts; [`settings`]: the language chosen in the window
 //! - [`result`]: the result of a call from the status, the exit code and `op`'s stderr
+//! - [`refs`]: the `op://` references a call reads (the reference table keeps the PowerShell entry in step)
 
 pub mod args;
 pub mod base64;
@@ -16,6 +17,7 @@ pub mod log;
 pub mod logview;
 pub mod messages;
 pub mod place;
+pub mod refs;
 pub mod result;
 pub mod settings;
 pub mod time;
