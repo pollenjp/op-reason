@@ -1,0 +1,311 @@
+{
+  "_comment": "Process chains and the root of their call (design 2026-11-17-ssh-relay-design.md §5.2). chain[0] is the client of the agent (Windows: the process that connected to the relay's pipe; Linux: op-reason-ssh itself, which becomes ssh.exe), then its parents, nearest first. Windows nodes have the image name and the command line (null when it cannot be read); Linux nodes have the comm and argv. rule: claude (a claude ancestor: its child), shell (an interactive shell ancestor: its child; shell is the shell's index), parent (the client's parent, or the client alone), wsl (Windows only: the client's parent is a WSL interop host). Run by crates/op-reason-core/tests/roots.rs.",
+  "cases": [
+    {
+      "name": "Claude Code's tool call on Windows (the chain seen on the author's machine, 2026-11-17)",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh-add.exe", "cmd": "\"C:\\Program Files\\OpenSSH\\ssh-add.exe\" -l" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoProfile -NonInteractive -Command \"ssh-add -l\"" },
+        { "name": "cmd.exe", "cmd": "C:\\WINDOWS\\system32\\cmd.exe /d /s /c \"pwsh -NoProfile -NonInteractive -Command \"\"ssh-add -l\"\"\"" },
+        { "name": "claude.exe", "cmd": "\"C:\\Users\\me\\.local\\bin\\claude.exe\"" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo" },
+        { "name": "herdr-core.exe", "cmd": "herdr-core.exe" },
+        { "name": "herdr-app.exe", "cmd": "herdr-app.exe" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "claude",
+      "root": 2,
+      "shell": null
+    },
+    {
+      "name": "git push typed in PowerShell in Windows Terminal",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "\"C:/Program Files/OpenSSH/ssh.exe\" -o SendEnv=GIT_PROTOCOL git@github.com \"git-receive-pack 'me/r.git'\"" },
+        { "name": "git.exe", "cmd": "\"C:\\Program Files\\Git\\cmd\\git.exe\" push" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"" },
+        { "name": "WindowsTerminal.exe", "cmd": "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\WindowsTerminal.exe\"" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "a program that runs ssh several levels below an interactive cmd",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe -o BatchMode=yes db1" },
+        { "name": "python.exe", "cmd": "python.exe deploy.py --all" },
+        { "name": "cmd.exe", "cmd": "\"C:\\WINDOWS\\system32\\cmd.exe\"" },
+        { "name": "WindowsTerminal.exe", "cmd": "WindowsTerminal.exe" }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "a PowerShell script typed in an interactive PowerShell: the script is the root",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe web1 uptime" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -File .\\deploy.ps1 -Env staging" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo" },
+        { "name": "WindowsTerminal.exe", "cmd": "WindowsTerminal.exe" }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "a batch file opened from Explorer: no interactive shell, the client's parent",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe backup@nas" },
+        { "name": "cmd.exe", "cmd": "C:\\WINDOWS\\system32\\cmd.exe /c \"\"C:\\Users\\me\\backup.bat\" \"" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "parent",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "cmd typed inside PowerShell: the nearest interactive shell counts",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh host" },
+        { "name": "cmd.exe", "cmd": "\"C:\\WINDOWS\\system32\\cmd.exe\"" },
+        { "name": "pwsh.exe", "cmd": "pwsh.exe" },
+        { "name": "WindowsTerminal.exe", "cmd": "WindowsTerminal.exe" }
+      ],
+      "rule": "shell",
+      "root": 0,
+      "shell": 1
+    },
+    {
+      "name": "a terminal program's core that connects to a remote host itself",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe -o BatchMode=yes -o ServerAliveInterval=15 -T lavie" },
+        { "name": "herdr-core.exe", "cmd": "\"C:\\Users\\me\\AppData\\Local\\herdr\\herdr-core.exe\" server" },
+        { "name": "herdr-core.exe", "cmd": "\"C:\\Users\\me\\AppData\\Local\\herdr\\herdr-core.exe\"" },
+        { "name": "herdr-app.exe", "cmd": "herdr-app.exe" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "parent",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "ssh.exe started from WSL: the interop host is its parent",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe -T git@github.com" },
+        { "name": "wsl.exe", "cmd": "\"C:\\Program Files\\WSL\\wsl.exe\"" },
+        { "name": "wsl.exe", "cmd": "\"C:\\Program Files\\WSL\\wsl.exe\" -d Ubuntu" },
+        { "name": "herdr-core.exe", "cmd": "herdr-core.exe" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "wsl",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "a shell whose command line cannot be read counts as interactive",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe git@github.com \"git-upload-pack 'me/r.git'\"" },
+        { "name": "git.exe", "cmd": "git.exe fetch" },
+        { "name": "pwsh.exe", "cmd": null },
+        { "name": "WindowsTerminal.exe", "cmd": null }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "PowerShell with -NoExit and an initial command (VS Code's terminal) is interactive",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe pi@raspberrypi" },
+        { "name": "pwsh.exe", "cmd": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -noexit -command \"try { . 'c:\\vscode\\shellIntegration.ps1' } catch {}\"" },
+        { "name": "Code.exe", "cmd": "\"C:\\Program Files\\Microsoft VS Code\\Code.exe\" --type=ptyHost" }
+      ],
+      "rule": "shell",
+      "root": 0,
+      "shell": 1
+    },
+    {
+      "name": "PowerShell with options that take values and no command is interactive",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe host" },
+        { "name": "pwsh.exe", "cmd": "pwsh.exe -ExecutionPolicy Bypass -WorkingDirectory C:\\src -NoLogo" },
+        { "name": "explorer.exe", "cmd": "C:\\WINDOWS\\Explorer.EXE" }
+      ],
+      "rule": "shell",
+      "root": 0,
+      "shell": 1
+    },
+    {
+      "name": "Windows PowerShell running a script by position is not interactive",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe host" },
+        { "name": "powershell.exe", "cmd": "powershell.exe -NoProfile .\\nightly.ps1" },
+        { "name": "svchost.exe", "cmd": "C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p -s Schedule" }
+      ],
+      "rule": "parent",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "Claude Code below an interactive shell wins over that shell",
+      "os": "windows",
+      "chain": [
+        { "name": "ssh.exe", "cmd": "ssh.exe host" },
+        { "name": "bash.exe", "cmd": "\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -c -l \"ssh host\"" },
+        { "name": "claude.exe", "cmd": "claude.exe" },
+        { "name": "pwsh.exe", "cmd": "pwsh.exe" }
+      ],
+      "rule": "claude",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "names are compared without case on Windows",
+      "os": "windows",
+      "chain": [
+        { "name": "SSH.EXE", "cmd": "SSH.EXE host" },
+        { "name": "Claude.EXE", "cmd": "Claude.EXE" }
+      ],
+      "rule": "claude",
+      "root": 0,
+      "shell": null
+    },
+    {
+      "name": "a client whose parent is unknown is a call of its own",
+      "os": "windows",
+      "chain": [{ "name": "ssh.exe", "cmd": "ssh.exe host" }],
+      "rule": "parent",
+      "root": 0,
+      "shell": null
+    },
+    {
+      "name": "Claude Code's tool call on Linux: its bash is the root",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "-o", "SendEnv=GIT_PROTOCOL", "git@github.com", "git-receive-pack 'me/r.git'"] },
+        { "name": "git", "args": ["git", "push"] },
+        { "name": "bash", "args": ["/bin/bash", "-c", "-l", "source /tmp/claude-shell-snapshot && eval 'git push'"] },
+        { "name": "claude", "args": ["claude"] },
+        { "name": "fish", "args": ["fish"] }
+      ],
+      "rule": "claude",
+      "root": 2,
+      "shell": null
+    },
+    {
+      "name": "git pull typed in fish inside herdr",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "git@github.com", "git-upload-pack 'me/r.git'"] },
+        { "name": "git", "args": ["git", "pull"] },
+        { "name": "fish", "args": ["fish"] },
+        { "name": "herdr", "args": ["herdr", "server"] }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "ansible-playbook typed in fish: the playbook run is the root of every worker's ssh",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "-C", "-o", "ControlPersist=60s", "db1", "/bin/sh -c 'echo ~ && sleep 0'"] },
+        { "name": "ansible-playboo", "args": ["/usr/bin/python3", "/usr/bin/ansible-playbook", "site.yml"] },
+        { "name": "ansible-playboo", "args": ["/usr/bin/python3", "/usr/bin/ansible-playbook", "site.yml"] },
+        { "name": "fish", "args": ["fish"] },
+        { "name": "herdr", "args": ["herdr", "server"] }
+      ],
+      "rule": "shell",
+      "root": 2,
+      "shell": 3
+    },
+    {
+      "name": "a bash script typed in a login fish: the script is the root",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "web1", "uptime"] },
+        { "name": "bash", "args": ["bash", "deploy.sh", "staging"] },
+        { "name": "fish", "args": ["-fish"] },
+        { "name": "login", "args": ["/bin/login", "-p", "--"] }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "ssh typed in a login bash: the command itself is the root",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "host"] },
+        { "name": "bash", "args": ["-bash"] },
+        { "name": "sshd", "args": ["sshd: me@pts/0"] }
+      ],
+      "rule": "shell",
+      "root": 0,
+      "shell": 1
+    },
+    {
+      "name": "no shell at all: the client's parent",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "backup@nas"] },
+        { "name": "cron", "args": ["/usr/sbin/cron", "-f"] },
+        { "name": "systemd", "args": ["/sbin/init"] }
+      ],
+      "rule": "parent",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "bash -ic and fish -c run a command: not interactive",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "host"] },
+        { "name": "bash", "args": ["bash", "-ic", "ssh host"] },
+        { "name": "fish", "args": ["fish", "-c", "bash -ic 'ssh host'"] },
+        { "name": "sshd", "args": ["sshd: me@notty"] }
+      ],
+      "rule": "parent",
+      "root": 1,
+      "shell": null
+    },
+    {
+      "name": "a shell with an option that takes a value and no command is interactive",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "host"] },
+        { "name": "git", "args": ["git", "fetch"] },
+        { "name": "bash", "args": ["bash", "--rcfile", "/tmp/rc", "-o", "vi"] },
+        { "name": "tmux: server", "args": ["tmux"] }
+      ],
+      "rule": "shell",
+      "root": 1,
+      "shell": 2
+    },
+    {
+      "name": "fish -i with an init command is interactive",
+      "os": "linux",
+      "chain": [
+        { "name": "op-reason-ssh", "args": ["op-reason-ssh", "host"] },
+        { "name": "fish", "args": ["fish", "-C", "set -x FOO 1", "-i"] }
+      ],
+      "rule": "shell",
+      "root": 0,
+      "shell": 1
+    }
+  ]
+}
