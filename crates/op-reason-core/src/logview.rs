@@ -704,7 +704,7 @@ mod tests {
         let newer = [
             r#"{"v":1,"id":"r1","event":"ssh-relay","time":"t","epoch":900,"what":"start","mode":"per-call","pipe":"\\\\.\\pipe\\op-reason-ssh-agent","upstream":"u","limit":3600,"pid":5}"#,
             r#"{"v":1,"id":"s2","event":"ssh-sign","time":"t","epoch":3000,"mode":"per-call","result":"passed","seconds":0.1,"decision":"s1","client":{"pid":12,"exe":"C:\\ssh.exe","cmd":"ssh.exe git@github.com"},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"git"},"forwarded":false}"#,
-            r#"{"v":1,"id":"s3","event":"ssh-sign","time":"t","epoch":4000,"mode":"per-call","result":"denied","seconds":4.0,"answer":"deny","call":{"rule":"alone"},"caller":{"type":"program","claude_pid":null,"herdr":null,"cwd":"","repo":null,"branch":null},"reason":"","client":{"pid":13,"exe":"C:\\ssh.exe","cmd":"ssh.exe -A lavie"},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"me"},"forwarded":true}"#,
+            r#"{"v":1,"id":"s3","event":"ssh-sign","time":"t","epoch":4000,"mode":"per-call","result":"denied","seconds":4.0,"answer":"deny","call":{"rule":"alone"},"caller":{"type":"program","claude_pid":null,"herdr":null,"cwd":"","repo":null,"branch":null},"reason":"","client":{"pid":13,"exe":"C:\\ssh.exe","cmd":"ssh.exe -A jumphost"},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"me"},"forwarded":true}"#,
         ];
         std::fs::write(dir.join("ssh-log.jsonl"), newer.join("\n") + "\n").unwrap();
         let op = [

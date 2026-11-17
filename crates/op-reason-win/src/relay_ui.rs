@@ -699,7 +699,7 @@ mod tests {
         f.caller = Caller::Unknown(Unknown::Forwarded);
         f.root = None;
         f.forwarded = Some(Forwarded {
-            from: "lavie".into(),
+            from: "jumphost".into(),
             from_key: Some("SHA256:a".into()),
             onward_key: Some("SHA256:b".into()),
         });
@@ -710,13 +710,15 @@ mod tests {
         );
         assert_eq!(
             line(&en, "Destination"),
-            Some("forwarded from lavie (host key SHA256:a) · onward to the host with key SHA256:b")
+            Some(
+                "forwarded from jumphost (host key SHA256:a) · onward to the host with key SHA256:b"
+            )
         );
         assert!(en.footer.contains("this signature only"), "{}", en.footer);
         let ja = build(&f, Phase::Ask, Lang::Ja);
         assert_eq!(
             line(&ja, "接続先"),
-            Some("lavie (ホストの鍵 SHA256:a) から転送 · 行き先のホストの鍵 SHA256:b")
+            Some("jumphost (ホストの鍵 SHA256:a) から転送 · 行き先のホストの鍵 SHA256:b")
         );
         assert!(line(&en, "Root").is_none());
     }

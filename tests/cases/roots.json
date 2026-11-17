@@ -87,7 +87,7 @@
       "name": "a terminal program's core that connects to a remote host itself",
       "os": "windows",
       "chain": [
-        { "name": "ssh.exe", "cmd": "ssh.exe -o BatchMode=yes -o ServerAliveInterval=15 -T lavie" },
+        { "name": "ssh.exe", "cmd": "ssh.exe -o BatchMode=yes -o ServerAliveInterval=15 -T devbox" },
         { "name": "herdr-core.exe", "cmd": "\"C:\\Users\\me\\AppData\\Local\\herdr\\herdr-core.exe\" server" },
         { "name": "herdr-core.exe", "cmd": "\"C:\\Users\\me\\AppData\\Local\\herdr\\herdr-core.exe\"" },
         { "name": "herdr-app.exe", "cmd": "herdr-app.exe" },
