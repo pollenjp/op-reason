@@ -1511,7 +1511,7 @@ fn a_click_on_a_link_opens_the_item_and_leaves_the_focus_where_it_was() {
     fs::write(sb.account_file(), ACCOUNT_JSON).unwrap();
     let p = sb.payload_with_refs().to_string();
     let mut child = sb
-        .command(&[s("--run")], &[("FAKE_SLEEP_MS", "15000")])
+        .command(&[s("--run")], &[("FAKE_SLEEP_MS", "40000")])
         .env("OPREASON_PAYLOAD", &p)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1525,20 +1525,22 @@ fn a_click_on_a_link_opens_the_item_and_leaves_the_focus_where_it_was() {
     let h = click::window().unwrap();
     std::thread::sleep(Duration::from_millis(500));
     let before = click::foreground();
-    let found = click::click_first_link(h);
-    let opened = wait_until(Duration::from_secs(10), || {
-        fs::read_to_string(&record).is_ok_and(|t| !t.is_empty())
-    });
+    let opened = || fs::read_to_string(&record).is_ok_and(|t| !t.is_empty());
+    let found = click::click_down_until(h, &opened);
+    // a click on the link just before the handler wrote may have opened it again
+    std::thread::sleep(Duration::from_secs(2));
     let after = click::foreground();
     let text = fs::read_to_string(&record).unwrap_or_default();
     let _ = child.kill();
     let _ = child.wait();
     assert!(
         found.is_some(),
-        "a point with the hand cursor on the left of the window"
+        "a click down the left of the window opened something"
     );
-    assert!(opened, "the handler ran within 10 s ({found:?})");
-    assert_eq!(text, format!("{ITEM_URL}\n"), "exactly the item's URL");
+    assert!(
+        !text.is_empty() && text.lines().all(|l| l == ITEM_URL),
+        "exactly the item's URL ({found:?}): {text:?}"
+    );
     assert_ne!(
         after, h,
         "the window did not take the focus (before: {before:?})"
@@ -1553,8 +1555,8 @@ mod click {
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CURSORINFO, FindWindowW, GetClientRect, GetCursorInfo, GetForegroundWindow, GetWindowTextW,
-        IDC_HAND, IsWindowVisible, LoadCursorW, SetCursorPos,
+        FindWindowW, GetClientRect, GetForegroundWindow, GetWindowTextW, IsWindowVisible,
+        SetCursorPos,
     };
     use windows::core::{PCWSTR, w};
 
@@ -1586,25 +1588,11 @@ mod click {
         unsafe { GetForegroundWindow() }
     }
 
-    /// Whether the mouse pointer shows the hand (the window shows it over its switch and its links).
-    fn hand() -> bool {
-        // SAFETY: valid out parameter; the hand is a shared system cursor, the same handle in every process.
-        unsafe {
-            let mut ci = CURSORINFO {
-                cbSize: size_of::<CURSORINFO>() as u32,
-                ..Default::default()
-            };
-            let Ok(hand) = LoadCursorW(None, IDC_HAND) else {
-                return false;
-            };
-            GetCursorInfo(&mut ci).is_ok() && ci.hCursor == hand
-        }
-    }
-
-    /// Finds the first link from the top, moving the pointer down the left of the text (40 DIPs in: past the padding
-    /// and the references' indent, away from the switch at the bottom right) until it shows the hand, and clicks there.
-    /// Returns the client point it clicked.
-    pub fn click_first_link(h: HWND) -> Option<(i32, i32)> {
+    /// Clicks down the left of the text, 40 DIPs in (past the padding and the references' indent, away from the switch
+    /// at the bottom right), every 6 DIPs (less than a line), until `done` says that a click opened something; it waits
+    /// up to half a second after each click. The pointer's shape cannot tell where the link is: the runner's desktop has
+    /// no visible pointer. Returns the client point of the click after which it happened.
+    pub fn click_down_until(h: HWND, done: &dyn Fn() -> bool) -> Option<(i32, i32)> {
         // SAFETY: Win32 calls with valid arguments; the window belongs to another process of this desktop.
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1612,23 +1600,22 @@ mod click {
             let _ = GetClientRect(h, &mut rc);
             let k = GetDpiForWindow(h).max(96) as f32 / 96.0;
             let x = (40.0 * k).round() as i32;
-            let step = (2.0 * k).round().max(1.0) as i32;
-            let mut y = 0;
+            let step = (6.0 * k).round().max(1.0) as i32;
+            let mut y = step;
             while y < rc.bottom {
                 let mut pt = POINT { x, y };
                 let _ = ClientToScreen(h, &mut pt);
                 let _ = SetCursorPos(pt.x, pt.y);
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                if hand() {
-                    // a little lower, inside the line rather than on its top edge
-                    let mut pt = POINT { x, y: y + 2 * step };
-                    let _ = ClientToScreen(h, &mut pt);
-                    let _ = SetCursorPos(pt.x, pt.y);
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    mouse_event(LEFTDOWN, 0, 0, 0, 0);
-                    std::thread::sleep(std::time::Duration::from_millis(60));
-                    mouse_event(LEFTUP, 0, 0, 0, 0);
-                    return Some((x, y + 2 * step));
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                mouse_event(LEFTDOWN, 0, 0, 0, 0);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                mouse_event(LEFTUP, 0, 0, 0, 0);
+                let t0 = std::time::Instant::now();
+                while t0.elapsed() < std::time::Duration::from_millis(500) {
+                    if done() {
+                        return Some((x, y));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
                 }
                 y += step;
             }

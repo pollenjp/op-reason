@@ -337,22 +337,13 @@ public static class LinkClick
 {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pt; }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
-    [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr inst, IntPtr name);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
-    public static bool Hand()
-    {
-        CURSORINFO ci = new CURSORINFO();
-        ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
-        return GetCursorInfo(ref ci) && ci.hCursor == LoadCursor(IntPtr.Zero, (IntPtr)32649);
-    }
 }
 '@
   $key = 'HKCU:\Software\Classes\onepassword'
@@ -369,7 +360,7 @@ public static class LinkClick
       [System.IO.File]::WriteAllText($accountFile, $accountJson)
       Reset-Fake
       $env:FAKE_NO_STDIN = '1'
-      $env:FAKE_SLEEP_MS = '15000'
+      $env:FAKE_SLEEP_MS = '40000'
       $env:OPREASON_PAYLOAD = New-Payload 'desktop' @('inject') 'en' 'held' 90 'inherit' (New-RefsFacts 'click a link' 'op inject')
       $proc = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $launcher) -PassThru -WindowStyle Hidden
       Remove-Item Env:OPREASON_PAYLOAD -ErrorAction SilentlyContinue
@@ -380,44 +371,42 @@ public static class LinkClick
       }
       Start-Sleep -Milliseconds 800
       $before = [LinkClick]::GetForegroundWindow()
+      # Click down the left of the text, 40 DIPs in (past the padding and the references' indent), every 6 DIPs (less
+      # than a line), until the handler has written; half a second after each click. The pointer's shape cannot tell
+      # where the link is: the runner's desktop has no visible pointer.
       $found = $null
       if ($h -ne [IntPtr]::Zero) {
         $rc = New-Object LinkClick+RECT
         [void][LinkClick]::GetClientRect($h, [ref]$rc)
         $scale = [Math]::Max(96, [LinkClick]::GetDpiForWindow($h)) / 96.0
         $x = [int][Math]::Round(40 * $scale)
-        $step = [int][Math]::Max(1, [Math]::Round(2 * $scale))
-        for ($y = 0; $y -lt $rc.Bottom -and $null -eq $found; $y += $step) {
+        $step = [int][Math]::Max(1, [Math]::Round(6 * $scale))
+        for ($y = $step; $y -lt $rc.Bottom -and $null -eq $found; $y += $step) {
           $pt = New-Object LinkClick+POINT
           $pt.X = $x
           $pt.Y = $y
           [void][LinkClick]::ClientToScreen($h, [ref]$pt)
           [void][LinkClick]::SetCursorPos($pt.X, $pt.Y)
-          Start-Sleep -Milliseconds 30
-          if ([LinkClick]::Hand()) {
-            $pt = New-Object LinkClick+POINT
-            $pt.X = $x
-            $pt.Y = $y + 2 * $step
-            [void][LinkClick]::ClientToScreen($h, [ref]$pt)
-            [void][LinkClick]::SetCursorPos($pt.X, $pt.Y)
-            Start-Sleep -Milliseconds 100
-            [LinkClick]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
-            Start-Sleep -Milliseconds 60
-            [LinkClick]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
-            $found = "client ($x, $($y + 2 * $step))"
+          Start-Sleep -Milliseconds 60
+          [LinkClick]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
+          Start-Sleep -Milliseconds 60
+          [LinkClick]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+          for ($w = 0; $w -lt 20 -and $null -eq $found; $w++) {
+            Start-Sleep -Milliseconds 25
+            if (Test-Path -LiteralPath $opened) { $found = "client ($x, $y)" }
           }
         }
       }
-      $text = ''
-      for ($k = 0; $k -lt 100 -and -not $text; $k++) {
-        Start-Sleep -Milliseconds 100
-        if (Test-Path -LiteralPath $opened) { $text = [System.IO.File]::ReadAllText($opened) }
-      }
+      # a click on the link just before the handler wrote may have opened it again
+      Start-Sleep -Seconds 2
+      $lines = @()
+      if (Test-Path -LiteralPath $opened) { $lines = @([System.IO.File]::ReadAllLines($opened) | Where-Object { $_ }) }
       $after = [LinkClick]::GetForegroundWindow()
       try { $proc.Kill() } catch { }
       $proc.WaitForExit()
+      $onlyItem = ($lines.Count -gt 0 -and @($lines | Where-Object { $_ -cne $itemUrl }).Count -eq 0)
       Check 'a real click on a link opens exactly the item''s URL; the window does not take the focus' (
-        $h -ne [IntPtr]::Zero -and $null -ne $found -and $text -ceq ($itemUrl + "`n") -and $after -ne $h) "window=$h found=$found opened=[$text] before=$before after=$after"
+        $h -ne [IntPtr]::Zero -and $null -ne $found -and $onlyItem -and $after -ne $h) "window=$h found=$found opened=[$($lines -join '|')] before=$before after=$after"
     } finally {
       Remove-Item -LiteralPath $key -Recurse -Force -ErrorAction SilentlyContinue
       Remove-Item -Force -ErrorAction SilentlyContinue $accountFile
