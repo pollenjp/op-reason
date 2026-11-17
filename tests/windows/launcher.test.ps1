@@ -406,6 +406,8 @@ public static class LinkClick
       $after = [LinkClick]::GetForegroundWindow()
       try { $proc.Kill() } catch { }
       $proc.WaitForExit()
+      # the launcher's op.exe (still sleeping) would show as another op.exe in the windows that follow
+      Get-Process -Name op -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $opExe } | Stop-Process -Force -ErrorAction SilentlyContinue
       $onlyItem = ($lines.Count -gt 0 -and @($lines | Where-Object { $_ -cne $itemUrl -and $_ -cne $itemUrlShell }).Count -eq 0)
       Check 'a real click on a link opens exactly the item''s URL; the window does not take the focus' (
         $h -ne [IntPtr]::Zero -and $null -ne $found -and $onlyItem -and $after -ne $h) "window=$h found=$found opened=[$($lines -join '|')] before=$before after=$after"

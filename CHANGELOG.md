@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **The window lists the references a call reads.** Under the command line: the `op://` references of the arguments,
+  of the template of `op inject` (its `-i` file, or the template on stdin) and of the `--env-file`s of `op run`; eight
+  of them, then "and N more". The log's `start` record keeps them all (`refs`), and `op-reason-log` adds their number
+  to the command when they came from a file or stdin. The PowerShell entry lists those of the arguments and files (it
+  never reads stdin).
+- **A reference whose vault and item are IDs opens the item in the 1Password app.** Press and release on it; the
+  window does not take the focus from the approval prompt (also the launcher's window now). The link needs the account
+  ID: the end-of-call `op whoami` now runs with `--format json`, and op-reason keeps the account ID and the sign-in
+  address (nothing else) in `%LOCALAPPDATA%\op-reason\account.json`. So the first call has no links, and its window
+  says why.
+- From WSL, `op inject` without `-i` now has its stdin read by op-reason first (when it is not a terminal), which hands
+  the same bytes to op. The payload gets an optional `facts.refs` (version 1 still: an older runner shows no list).
+
 ## 0.2.0 — 2026-11-16
 
 - **The window chooses the language.** The window of `op-reason.exe` has a switch, `English | 日本語`, at its bottom

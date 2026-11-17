@@ -14,8 +14,9 @@ description: >-
 - needs a reason: `op --reason "<one sentence>" <op arguments…>`;
 - starts a fresh process for `op.exe`, so the 1Password approval prompt appears for **every** call and covers that
   call only;
-- shows a window next to the prompt with the caller (you), the place (repository, branch, directory), the reason and
-  the command; the person approves or denies in 1Password's own prompt;
+- shows a window next to the prompt with the caller (you), the place (repository, branch, directory), the reason, the
+  command and the `op://` references it reads (from the arguments, an `op inject` template and `op run` env files);
+  the person approves or denies in 1Password's own prompt;
 - is logged (`op-reason-log`).
 
 On Windows the command is `op-reason` (`op-reason.exe`, or `op-reason.ps1` / `op-reason.cmd` where Smart App Control
@@ -29,7 +30,8 @@ op --reason "read the staging DB password to run the migration" read "op://Priva
 ```
 
 - Write the reason as one sentence: what for, and what you read or write. The person reads it before approving;
-  a vague reason ("needed", "test") gets denied.
+  a vague reason ("needed", "test") gets denied. The window lists the references itself, so the reason need not
+  repeat them; say what they are for.
 - `--reason "<text>"` or `--reason=<text>`, anywhere before `--` (after `--`, the arguments belong to op).
 - One approval covers one call. Put what a task needs into as few calls as possible (all references of a file in one
   `op inject`, all fields in one `op item get --format json` that you do not print).

@@ -5,6 +5,7 @@ English: [manual-verification.md](manual-verification.md)
 CI は偽の `op-reason.exe`・`powershell.exe`・`op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で
 動かず、CI の Windows の runner では WSL2 も動きません)。ここの確認には、人と、1Password のアプリと 1Password CLI の入った
 Windows と、WSL が要ります。WSL の確認 (1〜14 と R) で 30 分ほどかかり、承認の画面が 15 回ほど出ます。
+参照の一覧の確認 (F) は 10 分ほど足します。
 
 ## 確かめる間の決まり
 
@@ -82,6 +83,29 @@ WSL で `unset OPREASON_LANG; rm -f ~/.local/state/op-reason/lang.json`、PowerS
 | L5 | `op --reason "確認 L5: 英語に戻す" vault list >/dev/null` の窓で English を押し、許可。続けて PowerShell で `op-reason.exe --reason "check L5 from Windows" vault list > $null`、許可 | Windows から呼んだ窓が英語で、切り替えもある (WSL と Windows で選んだ言語は 1 つ)。`op-reason.exe --log` も英語 |
 | L6 | `OPREASON_RUNNER=launcher OPREASON_LANG=ja op --reason "確認 L6: launcher も選んだ言語を読む" vault list >/dev/null`、許可 | launcher の窓 (WPF の方) が、選んだ言語の英語で出て、切り替えは無い |
 | L7 | この節の始めのとおりに 2 つのファイルを消す。`OPREASON_LANG=ja op --reason "確認 L7: 戻す" vault list >/dev/null`、許可。`unset OPREASON_LANG` してもう一度、許可 | 1 回目は日本語 (選んでいない間は `OPREASON_LANG` が効く)、2 回目は英語 |
+
+## 窓の参照の一覧を確かめること
+
+窓には呼び出しが読む `op://` の参照が並び、ID の参照を押すと 1Password のアプリでその項目が開きます
+([2026-11-17-refs-in-window-design.md](superpowers/specs/2026-11-17-refs-in-window-design.md))。CI は偽の `op.exe` と偽の
+`onepassword:` の受け口で一覧・アカウントの控え・クリックを確かめますが、本物のアプリでは確かめられません。10 分ほどかかり、
+承認の画面が 7 回ほど出ます。F2 のほかは承認の画面を**拒否**します (窓は画面より先に出るので、何も読みません)。
+
+最初に: 1Password で見られて困らない項目を選び、「…」メニューの「プライベートリンクをコピー」を押して、`v=` の後ろの値 (vault
+の ID) と `i=` の後ろの値 (項目の ID) を控えます (リンクはほかに貼りません)。WSL の空のフォルダで
+`V=<v の値>; I=<i の値>` と
+`printf 'A={{ op://%s/%s/password }}\nB={{ op://Private/no-such-item/password }}\n' "$V" "$I" > tpl.env` を打ちます。
+PowerShell で `Remove-Item "$env:LOCALAPPDATA\op-reason\account.json" -ErrorAction SilentlyContinue` を打ちます。
+
+| # | すること | 期待すること |
+| --- | --- | --- |
+| F1 | `op --reason "check F1: references, first call" inject -i tpl.env`、拒否 | コマンドの行の下に「読む参照 (2 件・tpl.env から):」、字下げした 2 つの参照が黒で (リンクなし)、「項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (…)」の行 |
+| F2 | `op --reason "check F2: learn the account" vault list >/dev/null`、許可 | `Get-Content "$env:LOCALAPPDATA\op-reason\account.json"` が `{"v":1,"accounts":[{"id":"…","host":"…"}]}` を出す。`id` はプライベートリンクの `a=`、`host` はサインインのアドレスで、ほかには何も無い (メールアドレスも無い) |
+| F3 | `op --reason "check F3: a link" inject -i tpl.env`。1 つ目の参照は青の下線付きで、上に置くと手のポインタになる。2 つ目は黒のまま。リンクが付かない旨の行は無い。承認の画面が出ている間に 1Password で別の項目を選んでから、リンクを押す。承認の画面を見てから拒否 | リンクの項目が 1Password のアプリで開く (アプリが前に出るかを控える)。op-reason の窓はフォーカスを取らない (タイトルバーが灰色のまま)。承認の画面がどうなるかを控える (残っているか、まだ答えられるか) |
+| F4 | 1Password をロックし、F3 のコマンドをもう一度打ち、承認の画面がロックの解除を求めている間にリンクを押す | アプリが何を出すか (解除、解除した後の項目、承認の画面) と、承認の画面にまだ答えられるかを控える。拒否 |
+| F5 | PowerShell で、`tpl.env` を写したフォルダで `Get-Content tpl.env \| op-reason.exe --reason "check F5: a template on stdin" inject`、拒否 | 「読む参照 (2 件・標準入力 から)」とリンク (exe が stdin のテンプレートを読んだ) |
+| F6 | `OPREASON_RUNNER=launcher op --reason "check F6: the launcher" inject -i tpl.env`、リンクを押し、拒否 | launcher の (WPF の) 窓にも同じ一覧とリンクが出る。項目が開く。窓はフォーカスを取らない |
+| F7 | `op-reason-log`、続けて `op-reason-log --json \| tail -n 1` | F1・F3・F6 の行の末尾に「(参照 2 件)」。最後の JSON の `refs.list` に 2 つの参照がある |
 
 ## Windows で確かめること: op-reason.exe
 

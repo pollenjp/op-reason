@@ -5,6 +5,7 @@
 CI runs op-reason with fake `op-reason.exe`, `powershell.exe` and `op.exe` only: the 1Password desktop app cannot run
 there, and the Windows runners have no WSL2. These checks need a person, a Windows machine with the 1Password app and
 the 1Password CLI, and WSL. The WSL checks (1–14 and R) take about 30 minutes and show about fifteen approval prompts.
+The checks of the references (F) add about ten minutes.
 
 ## Rules while checking
 
@@ -82,6 +83,30 @@ PowerShell `Remove-Item "$env:LOCALAPPDATA\op-reason\settings.json" -ErrorAction
 | L5 | Click English in the window of `op --reason "check L5: back to English" vault list >/dev/null`, approve. Then in PowerShell: `op-reason.exe --reason "check L5 from Windows" vault list > $null`, approve | The window of the call from Windows is in English and has the switch too (one choice for WSL and Windows); `op-reason.exe --log` is in English |
 | L6 | `OPREASON_RUNNER=launcher OPREASON_LANG=ja op --reason "check L6: the launcher reads the choice" vault list >/dev/null`, approve | The launcher's window (the WPF one) is in English, the chosen language, and has no switch |
 | L7 | Delete both files as at the start of this section; `OPREASON_LANG=ja op --reason "check L7: reset" vault list >/dev/null`, approve; `unset OPREASON_LANG` and run it again, approve | First Japanese (`OPREASON_LANG` counts again while nothing is chosen), then English |
+
+## Checks of the references in the window
+
+The window lists the `op://` references a call reads, and an ID reference opens its item in the 1Password app
+([2026-11-17-refs-in-window-design.md](superpowers/specs/2026-11-17-refs-in-window-design.md)). CI checks the list,
+the account copy and a click with a fake `op.exe` and a fake `onepassword:` handler, but not the real app. These take
+about 10 minutes and show about seven prompts. **Deny** every prompt except F2: the window shows before the prompt, so
+nothing is read.
+
+First: in 1Password, pick an item you do not mind seeing, choose "Copy Private Link" from its "…" menu, and note the
+values after `v=` (the vault ID) and `i=` (the item ID); do not paste the link anywhere else. In WSL, in an empty
+folder, `V=<the v value>; I=<the i value>` and
+`printf 'A={{ op://%s/%s/password }}\nB={{ op://Private/no-such-item/password }}\n' "$V" "$I" > tpl.env`. In
+PowerShell, `Remove-Item "$env:LOCALAPPDATA\op-reason\account.json" -ErrorAction SilentlyContinue`.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| F1 | `op --reason "check F1: references, first call" inject -i tpl.env`, deny | Under the command line: "References to read (2, from tpl.env):", the two references indented and black (no link), and the line "Links to the items appear once an approved call has finished (…)" |
+| F2 | `op --reason "check F2: learn the account" vault list >/dev/null`, approve | `Get-Content "$env:LOCALAPPDATA\op-reason\account.json"` shows `{"v":1,"accounts":[{"id":"…","host":"…"}]}` with the private link's `a=` as `id` and your sign-in address as `host`, and nothing else (no email address) |
+| F3 | `op --reason "check F3: a link" inject -i tpl.env`. The first reference is blue and underlined, with the hand pointer over it; the second stays black; no hint line. While the prompt is open, select another item in 1Password, then click the link. Look at the prompt, then deny | The item of the link opens in the 1Password app (note whether the app comes to the front). op-reason's window does not take the focus (its caption stays gray). Note what happens to the prompt: is it still there and can it still be answered? |
+| F4 | Lock 1Password, run the command of F3 again, and click the link while the prompt asks to unlock | Note what the app shows (the unlock, the item after it, the prompt) and whether the prompt can still be answered; deny |
+| F5 | In PowerShell, in a folder with a copy of `tpl.env`: `Get-Content tpl.env \| op-reason.exe --reason "check F5: a template on stdin" inject`, deny | "References to read (2, from stdin)" with the link (the exe read the template from stdin) |
+| F6 | `OPREASON_RUNNER=launcher op --reason "check F6: the launcher" inject -i tpl.env`; click the link; deny | The launcher's (WPF) window shows the same block and link; the item opens; the window does not take the focus |
+| F7 | `op-reason-log`, then `op-reason-log --json \| tail -n 1` | The rows of F1, F3 and F6 end with "(2 refs)"; the last JSON object has both references in `refs.list` |
 
 ## Checks on Windows: op-reason.exe
 

@@ -153,7 +153,11 @@ arguments are in the command already); the count is never cut off with the comma
   `WS_EX_NOACTIVATE` and answers `WM_MOUSEACTIVATE` with `MA_NOACTIVATE`, as for the switch.
 - **The click** (the launcher): a WPF `Hyperlink` (not focusable, so that WPF does not call `SetFocus`, which would
   activate the window), handled on `Click`. The window gets a message hook that answers `WM_MOUSEACTIVATE` with
-  `MA_NOACTIVATE`. The launcher's window has had no clickable part until now.
+  `MA_NOACTIVATE`: the message filter of WPF's own `Popup` (compiled code that does exactly that, found by reflection),
+  because a PowerShell script block cannot be that hook (PowerShell does not write back the hook's `ref bool handled`,
+  so the window still activated on CI) and a WPF window cannot get `WS_EX_NOACTIVATE` without compiled code (an
+  `HwndSource` created with that style did not show on the Windows runner). When the filter is missing, a click
+  activates the window, as it always could. The launcher's window has had no clickable part until now.
 - The texts are in both tables (`ui.rs` and the launcher's `Get-Texts`, kept equal by `table_matches_the_launcher`):
   `refs`, `refsArgs`, `refsStdin`, `refsSep`, `refsMore`, `refsHint`.
 
@@ -181,6 +185,10 @@ private link of one item and opened each with the Windows handler, so that the l
 The shapes it reported: `a` 26 uppercase letters and digits, `v` and `i` 26 lowercase letters and digits, `h` a host
 under `1password.com`. Both forms need the account ID; `view-item` needs nothing else (`open/i` needs the sign-in
 address too), and it is the form 1Password's own VS Code extension opens. So: `view-item`, with the account ID.
+
+The Windows shell hands the handler `onepassword://view-item/?a=…` (it adds the `/` of the empty path; seen on CI, from
+both `ShellExecuteW` and `Process.Start`). Browsers open external links through the same shell (`ShellExecuteEx`), so
+that is presumably also what the app received in the check above.
 
 ### 5.2 The account copy (plan A)
 
@@ -274,18 +282,21 @@ The WSL executable and the Windows zip are installed separately, so either may b
   a second call has links after the first call's whoami.
 - `crates/op-reason-win/tests/exe.rs` (Windows): both faces show the block (`ui.refs`), the entry face reads a template
   on stdin and op.exe gets the same bytes, whoami writes `account.json`; on CI only (it moves the mouse and registers a
-  handler for `onepassword:` in the runner's HKCU): a real click on a link opens exactly the expected URL (a fake
-  handler records it) and does not make the window the foreground window.
+  handler for `onepassword:` in the runner's HKCU, unless one exists): a real click on a link opens exactly the
+  expected URL (a fake handler records it; the `/` the shell adds is accepted) and does not make the window the
+  foreground window. The runner's desktop shows no pointer, so the test finds the link by clicking down the left of
+  the text until the handler has written.
 - `tests/windows/launcher.test.ps1` and `entry.test.ps1`: the same for the launcher (with the CI-only click) and the
   PowerShell entry (references from arguments and files, never stdin).
 - The screenshot jobs: windows with linked and plain references, "and N more", and the hint.
 
 ## 10. Manual checks
 
-`docs/manual-verification.md` gets R1–R6: the block for `op read`, `op inject -i`, `op inject` from stdin and
-`op run --env-file`; the hint on the first call and links after it; a click opens the item; a click while the 1Password
-prompt is up leaves the prompt answerable and the window inactive, with 1Password locked and unlocked; the launcher
-(the fallback) does the same; `op-reason-log` shows the count and `--json` the list.
+`docs/manual-verification.md` gets F1–F7 (the letter R is taken): the block of a template file, with the hint on the
+first call; the account copy after an approved call; a link that opens the item while the prompt is up, with
+1Password unlocked and locked, the window staying inactive; a template on stdin through `op-reason.exe`; the launcher
+(the fallback) doing the same; `op-reason-log` with the count and `--json` with the list. Every prompt but one is
+denied: the window shows before the prompt, so nothing is read.
 
 ## 11. Implementer's decisions
 
@@ -307,6 +318,10 @@ prompt is up leaves the prompt answerable and the window inactive, with 1Passwor
 | 8 lines in the window, 1000 in the log, clips of 200 and 300 characters | the window stays short; the log keeps all in practice and stays bounded |
 | `ui.refs` says `linked`, not the URL | the status needs no account ID |
 | The launcher's link is a not focusable `Hyperlink` with a `WM_MOUSEACTIVATE` hook | a focusable one would make WPF call `SetFocus`, which activates the window |
+| The hook is WPF's `Popup` filter, found by reflection | a script block cannot set the hook's `ref` parameter (seen on CI); compiled code (`Add-Type`) costs about a second per call and may be blocked where scripts run in constrained language; an `HwndSource` with `WS_EX_NOACTIVATE` did not show on the runner. Windows PowerShell 5.1 runs on .NET Framework 4.8, whose WPF no longer changes |
+| The tests accept `view-item/?` as well as `view-item?` | the Windows shell adds the `/`; both name the same item |
+| The PowerShell entry scans templates with one regular expression | a loop over characters is slow in PowerShell; the shared table holds it to the core's scanner |
+| `op-reason-log` adds the count only when a file or stdin gave references | those in the arguments are in the command already |
 | `op-reason.exe` opens on a thread of its own after `AllowSetForegroundWindow(ASFW_ANY)` | the window never waits for the shell, and 1Password may come to the front |
 | The real click and the `onepassword:` handler are tested on CI only | they move the mouse and would replace the user's 1Password handler |
 | The README animations stay as they are | the screenshots of the pull request show the block; the animations are a separate, larger change |
@@ -315,7 +330,11 @@ prompt is up leaves the prompt answerable and the window inactive, with 1Passwor
 ## 12. Checked with the real app, and not yet
 
 - Checked: the six candidate URLs (§5.1), on the user's Windows with one account.
+- Checked on CI (a Windows runner, a fake `op.exe` and a fake `onepassword:` handler): a real click on a link in
+  `op-reason.exe`'s window and in the launcher's window hands the handler the item's URL, and neither window becomes
+  the foreground window.
 - Not yet (needs a build of this change installed on the user's Windows): the whole path (whoami → `account.json` →
-  a link that opens the item); that `op whoami --format json` names its fields `account_uuid` and `url` (1Password's
-  `op-js` and VS Code extension read those names); a click while the approval prompt is up, with 1Password locked and
-  unlocked; that 1Password comes to the front from the launcher's window; more than one account.
+  a link that opens the item, in the form the shell hands on); that `op whoami --format json` names its fields
+  `account_uuid` and `url` (1Password's `op-js` and VS Code extension read those names); a click while the approval
+  prompt is up, with 1Password locked and unlocked; that 1Password comes to the front from both windows; more than
+  one account.
