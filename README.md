@@ -230,8 +230,10 @@ References to read (10, from app.env.tpl):
 ```
 
 - A reference whose vault and item are IDs (26 lowercase letters or digits, as `op item get … --format json` and a
-  private link show them) is a link: press and release on it, and the item opens in the 1Password app. The click does
-  not take the focus from the approval prompt. References with names or variables (`$APP_ENV`) stay plain text.
+  private link show them) is a link: press and release on it, and the 1Password app comes to the front with the item
+  open, while the approval prompt stays in front of it and can still be answered. op-reason's window never takes the
+  focus. While 1Password is locked, a click changes nothing. References with names or variables (`$APP_ENV`) stay
+  plain text.
 - The link needs the account ID. At the end of each approved call op-reason already runs `op whoami`; it now reads the
   account ID and the sign-in address from its JSON output and keeps only those two in
   `%LOCALAPPDATA%\op-reason\account.json`. So **the first call has no links** (the window says why), and later calls

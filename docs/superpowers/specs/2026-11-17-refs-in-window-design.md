@@ -188,7 +188,8 @@ address too), and it is the form 1Password's own VS Code extension opens. So: `v
 
 The Windows shell hands the handler `onepassword://view-item/?a=…` (it adds the `/` of the empty path; seen on CI, from
 both `ShellExecuteW` and `Process.Start`). Browsers open external links through the same shell (`ShellExecuteEx`), so
-that is presumably also what the app received in the check above.
+that is presumably also what the app received in the check above. With a build of this change (§12), a click opened
+the item from both windows through the same shell.
 
 ### 5.2 The account copy (plan A)
 
@@ -231,7 +232,9 @@ op-reason learns the account ID without a new prompt and without a new `op.exe` 
   no Win32 function itself (the launcher compiles no code); Windows lets a process started from a click come to the
   front.
 - A click while the 1Password approval prompt is up opens the item in the app: that is what the click is for. What
-  the app then does with its prompt cannot be tested in CI; `docs/manual-verification.md` gets the check.
+  the app then does with its prompt cannot be tested in CI; `docs/manual-verification.md` gets the check. Seen with
+  the real app (§12): the app comes to the front with the item, and its prompt stays in front of it and can still be
+  answered; while 1Password is locked, a click changes nothing (the app stays locked, in the back).
 
 ## 6. Mixed versions
 
@@ -333,8 +336,20 @@ denied: the window shows before the prompt, so nothing is read.
 - Checked on CI (a Windows runner, a fake `op.exe` and a fake `onepassword:` handler): a real click on a link in
   `op-reason.exe`'s window and in the launcher's window hands the handler the item's URL, and neither window becomes
   the foreground window.
-- Not yet (needs a build of this change installed on the user's Windows): the whole path (whoami → `account.json` →
-  a link that opens the item, in the form the shell hands on); that `op whoami --format json` names its fields
-  `account_uuid` and `url` (1Password's `op-js` and VS Code extension read those names); a click while the approval
-  prompt is up, with 1Password locked and unlocked; that 1Password comes to the front from both windows; more than
-  one account.
+- Checked with a build of this change on the user's Windows (2026-11-17; the checks F1–F7 of
+  `docs/manual-verification.md`; op-reason 0.2.0 at the pull request's head, 1Password CLI 2.41.1, the 1Password app
+  8.12.44.33, Windows build 26300.9711, one account):
+  - The first call listed both references of a template file, plain, with the hint (F1).
+  - An approved call wrote `account.json` with an `id` of 26 uppercase letters and digits, a `host` under
+    `1password.com` and nothing else: `op whoami --format json` names its fields `account_uuid` and `url` (F2).
+  - The next call linked the ID reference and left the name reference plain, without the hint. A click opened the
+    item through the shell (which hands on the `view-item/?` form, as seen on CI); the app came to the front and its
+    prompt stayed in front of it, still answerable; op-reason's window did not become the foreground window (F3).
+  - With 1Password locked, a click changed nothing: the app stayed locked, in the back, and the prompt could still
+    be answered (F4).
+  - `op-reason.exe` listed and linked the references of a template read from stdin (F5).
+  - The launcher's window did as in F3; a log of the foreground window every 0.1 s showed that it never became the
+    foreground window (F6).
+  - `op-reason-log` added the count to the rows of F1, F3, F4 and F6, and `--json` had the list, for the calls from
+    WSL and from Windows (F7).
+- Not yet: more than one account (the machine has one).

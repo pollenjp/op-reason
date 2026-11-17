@@ -29,6 +29,9 @@ export OPREASON_EXE=/mnt/c/Users/<あなた>/<展開したフォルダー>/op-re
 export OPREASON_LANG=ja  # 英語なら en
 ```
 
+`cargo build` が ``linker `cc` not found`` で止まる (C のコンパイラーが無い) マシンでは、代わりに repo の開発用の
+shell の中で build します: `nix develop "path:$PWD/nix" --command cargo build --release`。
+
 1〜14 は既定 (`OPREASON_RUNNER` なし) のまま、`op-reason.exe` を通して確かめます。窓は Direct2D の窓です
 (launcher の WPF の窓と見た目が少し違います)。
 
@@ -90,6 +93,7 @@ WSL で `unset OPREASON_LANG; rm -f ~/.local/state/op-reason/lang.json`、PowerS
 ([2026-11-17-refs-in-window-design.md](superpowers/specs/2026-11-17-refs-in-window-design.md))。CI は偽の `op.exe` と偽の
 `onepassword:` の受け口で一覧・アカウントの控え・クリックを確かめますが、本物のアプリでは確かめられません。10 分ほどかかり、
 承認の画面が 7 回ほど出ます。F2 のほかは承認の画面を**拒否**します (窓は画面より先に出るので、何も読みません)。
+`inject` の行は op の出力を `/dev/null` (PowerShell では `$null`) に捨てます。誤って許可しても、値は端末に出ません。
 
 最初に: 1Password で見られて困らない項目を選び、「…」メニューの「プライベートリンクをコピー」を押して、`v=` の後ろの値 (vault
 の ID) と `i=` の後ろの値 (項目の ID) を控えます (リンクはほかに貼りません)。WSL の空のフォルダで
@@ -99,13 +103,13 @@ PowerShell で `Remove-Item "$env:LOCALAPPDATA\op-reason\account.json" -ErrorAct
 
 | # | すること | 期待すること |
 | --- | --- | --- |
-| F1 | `op --reason "check F1: references, first call" inject -i tpl.env`、拒否 | コマンドの行の下に「読む参照 (2 件・tpl.env から):」、字下げした 2 つの参照が黒で (リンクなし)、「項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (…)」の行 |
+| F1 | `op --reason "check F1: references, first call" inject -i tpl.env >/dev/null`、拒否 | コマンドの行の下に「読む参照 (2 件・tpl.env から):」、字下げした 2 つの参照が黒で (リンクなし)、「項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (…)」の行 |
 | F2 | `op --reason "check F2: learn the account" vault list >/dev/null`、許可 | `Get-Content "$env:LOCALAPPDATA\op-reason\account.json"` が `{"v":1,"accounts":[{"id":"…","host":"…"}]}` を出す。`id` はプライベートリンクの `a=`、`host` はサインインのアドレスで、ほかには何も無い (メールアドレスも無い) |
-| F3 | `op --reason "check F3: a link" inject -i tpl.env`。1 つ目の参照は青の下線付きで、上に置くと手のポインタになる。2 つ目は黒のまま。リンクが付かない旨の行は無い。承認の画面が出ている間に 1Password で別の項目を選んでから、リンクを押す。承認の画面を見てから拒否 | リンクの項目が 1Password のアプリで開く (アプリが前に出るかを控える)。op-reason の窓はフォーカスを取らない (タイトルバーが灰色のまま)。承認の画面がどうなるかを控える (残っているか、まだ答えられるか) |
-| F4 | 1Password をロックし、F3 のコマンドをもう一度打ち、承認の画面がロックの解除を求めている間にリンクを押す | アプリが何を出すか (解除、解除した後の項目、承認の画面) と、承認の画面にまだ答えられるかを控える。拒否 |
-| F5 | PowerShell で、`tpl.env` を写したフォルダで `Get-Content tpl.env \| op-reason.exe --reason "check F5: a template on stdin" inject`、拒否 | 「読む参照 (2 件・標準入力 から)」とリンク (exe が stdin のテンプレートを読んだ) |
-| F6 | `OPREASON_RUNNER=launcher op --reason "check F6: the launcher" inject -i tpl.env`、リンクを押し、拒否 | launcher の (WPF の) 窓にも同じ一覧とリンクが出る。項目が開く。窓はフォーカスを取らない |
-| F7 | `op-reason-log`、続けて `op-reason-log --json \| tail -n 1` | F1・F3・F6 の行の末尾に「(参照 2 件)」。最後の JSON の `refs.list` に 2 つの参照がある |
+| F3 | `op --reason "check F3: a link" inject -i tpl.env >/dev/null`。1 つ目の参照は青の下線付きで、上に置くと手のポインタになる。2 つ目は黒のまま。リンクが付かない旨の行は無い。承認の画面が出ている間に 1Password で別の項目を選んでから、リンクを押す。承認の画面を見てから拒否 | 1Password のアプリがリンクの項目を開いて前に出る。承認の画面はアプリの手前に残り、まだ答えられる。op-reason の窓はフォーカスを取らない (タイトルバーが灰色のまま) |
+| F4 | 1Password をロックし、F3 のコマンドをもう一度打ち、承認の画面がロックの解除を求めている間にリンクを押す | 何も前に出ない: アプリはロックのまま、後ろにある。承認の画面は残り、まだ答えられる。拒否 |
+| F5 | PowerShell で、`tpl.env` を写したフォルダで `Get-Content tpl.env \| op-reason.exe --reason "check F5: a template on stdin" inject > $null`、拒否 | 「読む参照 (2 件・標準入力 から)」とリンク (exe が stdin のテンプレートを読んだ) |
+| F6 | `OPREASON_RUNNER=launcher op --reason "check F6: the launcher" inject -i tpl.env >/dev/null`、リンクを押し、拒否 | launcher の (WPF の) 窓にも同じ一覧とリンクが出る。押すとアプリが項目を開いて前に出て、承認の画面はその手前に残る。launcher の窓は一度も前面の窓にならない |
+| F7 | `op-reason-log`、続けて `op-reason-log --json \| tail -n 1` | F1・F3・F4・F6 の行の末尾に「(参照 2 件)」。最後の JSON の `refs.list` に 2 つの参照がある |
 
 ## Windows で確かめること: op-reason.exe
 
