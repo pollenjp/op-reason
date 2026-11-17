@@ -106,19 +106,36 @@ fn mask_word(a: &str) -> String {
     }
 }
 
-/// The program's file name, then the arguments as `op` calls show them (quoted when they hold anything but
-/// `[A-Za-z0-9_./:=@%+,*?-]`; control characters as spaces).
+/// The program's file name, then the arguments: as they are when they hold only `[A-Za-z0-9_./:=@%+,*?\\-]` (a
+/// Windows path stays as it was typed), otherwise in double quotes with `"` escaped as on a Windows command line;
+/// control characters as spaces.
 pub fn display(args: &[String]) -> String {
     let Some((program, rest)) = args.split_first() else {
         return String::new();
     };
     let name = program.rsplit(['\\', '/']).next().unwrap_or(program);
-    let mut out = args::word(name);
+    let mut out = word(name);
     for a in rest {
         out.push(' ');
-        out.push_str(&args::word(a));
+        out.push_str(&word(a));
     }
     out
+}
+
+/// One argument as [`display`] shows it.
+fn word(arg: &str) -> String {
+    let a: String = arg
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let plain = !a.is_empty()
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./:=@%+,*?-\\".contains(&b));
+    if plain {
+        a
+    } else {
+        format!("\"{}\"", a.replace('"', "\\\""))
+    }
 }
 
 /// [`display`] of the program and the masked arguments, cut after `max` characters.
@@ -272,6 +289,17 @@ mod tests {
             r#"ssh.exe -T git@github.com "git-upload-pack 'me/r.git'""#
         );
         assert_eq!(display(&v(&["/usr/bin/ssh", "a\nb"])), r#"ssh "a b""#);
+        // Windows paths keep their backslashes; quotes inside quotes are escaped as the command line has them
+        assert_eq!(
+            display(&v(&[
+                "ssh.exe",
+                "-i",
+                r"C:\Users\me\.ssh\id_ed25519",
+                r"\\.\pipe\agent",
+                r#"say "hi" there"#,
+            ])),
+            r#"ssh.exe -i C:\Users\me\.ssh\id_ed25519 \\.\pipe\agent "say \"hi\" there""#
+        );
         assert_eq!(display(&[]), "");
         let long = v(&["ssh.exe", "-o", "SetEnv=TOKEN=abc", &"h".repeat(400)]);
         let s = shown(&long, 300);
