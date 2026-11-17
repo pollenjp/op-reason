@@ -35,8 +35,8 @@
 #   notify    notify: kind, when, cleared, time
 #
 # Modes:
-#   desktop  show the window (an HwndSource that never takes the focus) and the toast, run op.exe, then close the CLI
-#            sessions (whoami --format json, then signout --all only when signed in: whoami does not prompt without a
+#   desktop  show the window (it never takes the focus) and the toast, run op.exe, then close the CLI sessions
+#            (whoami --format json, then signout --all only when signed in: whoami does not prompt without a
 #            session). signout --all closes the sessions of other processes too, so a call with lock "skipped" does
 #            not close them. The account ID and the sign-in host of a whoami that succeeded are kept in account.json
 #            (nothing else of its output), so that later windows can link the references.
@@ -586,11 +586,44 @@ function Add-RefLines($panel, $refs) {
   }
 }
 
-# The window's content: the title in bold, one "label: value" line per fact (the block of references after the
-# command line), the orange line (shown only while other op.exe run) and the footer in red, on light yellow. It asks
+# Keeps clicks (on a link) from activating the window, so that the 1Password prompt keeps the focus: WPF's Popup
+# answers WM_MOUSEACTIVATE with MA_NOACTIVATE in its compiled message filter, and the window takes that filter as a
+# hook. A script block cannot be the hook (PowerShell does not write back the hook's ref parameter, seen on CI), and a
+# WPF window cannot get WS_EX_NOACTIVATE without compiled code. When the filter is not there, a click activates the
+# window, as it always did.
+function Set-NoActivate($win) {
+  try {
+    $flags = [System.Reflection.BindingFlags]'NonPublic, Instance'
+    $filter = [System.Windows.Controls.Primitives.Popup].GetMethod('PopupFilterMessage', $flags)
+    if ($null -eq $filter) { return }
+    $popup = New-Object System.Windows.Controls.Primitives.Popup
+    $hook = [Delegate]::CreateDelegate([System.Windows.Interop.HwndSourceHook], $popup, $filter)
+    $source = [System.Windows.Interop.HwndSource]::FromHwnd((New-Object System.Windows.Interop.WindowInteropHelper $win).Handle)
+    $source.AddHook($hook)
+  } catch { }
+}
+
+# The window: on top of other windows without taking the focus (ShowActivated, and Set-NoActivate for clicks), at the
+# top right of the work area so that it does not cover the 1Password prompt in the middle of the screen. It asks
 # nothing; the decision is made in the 1Password prompt only.
 function New-ApprovalWindow($ui) {
   Add-Type -AssemblyName PresentationFramework
+  $win = New-Object System.Windows.Window
+  $win.Title = [string]$ui.title
+  $win.Width = 520
+  $win.SizeToContent = [System.Windows.SizeToContent]::Height
+  $win.WindowStyle = [System.Windows.WindowStyle]::ToolWindow
+  $win.ResizeMode = [System.Windows.ResizeMode]::NoResize
+  $win.Topmost = $true
+  $win.ShowActivated = $false
+  $win.ShowInTaskbar = $false
+  $win.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+  $area = [System.Windows.SystemParameters]::WorkArea
+  $win.Left = $area.Right - $win.Width - 16
+  $win.Top = $area.Top + 16
+  $win.Background = [System.Windows.Media.Brushes]::LightYellow
+  $win.Add_SourceInitialized({ param($sender, $e) Set-NoActivate $sender })
+
   $panel = New-Object System.Windows.Controls.StackPanel
   $panel.Margin = New-Object System.Windows.Thickness(14, 10, 14, 12)
   [void]$panel.Children.Add((New-TextLine ([string]$ui.title) 16 $true $null))
@@ -612,40 +645,8 @@ function New-ApprovalWindow($ui) {
   $others.Visibility = [System.Windows.Visibility]::Collapsed
   [void]$panel.Children.Add($others)
   [void]$panel.Children.Add((New-TextLine ([string]$ui.footer) 0 $true ([System.Windows.Media.Brushes]::Firebrick)))
-  $root = New-Object System.Windows.Controls.Border
-  $root.Background = [System.Windows.Media.Brushes]::LightYellow
-  $root.Child = $panel
-  return @{ root = $root; others = $others; title = [string]$ui.title; source = $null }
-}
-
-# Shows the window as an HwndSource created with WS_EX_NOACTIVATE (and WS_EX_TOPMOST, WS_EX_TOOLWINDOW: on top, no
-# taskbar button), like op-reason.exe's window: neither showing it nor a click on it (a link) activates it, so the
-# 1Password prompt keeps the focus. A WPF Window cannot get that style without compiled code, and a script block cannot
-# answer WM_MOUSEACTIVATE (PowerShell does not write back the hook's ref parameter). 520 DIPs wide, as tall as its
-# content, at the top right of the work area, so that it does not cover the 1Password prompt in the middle of the
-# screen. Created visible: it paints once the dispatcher runs, with its content and size already set.
-function Show-ApprovalWindow($view) {
-  # The DIP-to-pixel scale of this process (WPF makes it system DPI aware), read from a hidden source
-  $hidden = New-Object System.Windows.Interop.HwndSourceParameters 'op-reason'
-  $hidden.WindowStyle = 0
-  $probe = New-Object System.Windows.Interop.HwndSource ($hidden)
-  $scale = $probe.CompositionTarget.TransformToDevice.M11
-  $probe.Dispose()
-  $area = [System.Windows.SystemParameters]::WorkArea
-  $width = [int][Math]::Round(520 * $scale)
-  $p = New-Object System.Windows.Interop.HwndSourceParameters ($view.title)
-  # WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
-  $p.WindowStyle = (0x80000000 -bor 0x10000000 -bor 0x00C00000 -bor 0x00080000)
-  # WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
-  $p.ExtendedWindowStyle = (0x08000000 -bor 0x00000080 -bor 0x00000008)
-  $p.Width = $width
-  $p.Height = [int][Math]::Round(300 * $scale)
-  $p.PositionX = [int][Math]::Round(($area.Right - 16) * $scale) - $width
-  $p.PositionY = [int][Math]::Round(($area.Top + 16) * $scale)
-  $source = New-Object System.Windows.Interop.HwndSource ($p)
-  $source.SizeToContent = [System.Windows.SizeToContent]::Height
-  $source.RootVisual = $view.root
-  $view.source = $source
+  $win.Content = $panel
+  return @{ window = $win; others = $others }
 }
 
 # Keep the window responsive until op.exe exits. Every 250 ms: count op.exe processes other than ours (a prompt
@@ -682,7 +683,7 @@ function Invoke-Desktop([string]$op, $argList, $ui) {
         $script:status.others = $n
         $view.others.Visibility = [System.Windows.Visibility]::Visible
       }
-      Show-ApprovalWindow $view
+      $view.window.Show()
       $script:status.window = 'shown'
     } catch {
       $script:status.window = 'failed: ' + (Get-Short $_.Exception.Message 120)
@@ -701,8 +702,8 @@ function Invoke-Desktop([string]$op, $argList, $ui) {
   Wait-Plain $proc
   Wait-Stderr
   $proc.WaitForExit()
-  if ($null -ne $view -and $null -ne $view.source) {
-    try { $view.source.Dispose() } catch { }
+  if ($null -ne $view) {
+    try { $view.window.Close() } catch { }
   }
   return $proc.ExitCode
 }
