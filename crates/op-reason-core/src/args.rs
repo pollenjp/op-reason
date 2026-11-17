@@ -11,6 +11,9 @@ use std::path::Path;
 pub enum Invocation {
     /// `op-reason-log`: the log viewer.
     LogViewer,
+    /// `op-reason-ssh`: runs Windows `ssh.exe` with the facts of the call (WSL; design `2026-11-17-ssh-relay-design.md`
+    /// §7).
+    Ssh,
     /// The wrapper, called by its own name or another one.
     Wrapper(Name),
 }
@@ -34,6 +37,7 @@ pub fn invocation(argv0: &OsStr) -> Invocation {
     let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
     match stem {
         "op-reason-log" => Invocation::LogViewer,
+        "op-reason-ssh" => Invocation::Ssh,
         "op-reason" => Invocation::Wrapper(Name::OpReason),
         _ => Invocation::Wrapper(Name::Other),
     }
@@ -520,6 +524,10 @@ mod tests {
         assert_eq!(
             invocation(OsStr::new("op")),
             Invocation::Wrapper(Name::Other)
+        );
+        assert_eq!(
+            invocation(OsStr::new("/home/me/.nix-profile/bin/op-reason-ssh")),
+            Invocation::Ssh
         );
     }
 }

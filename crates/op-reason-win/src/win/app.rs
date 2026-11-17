@@ -120,6 +120,10 @@ pub fn run() -> i32 {
     let lang = resolve_lang();
     let name = match args::invocation(&argv0) {
         Invocation::LogViewer => return log_viewer(&rest, lang),
+        Invocation::Ssh => {
+            say(&[crate::messages::ssh_name(lang)]);
+            return contract::EXIT_USAGE;
+        }
         Invocation::Wrapper(name) => name,
     };
     let env = |k: &str| std::env::var(k).ok();

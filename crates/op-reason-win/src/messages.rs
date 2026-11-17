@@ -126,6 +126,14 @@ pub fn too_long(lang: Lang, len: usize) -> Vec<String> {
     }
 }
 
+/// `op-reason.exe` called by the name `op-reason-ssh`: that is the WSL command.
+pub fn ssh_name(lang: Lang) -> String {
+    match lang {
+        Lang::En => "op-reason-ssh is the WSL command that runs ssh.exe for the SSH relay. On Windows, run ssh.exe with IdentityAgent or SSH_AUTH_SOCK naming the relay's pipe (op-reason.exe --ssh-agent), and give the reason in OPREASON_SSH_REASON.".to_owned(),
+        Lang::Ja => "op-reason-ssh は、SSH の中継のために ssh.exe を起こす WSL のコマンドです。Windows では、IdentityAgent か SSH_AUTH_SOCK に中継のパイプ (op-reason.exe --ssh-agent) を指定して ssh.exe を打ち、理由は OPREASON_SSH_REASON で渡してください。".to_owned(),
+    }
+}
+
 /// op.exe could not be started (after `start` was written).
 pub fn start_failed(lang: Lang, err: &str) -> String {
     match lang {
