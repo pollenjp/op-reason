@@ -7,6 +7,8 @@
 //! - [`lang`] and [`messages`]: English and Japanese texts; [`settings`]: the language chosen in the window
 //! - [`result`]: the result of a call from the status, the exit code and `op`'s stderr
 //! - [`refs`]: the `op://` references a call reads (the reference table keeps the PowerShell entry in step)
+//! - [`ssh`]: the SSH relay's portable parts (the agent protocol, the roots of calls, decisions, records);
+//!   [`sha256`]: the digest of its key fingerprints
 
 pub mod args;
 pub mod base64;
@@ -20,4 +22,6 @@ pub mod place;
 pub mod refs;
 pub mod result;
 pub mod settings;
+pub mod sha256;
+pub mod ssh;
 pub mod time;
