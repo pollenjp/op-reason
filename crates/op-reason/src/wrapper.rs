@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use op_reason_core::contract::{
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::log::{self, Caller, Fallback};
 use op_reason_core::messages::FallbackWhy;
-use op_reason_core::{base64, logview, messages, place, result, settings, time};
+use op_reason_core::{base64, logview, messages, place, refs, result, settings, time};
 
 use crate::launch::{self, print_stderr, print_stdout};
 use crate::lock::{self, Holder, Outcome};
@@ -487,8 +487,14 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         progress: Arc::clone(&progress),
     };
 
-    // A pipe from another op-reason: read stdin before waiting for the lock (design 6.4)
-    let mut drained = procfs::op_upstream().then(lock::drain_stdin);
+    // A pipe from another op-reason: read stdin before waiting for the lock (design 6.4). op inject without -i reads its
+    // template from stdin: read it here too (not from a terminal), to list its references; the runner gets the same
+    // bytes (design 2026-11-17-refs-in-window-design.md §2)
+    let op_text = parsed.op_args_text();
+    let template_on_stdin = mode == Mode::Desktop && refs::plan(&op_text).stdin;
+    let mut drained = ((template_on_stdin && !std::io::stdin().is_terminal())
+        || procfs::op_upstream())
+    .then(lock::drain_stdin);
 
     // Lock
     let wait = lock_wait();
@@ -571,6 +577,15 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             holder_reason: Some(args::clip(r, 60, "…")),
         });
     }
+    // The references the call reads (files relative to the current directory, the template from the drained stdin)
+    let collected = (mode == Mode::Desktop).then(|| {
+        let stdin = drained
+            .as_deref()
+            .filter(|_| template_on_stdin)
+            .map(String::from_utf8_lossy);
+        refs::collect(&op_text, &refs::read_file, stdin.as_deref())
+    });
+    let log_refs = collected.as_ref().and_then(refs::Collected::log);
     let home = env_nonempty("HOME");
     let facts = (mode == Mode::Desktop).then(|| Facts {
         time: start.ymd_hms.clone(),
@@ -589,7 +604,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         reason: args::clip(&call.reason, 200, "…"),
         command: args::clip(&call.display, 300, "…"),
         notes,
-        refs: None,
+        refs: collected.as_ref().and_then(refs::Collected::facts),
     });
     // The runner needs both Windows paths: with an empty status path it could not leave the trace that keeps the
     // fallback from running op.exe a second time
@@ -649,7 +664,7 @@ fn run_call(call: Arc<Call>, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             caller: &call.caller,
             reason: &args::clip(&call.reason, 500, "…"),
             args: &call.masked,
-            refs: None,
+            refs: log_refs.as_ref(),
         }),
     );
 
