@@ -3,7 +3,7 @@
 # A workspace of its own: the windows crate (a 9 MB download, 114 MB unpacked) stays out of the main Cargo.lock, so
 # the WSL binary's Nix package and Linux CI do not fetch it. Run cargo from this directory.
 [workspace]
-members = [".", "fake-op"]
+members = [".", "fake-op", "fake-ssh"]
 resolver = "3"
 
 [workspace.package]
