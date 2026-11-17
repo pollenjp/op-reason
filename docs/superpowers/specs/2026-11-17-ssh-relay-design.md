@@ -394,4 +394,8 @@ The first rows answer the builder check (decided before the implementation); the
     connections that close without a message.
   - So 1Password binds its approval to the relay, but it leaves a relay whose parent process has ended unanswered
     (most likely: the parent was the only difference between the two tries).
-- Not yet: C2, C3 (§4.2) and the manual checks of §11.
+- Checked on CI (GitHub's Windows runner with the fake agent, client and `wsl.exe` of `crates/op-reason-win/fake-ssh`;
+  no 1Password): the 19 end-to-end tests of `crates/op-reason-win/tests/relay.rs`, real clicks on Allow and Deny
+  included, and the screenshots of the window in both modes on the pull request.
+- Not yet: C2, C3 (§4.2) and the manual checks of §11 (`docs/manual-verification.md`, S1–S17), including the form of
+  `IdentityAgent` (S2) and a WSL started through a distribution's own launcher (S17).
