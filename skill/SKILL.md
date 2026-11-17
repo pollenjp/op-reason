@@ -3,8 +3,9 @@ name: op-reason
 description: >-
   Use when running the 1Password CLI (`op`) on a machine where `op` is op-reason, a wrapper that requires a reason
   for every call (WSL or Windows), or when an `op` call was refused for a missing reason or ended with an op-reason
-  exit code (2, 75, 127). Covers how to call op with --reason, what to do when an approval is denied or times out,
-  and how to keep secrets out of the conversation.
+  exit code (2, 75, 127). Also when running ssh, git over ssh, scp or ansible where op-reason's SSH relay stands in
+  front of the 1Password SSH agent (OPREASON_SSH_REASON). Covers how to call op with --reason, how to give ssh a
+  reason, what to do when an approval is denied or times out, and how to keep secrets out of the conversation.
 ---
 
 # op-reason
@@ -67,6 +68,24 @@ approving them out of habit, which defeats the rule "deny any prompt that comes 
   every other op call waits (and gives up with exit 75 after 90 seconds). Resolve the values, start the program, and
   let op exit.
 
+## SSH keys (op-reason's SSH relay)
+
+Where op-reason's SSH relay runs (`op-reason.exe --ssh-agent`, in front of the 1Password SSH agent), every call that
+signs with a key, such as `ssh`, `git push` or `git fetch` over ssh, `scp` or an ansible run, waits for the person to
+allow it in op-reason's window, which shows you as the caller, the command, the destination and the reason.
+
+- Give the reason in `OPREASON_SSH_REASON`, one sentence, for every such command:
+  - WSL or another POSIX shell: `OPREASON_SSH_REASON="push the login fix to the review branch" git push`
+  - PowerShell: `$env:OPREASON_SSH_REASON = "push the login fix to the review branch"; git push`
+- One answer covers one call: everything one command does (all connections of one `git push`, all hosts of one
+  `ansible-playbook` run). A later command asks again. Put the work into as few commands as possible.
+- Give the tool call a long timeout (the person may take a minute); the window gives up after 60 seconds, and ssh then
+  fails as if the key were refused.
+- If ssh fails with `Permission denied (publickey)` or an agent error right after the window, the person denied it or
+  did not answer: do **not** run it again; ask the user, as for a denied `op` call.
+- Never point ssh at the 1Password agent directly (`\\.\pipe\openssh-ssh-agent`) or change `IdentityAgent` or
+  `SSH_AUTH_SOCK` to get around the relay.
+
 ## The log
 
 ```sh
@@ -76,4 +95,4 @@ op-reason-log --json       # one JSON object per call
 ```
 
 Results: approved, ok (help and service account calls), denied, timed out, failed, refused (no reason, lock wait timed
-out, …).
+out, …). On Windows, `op-reason --log` also lists the SSH relay's signatures (SSH allowed, passed, denied, timed out, …).

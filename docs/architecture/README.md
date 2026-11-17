@@ -2,8 +2,9 @@
 
 This page describes op-reason as it is now. Why it is built this way is in the design documents
 ([docs/superpowers/specs/2026-11-15-op-reason-design.md](../superpowers/specs/2026-11-15-op-reason-design.md),
-[2026-11-15-windows-exe-design.md](../superpowers/specs/2026-11-15-windows-exe-design.md) and
-[2026-11-15-wsl-through-exe-design.md](../superpowers/specs/2026-11-15-wsl-through-exe-design.md)).
+[2026-11-15-windows-exe-design.md](../superpowers/specs/2026-11-15-windows-exe-design.md),
+[2026-11-15-wsl-through-exe-design.md](../superpowers/specs/2026-11-15-wsl-through-exe-design.md) and, for the SSH relay,
+[2026-11-17-ssh-relay-design.md](../superpowers/specs/2026-11-17-ssh-relay-design.md)).
 
 ![op-reason components](plantuml/out/01_overview.svg)
 
@@ -11,14 +12,15 @@ This page describes op-reason as it is now. Why it is built this way is in the d
 
 | Part | Where | Role |
 | --- | --- | --- |
-| WSL executable | `crates/op-reason/` | `op` / `op-reason`: the wrapper; `op-reason-log`: the log viewer. Linux only (`/proc`, flock, signals, `WSLENV`). Starts a runner for every call |
-| Core library | `crates/op-reason-core/` | argument planning, the runner contract, log records and the log viewer, place detection, messages; builds for Windows too |
-| Windows executable | `crates/op-reason-win/` | `op-reason.exe`, two faces: the Windows entry (the whole call in one process: Direct2D window, WinRT toast, `op.exe`, sign-out, log, `--log`) and the runner of calls from WSL (`--run`). A Cargo workspace of its own, on the core |
+| WSL executable | `crates/op-reason/` | `op` / `op-reason`: the wrapper; `op-reason-log`: the log viewer; `op-reason-ssh`: runs `ssh.exe` with the facts of the call for the SSH relay. Linux only (`/proc`, flock, signals, `WSLENV`). Starts a runner for every call |
+| Core library | `crates/op-reason-core/` | argument planning, the runner contract, log records and the log viewer, place detection, messages, and the SSH relay's portable parts (`ssh`: the agent protocol, Windows command lines, the roots of calls, `OPREASON_SSH_CALL`, the decision book and the queue, the SSH records); builds for Windows too |
+| Windows executable | `crates/op-reason-win/` | `op-reason.exe`, three faces: the Windows entry (the whole call in one process: Direct2D window, WinRT toast, `op.exe`, sign-out, log, `--log`), the runner of calls from WSL (`--run`) and the SSH relay (`--ssh-agent`). A Cargo workspace of its own, on the core |
 | Launcher | `launcher/launcher.ps1` | Windows PowerShell 5.1 script, the fallback runner: started fresh for a call from WSL when `op-reason.exe` cannot run, and for every call through the PowerShell entry: window, toast, `op.exe`, sign-out, status |
 | PowerShell entry | `windows/` | `op-reason.ps1` and `op-reason.cmd` (a shim for cmd.exe and other programs): the fallback where Smart App Control blocks `op-reason.exe` |
 | Fish completion | `completions/op.fish` | template printed by `op-reason --completion fish` |
 | Skill | `skill/SKILL.md` | printed by `op-reason --skill` |
 | Call table | `tests/cases/calls.json` | invocations and their expected plan, shared by the Rust tests and the Windows entry's tests |
+| Root table | `tests/cases/roots.json` | Windows and `/proc` process chains and the root of their call, run against the core's rules (the relay and `op-reason-ssh` use them) |
 
 ## One call from WSL
 
@@ -146,6 +148,82 @@ Desktop calls list the `op://` references they read in the window, after the com
   and the host of its `url`, nothing else. The call's `--account` chooses among them (ID, host, or the host's first
   label); without it, the first.
 
+## The SSH relay (op-reason.exe --ssh-agent)
+
+A resident process in front of the 1Password SSH agent
+([2026-11-17-ssh-relay-design.md](../superpowers/specs/2026-11-17-ssh-relay-design.md)). It serves the agent protocol on
+its own pipe (default `\\.\pipe\op-reason-ssh-agent`: created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, a DACL for the
+current user only, `PIPE_REJECT_REMOTE_CLIENTS`, unlimited instances) and passes every message on unchanged to the
+1Password agent (`--upstream`, default `\\.\pipe\openssh-ssh-agent`), over one upstream connection per client
+connection, opened at the first message. Messages are framed by a 32-bit length up to 256 KiB (a longer one closes the
+connection). One relay per logon session (the mutex `Local\op-reason-ssh-relay`); `--status` connects to the pipe and
+names the server's process.
+
+Threads: the main thread accepts connections; one thread per connection reads its requests in turn; the thread whose
+turn it is shows the window; one forgets decisions once a minute; one watches the relay's parent process (1Password
+leaves a relay whose parent has ended unanswered; a toast and a `ssh-relay` record say so); one waits for Ctrl+C while
+a console is attached (without one of its own, the relay calls `FreeConsole`).
+
+### One request
+
+1. **Read** the message. `session-bind@openssh.com` is read (the host key's fingerprint; with the forwarding flag set,
+   the connection carries forwarded requests: the first such bind is the remote host, a later bind without the flag the
+   remote client's destination). The answers to the key list are read for the keys' comments. Anything but a sign
+   request is passed on; when 1Password takes more than a second, the window without buttons comes (1Password may be
+   asking to unlock).
+2. **Who asks** (once per connection): the client's PID (`GetNamedPipeClientProcessId`), its chain from one Toolhelp
+   snapshot (a parent created after its child ends the chain), each process's command line
+   (`ProcessCommandLineInformation`), and the client's environment and directory (from its PEB). The root by the rules
+   of `tests/cases/roots.json`: a `claude.exe` ancestor's child; else an interactive shell's child (a shell whose
+   arguments run no command and no script; this rule also gives the shell, for the terminal answer); else the client's
+   parent. A client whose parent is `wsl.exe` or `wslhost.exe` is a WSL call: its root, caller, place and reason come
+   from `OPREASON_SSH_CALL` in its environment, or it has none (each connection a call of its own). Windows clients give
+   their reason in `OPREASON_SSH_REASON`. No 1Password agent: the request fails at once (`no-upstream`).
+3. **per-call**: the mark is the root (scope, PID, start time), the key's fingerprint and the reason (a forwarded
+   request, or one without a root, is a call of its own). An answer in the book (or, for a person's command, the
+   terminal's) passes or fails the request at once. Otherwise the request joins the queue: a request of the same mark
+   follows the one that asks; others wait in order. On its turn the thread takes `Local\op-reason` (up to
+   `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons and the toast,
+   and keeps the footer's count of waiting calls current. A click (press and release on a button) is remembered for the
+   call (Allow this terminal: also for the shell and the key); after Allow the window drops its buttons ("1Password is
+   asking") until 1Password answers, then closes, and the lock and the turn pass on. No click within `--answer-wait`
+   (`timeout`), the close button (`dismissed`) and a client gone with no request of its call waiting (`gone`) fail the
+   request without remembering.
+4. **show-only**: every signature waits for its turn and the lock, shows the window without buttons, goes to 1Password
+   and closes the window with the answer. A signature that passes in under half a second gets a toast once per run, and
+   a `no-prompt` record (1Password most likely did not ask).
+5. **Answer** the client with 1Password's reply (or `SSH_AGENT_FAILURE`), and **record** the signature. A request that
+   1Password closes without an answer is `no-answer` (a toast once per run says that a relay without a parent gets none).
+
+Decisions live in memory only: forgotten when a Windows root ends (checked on lookup and once a minute), after the time
+limit (`--time-limit`, default 60 minutes; WSL roots only time out), or when the relay exits.
+
+### Records
+
+`%LOCALAPPDATA%\op-reason\ssh-log.jsonl`, one JSON object per line, rotated at 4 MiB (`ssh-log.1.jsonl`,
+`ssh-log.2.jsonl`), appends taking `ssh-log.lock`. Never the data to sign or a signature. `op-reason.exe --log` merges
+them with `log.jsonl` by time, one line each; a request that an earlier answer covered shows the caller and reason of
+the record with that answer.
+
+| `event` | Fields |
+| --- | --- |
+| `ssh-sign` | `v`, `id`, `time`, `epoch`, `mode` (`per-call`, `show-only`), `result` (`allowed`, `passed`, `denied`, `timeout`, `dismissed`, `gone`, `signed`, `failed` (1Password refused), `no-answer`, `no-upstream`, `lock-timeout`, `no-window`, `malformed`), `seconds` (to a tenth), `answer` (`allow`, `allow-terminal`, `deny`), `decision` (the `id` of the record whose answer covered it; then the call's facts are there), `call` (`rule`: `claude`, `shell`, `parent`, `alone`; `root` and `shell`: `pid`, `start`, `name`, `cmd`; `distro`), `caller` (as in `start`; `type` also `program`), `session`, `reason` (≤ 500), `client` (`pid`, `exe`, `cmd` masked, ≤ 1000), `key` (`fp`, `comment`, `type`), `purpose` (`kind`: `userauth` with `user`, `sshsig` with `namespace`, `other`), `host` (`name` from the command line, `fp`, and `onward` for a forwarded connection), `forwarded` |
+| `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent` |
+
+Command lines are masked with the rules of `op` calls, word by word inside a remote command, without the rule for what
+follows `--`.
+
+### op-reason-ssh (WSL)
+
+The WSL executable under the name `op-reason-ssh` walks `/proc` from itself (stat and cmdline; a parent that started
+after its child ends the chain), applies the same rules to find the root (`claude`, an interactive shell, the parent),
+collects the caller as the wrapper does (Claude Code, `CLAUDE_CODE_SESSION_ID`, herdr's workspace with its label within
+a second, the place), `WSL_DISTRO_NAME` and `OPREASON_SSH_REASON` (normalized), and puts them into `OPREASON_SSH_CALL`
+(ASCII JSON, at most 8000 characters: command lines, reason and directory are cut shorter until it fits) with
+`OPREASON_SSH_CALL` added to `WSLENV`. Then it `exec`s `ssh.exe` (`OPREASON_SSH_EXE`, else `ssh.exe` in `PATH`) with
+the arguments and streams unchanged. When `/proc` cannot be read it runs `ssh.exe` without the variable; no `ssh.exe`:
+127.
+
 ## Language
 
 English by default. The language chosen in the window of `op-reason.exe` comes first, then `OPREASON_LANG`; `LANG`
@@ -245,25 +323,30 @@ process of their call still runs), `lang.json` (the copy of the language chosen 
 stderr tail stay in memory.
 
 On Windows, `%LOCALAPPDATA%\op-reason\` holds the log (`log.jsonl`, `log.1.jsonl`, `log.lock`), `holder.json` (while a
-call holds the mutex), `settings.json` (the language chosen in the window), `account.json` (the account IDs and hosts
-that link references to the 1Password app) and, for calls through the PowerShell entry, `run/<id>/status.json`.
+call holds the mutex, or the SSH relay's window is open), `settings.json` (the language chosen in the window),
+`account.json` (the account IDs and hosts that link references to the 1Password app), the SSH relay's records
+(`ssh-log.jsonl`, `ssh-log.1.jsonl`, `ssh-log.2.jsonl`, `ssh-log.lock`) and, for calls through the PowerShell entry,
+`run/<id>/status.json`.
 
 ## Tests
 
 | Test | What it covers |
 | --- | --- |
-| `cargo test --workspace` | the core (including the call table and the reference table) and the WSL helpers |
+| `cargo test --workspace` | the core (including the call table, the reference table and the root table; the agent protocol, command lines, `OPREASON_SSH_CALL`, the decision book and the queue, the SSH records and their lines in the viewer) and the WSL helpers (the `/proc` chain) |
 | `tests/wrapper.test.sh` | the executable with fake `op-reason.exe`, `powershell.exe`, `op.exe`, `wslpath` and `herdr`, including the runner choice and every fallback case (`op.exe` counted: never twice) |
 | `tests/launcher.test.sh` | the launcher on PowerShell 7 for Linux with a fake `op` |
 | `tests/e2e.test.sh` | the executable and the real launcher together (`-File`), and a fallback from an exe that writes nothing |
 | `tests/log.test.sh` | the log viewer |
+| `tests/ssh.test.sh` | `op-reason-ssh` with a fake `ssh.exe`, a fake `herdr` and a fake `/proc`: arguments, stdin, stderr and the exit code unchanged, `WSLENV`, `OPREASON_SSH_CALL` (rule, root, shell, caller, herdr, place, distribution, reason), a `/proc` it cannot read, `OPREASON_SSH_EXE`, no `ssh.exe` |
 | `tests/completion.test.sh` | the fish completion with the real fish |
 | `tests/windows/entry-plan.test.ps1` | the call table and the reference table against the Windows entry (Windows PowerShell 5.1 in CI, PowerShell 7 on Linux) |
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the references and the account copy, the window and its screenshots; on CI, a real click on a link with a temporary `onepassword:` handler) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
 | `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
+| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages) and toasts, its usage |
+| `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends |
 | `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
-| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner |
+| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |
 | `tests/release-notes.test.sh` | `.github/scripts/release-notes.sh` (the notes of a release: the version's section of `CHANGELOG.md`; the versions of `Cargo.toml`, `crates/op-reason-win` and the PowerShell entry agree, also with the tag) on made-up repositories and on this one |
 | [manual-verification.md](../manual-verification.md) | checks with the real 1Password app (by hand) |

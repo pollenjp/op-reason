@@ -17,6 +17,9 @@ op-reason は、WSL と Windows で使う [1Password CLI](https://developer.1pas
 AI のコーディングエージェント (Claude Code など) に `op` を打たせるために作りました。承認する前に何のための依頼かが分かり、
 1 回の承認が後の依頼に届かず、後からすべての呼び出しを見返せます。
 
+op-reason は 1Password の SSH agent の前にも立てます。SSH の鍵を使うたびに、誰が何のために使うかが分かります:
+[SSH の鍵: 中継](#ssh-の鍵-中継)。
+
 ## なぜ wrapper が要るのか
 
 - **1 回の承認が後の呼び出しに漏れる。** 1Password のデスクトップアプリは、CLI の承認を `op.exe` を起こしたプロセスに
@@ -71,6 +74,7 @@ sha256sum -c "op-reason-${arch}-linux.sha256"
 install -m 755 "op-reason-${arch}-linux" ~/.local/bin/op-reason
 ln -sf op-reason ~/.local/bin/op-reason-log
 ln -sf op-reason ~/.local/bin/op     # 任意: `op` を wrapper にする (PATH で ~/.local/bin を先に置く)
+ln -sf op-reason ~/.local/bin/op-reason-ssh   # 任意: SSH の中継を通して ssh を打つ (下)
 ```
 
 WSL の実行ファイルは、`op-reason.exe` を `PATH` (WSL は Windows の `PATH` を足します) か `OPREASON_EXE` の指す所
@@ -80,7 +84,7 @@ WSL の実行ファイルは、`op-reason.exe` を `PATH` (WSL は Windows の `
 ### Nix で
 
 ```sh
-nix profile install github:pollenjp/op-reason      # op-reason・op-reason-log
+nix profile install github:pollenjp/op-reason      # op-reason・op-reason-log・op-reason-ssh
 nix profile install github:pollenjp/op-reason#op   # 同じものに `op` を足したもの
 ```
 
@@ -275,8 +279,95 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 | `OPREASON_POWERSHELL` | WSL: launcher を起こす `powershell.exe` のコマンド (既定 `powershell.exe`) |
 | `OP_SERVICE_ACCOUNT_TOKEN`、`OP_CONNECT_HOST` と `OP_CONNECT_TOKEN` | service account か Connect: `op` はデスクトップアプリなしで走り (窓も画面も無し)、token を受け取ります。デスクトップの呼び出しには渡しません |
 | `HERDR_ENV`・`HERDR_WORKSPACE_ID`・`HERDR_PANE_ID` | [herdr](https://herdr.dev/) の中では、窓に workspace と pane を出します (任意) |
+| `OPREASON_SSH_REASON` | [SSH の中継](#ssh-の鍵-中継) を通す ssh の呼び出しの理由 (Windows の client と、WSL の `op-reason-ssh`) |
+| `OPREASON_SSH_EXE` | WSL: `op-reason-ssh` が起こす `ssh.exe` (既定は `PATH` の `ssh.exe`) |
+| `OPREASON_SSH_CALL` | `op-reason-ssh` が中継のために置く (WSL からの呼び出しの事実)。自分では置きません |
 
 接頭辞が `OP_` でなく `OPREASON_` なのは、1Password CLI 自身が `OP_…` の変数を多く読むためです。
+
+## SSH の鍵: 中継
+
+`op-reason.exe --ssh-agent` は、1Password の SSH agent の前に立つ中継です。裏で動き続け、自分のパイプ
+`\\.\pipe\op-reason-ssh-agent` で SSH agent の protocol を受け、どの依頼もそのまま 1Password の agent
+(`\\.\pipe\openssh-ssh-agent`) へ渡します。決めるのを待つのは署名だけで、鍵の一覧などはすぐに通します。
+設計: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md)。
+
+なぜ: 1Password の SSH の確認の画面には、アプリ (WSL からなら端末) と鍵しか出ず、呼び手・行き先・理由が出ません。設定
+「新しいものごとに承認を求める」が「アプリケーションおよびターミナルセッション」か「アプリケーション」だと、1 度の承認で、
+1Password がロックするまでそのアプリの後の署名がすべて通ります。人が 1 度許可したあとは、エージェントが画面なしで鍵を使えます。
+「リクエスト」にすると署名のたびに確認が出て、WSL の ansible (タスクとホストごとに新しい接続) では 1 回の実行で何十回も出ます。
+
+### 2 つのモード
+
+| モード | どこで決めるか | 1Password の設定 |
+| --- | --- | --- |
+| `per-call` (既定) | op-reason の窓で、呼び出しごとに 1 回: **この呼び出しを許可**・**拒否**、自分で打ったコマンドなら **このターミナルを 60 分許可** も。1Password は、ロックするまでに中継を 1 回承認するだけ | 「アプリケーションおよびターミナルセッション」か「アプリケーション」 |
+| `show-only` | 署名のたびに 1Password の画面で。op-reason の窓は、その横に誰が何のためにを出す | 「リクエスト」 |
+
+**呼び出し** は、起点の process・鍵・理由の組です。起点は、Claude Code の tool の呼び出し・端末で打ったコマンド (`git push`・
+`ansible-playbook`・`ssh`)・自分で ssh を起こすプログラムのどれかで、WSL では `op-reason-ssh` が Linux の側で見つけます。
+許可した呼び出しの後の署名は窓なしで通り (ansible の fork は 1 つの答えを待ちます)、拒否した呼び出しの後の署名はすぐに
+断ります。答えは、起点の process が終わるか、60 分たつか (`--time-limit`)、中継が止まるまで効き、メモリーにだけ置きます。
+リモートのホストから転送で戻ってきた依頼 (`ssh -A`) は、1 つずつが別の呼び出しです。
+
+窓には、誰が (Claude Code・人・プログラム。WSL からならあわせて herdr の workspace と pane・ディストリビューション・
+repository・branch)、起点の process、理由 (無ければ「理由なし」)、ssh のコマンド、行き先とそのホストの鍵、署名の用途
+(どのユーザーとしてのログインか、`git` のような SSHSIG の namespace か)、1Password での鍵の名前が出ます。答えるのはクリック
+(ボタンの上で押して離す) だけです。窓はフォーカスを取らず、既定のボタンもないので、ほかで打ったキーが窓に答えることは
+ありません。60 秒答えが無ければ、その署名を断り、何も覚えません。
+
+> **per-call では決まりが変わります。** op-reason のほかの所では、決めるのは 1Password の画面で、op-reason の窓は事実を
+> 見せるだけです。per-call では op-reason の窓で決めます。1Password には呼び出しの区別が付かず、署名ごとに聞かせるのは
+> 使えないためです。show-only は前の決まりのままです。
+
+### 起こし方
+
+```powershell
+op-reason.exe --ssh-agent                      # per-call。Ctrl+C かログオフまで動く
+op-reason.exe --ssh-agent --mode show-only
+op-reason.exe --ssh-agent --status             # パイプで中継が答えれば 0 (とその process id)
+```
+
+- **ログオンのときにタスク スケジューラーのタスクから起こしてください** (隠して、落ちたら起こし直す)。すぐ終わる script から
+  起こさないでください。1Password は、親の process が終わった中継の依頼に 60 秒答えません。中継は、親が無いとき・
+  終わったときに toast と記録でそう知らせます。自分だけのコンソール (タスク・ダブルクリック) ではコンソールの窓を残しません。
+- 中継はログオン セッションに 1 つです。option: `--mode per-call|show-only`・`--pipe <名前>`・`--upstream <名前>`・
+  `--time-limit <数>[s|m|h]` (既定 60m)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s)。
+- 窓を出している間、中継は op-reason の lock を持ちます。中継の窓と 1Password の画面は、`op` の呼び出しのものと混ざらずに
+  組で出ます。
+
+### ssh を中継へ向ける
+
+- **Windows**: Windows の OpenSSH なら `~/.ssh/config` に `IdentityAgent \\.\pipe\op-reason-ssh-agent` (か、その名前を
+  `SSH_AUTH_SOCK` に)。理由は `OPREASON_SSH_REASON` で渡します:
+  `$env:OPREASON_SSH_REASON = "ログインの修正を push する"; git push`。
+- **WSL**: `ssh.exe` の代わりに `op-reason-ssh` (その名前の WSL の実行ファイル) を打ちます。たとえば
+  `GIT_SSH_COMMAND=op-reason-ssh`、ansible なら `ansible_ssh_executable=op-reason-ssh`。理由は `OPREASON_SSH_REASON` です。
+  `op-reason-ssh` は Linux の側で呼び出しの起点を見つけ、`op` と同じように呼び手 (Claude Code・herdr・repository) を集め、
+  ディストリビューションと理由とあわせて `OPREASON_SSH_CALL` に入れて (`WSLENV` を通して) 中継に渡し、引数・stdin・
+  stdout・stderr をそのままに `ssh.exe` を起こします。集められなくても `ssh.exe` は起こします (そのとき中継は接続ごとに
+  聞きます)。
+
+### 記録
+
+署名は 1 つずつ `%LOCALAPPDATA%\op-reason\ssh-log.jsonl` に残ります (4 MiB で回し、古いものを 2 つ残す)。署名した中身と
+署名そのものは残しません。`op-reason.exe --log` は、`op` の呼び出しの間に 1 行ずつ並べます:
+
+```text
+時刻      結果      秒   呼び手           理由                      コマンド
+09:00:12  SSH 許可  2.5  Claude デプロイ …  ログインの修正を push する  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
+09:00:13  SSH 通過  0.1  Claude デプロイ …  ログインの修正を push する  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
+```
+
+### 止められないもの
+
+- 自分のアカウントのプログラムが、中継をくぐろうとすること: `OPREASON_SSH_CALL` を偽る・許可した起点の下で動く・クリックを
+  送る。`op` と同じく、op-reason が見せるのは事実で、証明ではありません。
+- 1Password のパイプに直につなぐ client: 1Password にとっては新しいアプリなので、あなたの設定のとおりに確認します。
+  **op-reason の窓が出ていない 1Password の SSH の確認が、その印です。**
+- Smart App Control が `op-reason.exe` を止める所では、中継はありません (PowerShell の代わりもありません)。Git Bash の
+  `ssh` (MSYS2) は Windows のパイプを使いません。`op-ssh-sign` による git の commit の署名は、1Password のアプリに直に
+  話すかもしれません。
 
 ## 知っておくこと
 
@@ -312,7 +403,7 @@ nix develop path:./nix                       # Rust・pwsh・fish・jq・shellch
 cargo test --workspace                       # 単体テストと呼び出しの表
 cargo build && bash tests/run-all.sh         # 偽の op-reason.exe・powershell.exe・op.exe での黒箱のテスト
 python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/*.svg)
-# op-reason.exe は別の Cargo workspace: crates/op-reason-win で、Windows なら `cargo build -p fake-op` のあと
+# op-reason.exe は別の Cargo workspace: crates/op-reason-win で、Windows なら `cargo build -p fake-op -p fake-ssh` のあと
 # `cargo test --workspace` (Linux では Windows に依らない部分だけ)
 ```
 
@@ -324,7 +415,8 @@ python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/
 - 設計: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md) (英語)。
   `op-reason.exe` は [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md) (英語)、
   WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)、
-  窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)
+  窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)、
+  SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)
 - 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 
