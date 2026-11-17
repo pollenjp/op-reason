@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-17
 
 - **The window lists the references a call reads.** Under the command line: the `op://` references of the arguments,
   of the template of `op inject` (its `-i` file, or the template on stdin) and of the `--env-file`s of `op run`; eight
