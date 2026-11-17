@@ -14,8 +14,9 @@
 #
 # What it does: plan the arguments (the call table tests/cases/calls.json is shared with the Rust core), collect the
 # caller (Claude Code, Windows Terminal, the process chain, herdr), the place (repository and branch read from git
-# files: Windows may have no git.exe), log to %LOCALAPPDATA%\op-reason\log.jsonl (the same format as WSL), and start the
-# launcher with the payload (lock held, stderr scan). The launcher takes the named mutex Local\op-reason, so calls from
+# files: Windows may have no git.exe), the op:// references the call reads (from its arguments and files; never stdin:
+# tests/cases/refs.json is shared with the Rust core), log to %LOCALAPPDATA%\op-reason\log.jsonl (the same format as
+# WSL), and start the launcher with the payload (lock held, stderr scan). The launcher takes the named mutex Local\op-reason, so calls from
 # Windows and WSL run one at a time.
 #
 # Exit codes: op's; 2 = no reason, empty reason, too long, wrong wrapper option; 75 = another call's approval is still
@@ -318,6 +319,256 @@ function Get-Display([string[]]$masked) {
     }
   }
   return $sb.ToString()
+}
+
+# --- The op:// references a call reads (docs/superpowers/specs/2026-11-17-refs-in-window-design.md, section 2): the
+# arguments that are references, the template file of op inject (-i) and the env files of op run. A template on stdin
+# is not read here (the launcher must get stdin untouched). The same rules as crates/op-reason-core/src/refs.rs, whose
+# template scanner this regular expression follows; tests/cases/refs.json keeps the two in step.
+
+# The template syntax: an escape {{ "..." }} (skipped), an enclosed {{ op://... }} on one line (spaces inside kept),
+# or an unenclosed op://... not preceded by a letter, a digit, -, +, \ or ., over letters, digits, - ? _ . / = and
+# variables ($NAME, ${...}). Alternatives are tried in this order at each position, left to right.
+$script:TemplatePattern = '(?<esc>\{\{[ \t]*"(?:\\[\s\S]|[^"\\\n])*"[ \t]*\}\})' +
+'|(?<enc>\{\{[ \t]*(?<encref>op://[^\r\n]*?)[ \t]*\}\})' +
+'|(?<![A-Za-z0-9+\-\\.])(?<ref>op://(?:[A-Za-z0-9\-?_./=]|\$\{[^}\n]*\}|\$[A-Za-z_][A-Za-z0-9_]*)+)'
+
+function Get-TemplateRefs([string]$text) {
+  $out = New-Object System.Collections.ArrayList
+  if (-not $text) { return @() }
+  foreach ($m in [regex]::Matches($text, $script:TemplatePattern)) {
+    if ($m.Groups['encref'].Success) { [void]$out.Add($m.Groups['encref'].Value) }
+    elseif ($m.Groups['ref'].Success) { [void]$out.Add($m.Groups['ref'].Value) }
+  }
+  return $out.ToArray()
+}
+
+# An env file of op run: KEY=VALUE per line, # comments, export in front, quoted values; a value that starts with
+# op:// is one reference, any other value is read as a template.
+function Get-EnvFileRefs([string]$text) {
+  $out = New-Object System.Collections.ArrayList
+  if (-not $text) { return @() }
+  foreach ($raw in ($text -split "`n")) {
+    $line = $raw
+    if ($line.EndsWith("`r")) { $line = $line.Substring(0, $line.Length - 1) }
+    $line = $line.TrimStart()
+    if ($line.Length -eq 0 -or $line.StartsWith('#', [StringComparison]::Ordinal)) { continue }
+    if ($line.StartsWith('export ', [StringComparison]::Ordinal)) { $line = $line.Substring(7).TrimStart() }
+    $eq = $line.IndexOf('=')
+    if ($eq -lt 0 -or $line.Substring(0, $eq).Trim().Length -eq 0) { continue }
+    $value = $line.Substring($eq + 1).TrimStart()
+    if ($value.StartsWith('"', [StringComparison]::Ordinal)) {
+      $sb = New-Object System.Text.StringBuilder
+      $k = 1
+      while ($k -lt $value.Length) {
+        $c = [int]$value[$k]
+        if ($c -eq 34) { break }
+        if ($c -eq 92) {
+          if ($k + 1 -lt $value.Length) { [void]$sb.Append($value[$k + 1]) }
+          $k += 2
+          continue
+        }
+        [void]$sb.Append($value[$k])
+        $k++
+      }
+      $value = $sb.ToString()
+    } elseif ($value.StartsWith("'", [StringComparison]::Ordinal)) {
+      $rest = $value.Substring(1)
+      $q = $rest.IndexOf("'")
+      if ($q -ge 0) { $value = $rest.Substring(0, $q) } else { $value = $rest }
+    } else {
+      $hash = $value.IndexOf(' #')
+      if ($hash -ge 0) { $value = $value.Substring(0, $hash) }
+      $value = $value.TrimEnd()
+    }
+    if ($value.StartsWith('op://', [StringComparison]::Ordinal)) { [void]$out.Add($value.Trim()) }
+    else { foreach ($r in @(Get-TemplateRefs $value)) { [void]$out.Add($r) } }
+  }
+  return $out.ToArray()
+}
+
+# A reference as the window and the log show it: control characters and the marks that change the direction of text
+# become spaces; spaces at both ends go.
+function Get-ShownRef([string]$r) {
+  if ($null -eq $r) { return '' }
+  $chars = $r.ToCharArray()
+  for ($k = 0; $k -lt $chars.Length; $k++) {
+    $n = [int]$chars[$k]
+    if ([char]::IsControl($chars[$k]) -or $n -eq 0x200E -or $n -eq 0x200F -or ($n -ge 0x202A -and $n -le 0x202E) -or ($n -ge 0x2066 -and $n -le 0x2069)) {
+      $chars[$k] = ' '
+    }
+  }
+  return (New-Object string (, $chars)).Trim(' ')
+}
+
+# What the arguments say about the sources (pflag's rules): the subcommand, the template file of op inject, the env
+# files of op run and the last --account; nothing after -- is op's.
+function Get-RefsPlan([string[]]$opArgs) {
+  $p = @{ subcommand = $null; template = $null; envFiles = (New-Object System.Collections.ArrayList); account = $null }
+  $globalValue = @('--config', '--encoding', '--format', '--session')
+  $ord = [StringComparison]::Ordinal
+  $i = 0
+  while ($i -lt $opArgs.Length) {
+    $a = [string]$opArgs[$i]
+    if ($a -ceq '--') { break }
+    if ($a -ceq '--account') {
+      if ($i + 1 -lt $opArgs.Length) { $p.account = [string]$opArgs[$i + 1] }
+      $i += 2
+      continue
+    }
+    if ($a.StartsWith('--account=', $ord)) { $p.account = $a.Substring(10); $i++; continue }
+    if ($globalValue -ccontains $a) { $i += 2; continue }
+    if ($null -eq $p.subcommand) {
+      if (-not $a.StartsWith('-', $ord)) { $p.subcommand = $a }
+      $i++
+      continue
+    }
+    if ($p.subcommand -ceq 'inject') {
+      if ($a -ceq '-i' -or $a -ceq '--in-file') {
+        $p.template = $null
+        if ($i + 1 -lt $opArgs.Length) { $p.template = [string]$opArgs[$i + 1] }
+        $i += 2
+        continue
+      }
+      if ($a.StartsWith('--in-file=', $ord)) { $p.template = $a.Substring(10); $i++; continue }
+      if ($a -ceq '-o' -or $a -ceq '--out-file' -or $a -ceq '--file-mode') { $i += 2; continue }
+      if ($a.Length -gt 1 -and $a.StartsWith('-', $ord) -and -not $a.StartsWith('--', $ord)) {
+        # A group of short flags (-fi x): i and o take the rest of the group (after an optional =) or the next argument
+        $step = 1
+        for ($k = 1; $k -lt $a.Length; $k++) {
+          $c = [int]$a[$k]
+          if ($c -ne 105 -and $c -ne 111) { continue }
+          $rest = $a.Substring($k + 1)
+          $value = $null
+          if ($rest.Length -eq 0) {
+            $step = 2
+            if ($i + 1 -lt $opArgs.Length) { $value = [string]$opArgs[$i + 1] }
+          } else {
+            if ($rest.StartsWith('=', $ord)) { $rest = $rest.Substring(1) }
+            $value = $rest
+          }
+          if ($c -eq 105) { $p.template = $value }
+          break
+        }
+        $i += $step
+        continue
+      }
+      $i++
+      continue
+    }
+    if ($p.subcommand -ceq 'run') {
+      if ($a -ceq '--env-file') {
+        if ($i + 1 -lt $opArgs.Length) { [void]$p.envFiles.Add([string]$opArgs[$i + 1]) }
+        $i += 2
+        continue
+      }
+      if ($a.StartsWith('--env-file=', $ord)) { [void]$p.envFiles.Add($a.Substring(11)); $i++; continue }
+      if ($a -ceq '--environment') { $i += 2; continue }
+      $i++
+      continue
+    }
+    $i++
+  }
+  return $p
+}
+
+# The current directory of the file system, where relative file names in op's arguments are read from.
+function Get-FileSystemCwd {
+  try {
+    $loc = Get-Location
+    if ($loc.Provider.Name -eq 'FileSystem') { return $loc.ProviderPath }
+  } catch { }
+  return [Environment]::CurrentDirectory
+}
+
+# A template or env file named in op's arguments: a regular file only, at most its first 8 MiB, as UTF-8 (invalid
+# bytes replaced); $null when it cannot be read.
+function Read-RefFile([string]$path) {
+  if (-not $path) { return $null }
+  try {
+    $full = $path
+    if (-not [System.IO.Path]::IsPathRooted($path)) { $full = Join-Path (Get-FileSystemCwd) $path }
+    if (-not [System.IO.File]::Exists($full)) { return $null }
+    $fs = [System.IO.File]::OpenRead($full)
+    try {
+      $len = [int][Math]::Min($fs.Length, 8MB)
+      $buf = New-Object byte[] $len
+      $read = 0
+      while ($read -lt $len) {
+        $got = $fs.Read($buf, $read, $len - $read)
+        if ($got -le 0) { break }
+        $read += $got
+      }
+    } finally {
+      $fs.Dispose()
+    }
+    return (New-Object System.Text.UTF8Encoding($false)).GetString($buf, 0, $read)
+  } catch {
+    return $null
+  }
+}
+
+# A file's last path component (/ or \), as shown and cut at 40 characters.
+function Get-RefFileName([string]$path) {
+  $parts = @($path -split '[/\\]' | Where-Object { $_ })
+  $last = $path
+  if ($parts.Count -gt 0) { $last = $parts[$parts.Count - 1] }
+  return (Get-Clip (Get-ShownRef $last) 40 '…')
+}
+
+function Add-FoundRefs($state, $source, $found) {
+  $any = $false
+  foreach ($r in @($found)) {
+    $shown = Get-ShownRef ([string]$r)
+    if ($shown.Length -le 5) { continue }
+    $any = $true
+    if ($state.seen.Add($shown)) { [void]$state.list.Add($shown) }
+  }
+  if ($any) { [void]$state.from.Add($source) }
+}
+
+# The references of a call: every distinct one in the order first seen, the sources that gave one, and the --account
+# value.
+function Get-Refs([string[]]$opArgs) {
+  $p = Get-RefsPlan $opArgs
+  $state = @{
+    list = (New-Object System.Collections.ArrayList)
+    from = (New-Object System.Collections.ArrayList)
+    seen = (New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal))
+  }
+  $inArgs = New-Object System.Collections.ArrayList
+  foreach ($a in $opArgs) {
+    if ([string]$a -ceq '--') { break }
+    if (([string]$a).StartsWith('op://', [StringComparison]::Ordinal)) { [void]$inArgs.Add([string]$a) }
+  }
+  Add-FoundRefs $state ([ordered]@{ kind = 'args' }) $inArgs.ToArray()
+  if ($null -ne $p.template) {
+    $text = Read-RefFile $p.template
+    if ($null -ne $text) { Add-FoundRefs $state ([ordered]@{ kind = 'file'; name = (Get-RefFileName $p.template) }) (Get-TemplateRefs $text) }
+  }
+  foreach ($f in $p.envFiles) {
+    $text = Read-RefFile $f
+    if ($null -ne $text) { Add-FoundRefs $state ([ordered]@{ kind = 'env-file'; name = (Get-RefFileName $f) }) (Get-EnvFileRefs $text) }
+  }
+  $account = $null
+  if ($null -ne $p.account) {
+    $account = Get-Clip (Get-ShownRef $p.account) 100 '…'
+    if (-not $account) { $account = $null }
+  }
+  return @{ list = $state.list.ToArray(); from = $state.from.ToArray(); account = $account }
+}
+
+# facts.refs (the first $n, each cut at $chars; with the --account value) or start.refs; $null without references.
+function Get-RefsPart($collected, [int]$n, [int]$chars, [bool]$withAccount) {
+  $list = @($collected.list)
+  if ($list.Count -eq 0) { return $null }
+  $part = [ordered]@{
+    total = $list.Count
+    from  = @($collected.from)
+    list  = @($list | Select-Object -First $n | ForEach-Object { Get-Clip $_ $chars '…' })
+  }
+  if ($withAccount -and $collected.account) { $part.account = $collected.account }
+  return $part
 }
 
 # Plan an invocation: the wrapper's options, the reason, the mode.
@@ -664,12 +915,14 @@ $display = Get-Display $masked
 if ($env:OPREASON_ENTRY_PLAN_ONLY -eq '1') {
   $exitForPlan = 0
   if ($plan.action -eq 'refuse' -or $plan.action -eq 'error') { $exitForPlan = 2 }
+  $collected = Get-Refs $plan.opArgs
   $out = [ordered]@{
     action = $plan.action; why = $plan.why; exit = $exitForPlan; mode = $plan.mode; kind = $plan.kind
     opArgs = @($plan.opArgs); masked = @($masked); command = $display; reason = $plan.reason
     shell = $plan.shell; completionCommand = $plan.command; logArgs = @($plan.rest)
+    refs = [ordered]@{ list = @($collected.list); from = @($collected.from); account = $collected.account }
   }
-  Write-Output (ConvertTo-Json -InputObject $out -Compress -Depth 4)
+  Write-Output (ConvertTo-Json -InputObject $out -Compress -Depth 6)
   exit 0
 }
 
@@ -763,7 +1016,10 @@ $runDir = Join-Path (Join-Path $stateDir 'run') $id
 $statusFile = Join-Path $runDir 'status.json'
 $start = Get-Stamp
 $facts = $null
+$refsLog = $null
 if ($plan.mode -eq 'desktop') {
+  $collected = Get-Refs $plan.opArgs
+  $refsLog = Get-RefsPart $collected 1000 300 $false
   $facts = [ordered]@{
     time   = $start.ymdhms
     caller = [ordered]@{ type = $logCaller.type; pid = $caller.claudePid; session = $caller.session; detail = $caller.detail }
@@ -773,6 +1029,8 @@ if ($plan.mode -eq 'desktop') {
     command = (Get-Clip $display 300 '…')
     notes  = @()
   }
+  $refsFacts = Get-RefsPart $collected 8 200 $true
+  if ($null -ne $refsFacts) { $facts.refs = $refsFacts }
 }
 $args64 = @($plan.opArgs | ForEach-Object { [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$_)) })
 $payload = [ordered]@{
@@ -797,10 +1055,12 @@ $savedOutEnc = $null
 $savedPsOutEnc = $null
 try {
   [void](New-Item -ItemType Directory -Force -Path $runDir)
-  Write-LogLine (ConvertTo-JsonLine ([ordered]@{
-        v = 1; id = $id; event = 'start'; time = $start.iso; epoch = $start.epoch; session = $caller.session
-        mode = $plan.mode; kind = $plan.kind; lock = 'held'; caller = $logCaller; reason = $reasonLog; args = @($masked)
-      }))
+  $startRecord = [ordered]@{
+    v = 1; id = $id; event = 'start'; time = $start.iso; epoch = $start.epoch; session = $caller.session
+    mode = $plan.mode; kind = $plan.kind; lock = 'held'; caller = $logCaller; reason = $reasonLog; args = @($masked)
+  }
+  if ($null -ne $refsLog) { $startRecord.refs = $refsLog }
+  Write-LogLine (ConvertTo-JsonLine $startRecord)
   $started = $true
 
   Set-EnvTemp 'OPREASON_PAYLOAD' $payloadJson
