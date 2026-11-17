@@ -75,8 +75,8 @@ pub struct Sign {
     pub mode: String,
     /// per-call: `allowed` (a click), `passed` (an earlier answer), `denied` (a click or an earlier answer), `timeout`,
     /// `dismissed` (the window closed without an answer), `gone` (the client left first); show-only: `signed`; both:
-    /// `failed` (1Password refused), `no-answer` (1Password closed without an answer), `no-upstream`, `lock-timeout`,
-    /// `malformed`.
+    /// `failed` (1Password refused), `no-answer` (1Password closed without an answer, or none came in time),
+    /// `no-upstream`, `lock-timeout`, `no-window` (the window could not be shown), `malformed`.
     pub result: String,
     /// From the request to its answer, to a tenth of a second.
     pub seconds: f64,
@@ -106,7 +106,8 @@ pub struct Sign {
 /// The call a request belongs to.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CallRec {
-    /// `claude`, `shell`, `parent`, or `alone` (forwarded, or a WSL `ssh.exe` without `op-reason-ssh`).
+    /// `claude`, `shell`, `parent`, `alone` (forwarded, a WSL `ssh.exe` without `op-reason-ssh`, a root the relay cannot
+    /// see) or `unbound` (an `ssh.exe` connection without `session-bind@openssh.com`: OpenSSH before 8.9).
     pub rule: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<ProcRec>,

@@ -360,6 +360,26 @@ mod tests {
         assert_eq!(identities(&[FAILURE]), None);
     }
 
+    #[test]
+    fn a_key_list_with_many_keys_and_a_count_that_lies() {
+        let mut body = vec![IDENTITIES_ANSWER];
+        body.extend_from_slice(&500u32.to_be_bytes());
+        for i in 0..500u32 {
+            body.extend(s(&i.to_be_bytes()));
+            body.extend(s(format!("key {i}").as_bytes()));
+        }
+        let keys = identities(&body).unwrap();
+        assert_eq!(keys.len(), 500);
+        assert_eq!(keys[499].1, "key 499");
+        let mut huge = vec![IDENTITIES_ANSWER];
+        huge.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            identities(&huge),
+            None,
+            "a count far above what the body holds"
+        );
+    }
+
     fn userauth(method: &str, extra: &[u8]) -> Vec<u8> {
         cat(&[
             &s(b"session id"),

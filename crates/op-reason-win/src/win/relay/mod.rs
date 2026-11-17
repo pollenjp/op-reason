@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use op_reason_core::contract;
 use op_reason_core::lang::{self, Lang};
@@ -45,6 +45,15 @@ const SINGLE: &str = r"Local\op-reason-ssh-relay";
 const SWEEP: Duration = Duration::from_secs(60);
 /// How often a parent that cannot be waited for is looked for.
 const PARENT_POLL: Duration = Duration::from_secs(10);
+/// How many instances of the pipe wait for clients at once (ansible's forks connect together).
+const LISTENERS: usize = 4;
+
+/// How a window ended without an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum End {
+    Timeout,
+    Dismissed,
+}
 
 /// What the relay keeps in memory, behind one lock.
 pub(super) struct State {
@@ -54,6 +63,8 @@ pub(super) struct State {
     pub followers: HashMap<u64, usize>,
     /// The keys' comments (their names in 1Password) by fingerprint, from the answers to the key list.
     pub comments: HashMap<String, String>,
+    /// The windows that ended without an answer, by ticket, for the requests that waited for them.
+    pub ended: HashMap<u64, (Instant, End)>,
 }
 
 /// Shared by every thread of the relay.
@@ -84,6 +95,7 @@ impl Shared {
                 queue: Queue::default(),
                 followers: HashMap::new(),
                 comments: HashMap::new(),
+                ended: HashMap::new(),
             }),
             opts,
             state_dir: app::state_dir(),
@@ -220,21 +232,25 @@ pub fn run(args: &[OsString]) -> i32 {
             }
         });
     }
-    accept(&shared, first);
+    for _ in 1..LISTENERS {
+        let shared = Arc::clone(&shared);
+        let _ = thread::Builder::new().spawn(move || accept(&shared, None));
+    }
+    accept(&shared, Some(first));
     drop(single);
     0
 }
 
 /// Accepts clients for ever, one thread each. The next instance is created as soon as a client is connected, so that
 /// the pipe is busy for as short a time as possible (clients wait for a busy pipe, but only so long).
-fn accept(shared: &Arc<Shared>, first: pipe::Server) {
+fn accept(shared: &Arc<Shared>, first: Option<pipe::Server>) {
     let create = || loop {
         match pipe::Server::create(&shared.opts.pipe, false) {
             Ok(s) => break s,
             Err(_) => thread::sleep(Duration::from_secs(1)),
         }
     };
-    let mut server = first;
+    let mut server = first.unwrap_or_else(create);
     loop {
         let connected = server.accept().is_ok();
         let next = create();

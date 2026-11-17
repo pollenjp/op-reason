@@ -33,6 +33,11 @@ use crate::win::{procs, toast};
 const SLOW: Duration = Duration::from_secs(1);
 /// A show-only signature faster than this had no prompt (§6).
 const NO_PROMPT: f64 = 0.5;
+/// How long the relay waits for 1Password's answer to one request: past this it gives up on the connection, so that a
+/// stalled agent cannot hold the turn of the windows for ever.
+const REPLY_LIMIT: Duration = Duration::from_secs(300);
+/// The longest name, user, namespace or directory shown in the window and kept in a record.
+const VALUE_MAX: usize = 200;
 
 /// Serves one client until it closes the connection.
 pub(super) fn serve(shared: Arc<Shared>, server: pipe::Server) {
@@ -109,6 +114,8 @@ struct Who {
     client: ClientRec,
     command: String,
     destination: Option<String>,
+    /// The client is Windows OpenSSH's `ssh.exe` (it binds every connection it uses for a host, from OpenSSH 8.9 on).
+    is_ssh: bool,
 }
 
 struct Conn<'a> {
@@ -133,6 +140,8 @@ enum Late<'a> {
     Idle,
     Waiting(Ticket<'a>),
     Shown(Box<Shown<'a>>),
+    /// The window could not be shown: not tried again for this request.
+    Failed,
 }
 
 impl<'a> Conn<'a> {
@@ -172,22 +181,40 @@ impl<'a> Conn<'a> {
     }
 
     /// Sends a request to the agent and waits for its answer. Returns the answer and the seconds it took.
+    /// Sends one message to the agent; a connection that 1Password has closed since is opened again once.
+    fn send(&mut self, frame: &[u8]) -> Result<(), Reply> {
+        for _ in 0..2 {
+            let Some(up) = self.upstream() else {
+                return Err(Reply::Missing);
+            };
+            if up.write_all(frame).is_ok() {
+                return Ok(());
+            }
+            self.upstream = Upstream::NotYet;
+        }
+        Err(Reply::Closed)
+    }
+
     fn exchange(&mut self, msg: &[u8], mut watch: Watch<'_, 'a>) -> (Reply, f64) {
         let shared = self.shared;
-        let Some(up) = self.upstream() else {
+        if let Err(r) = self.send(&wire::frame(msg)) {
+            return (r, 0.0);
+        }
+        let Upstream::Up(up) = &mut self.upstream else {
             return (Reply::Missing, 0.0);
         };
-        if up.write_all(&wire::frame(msg)).is_err() {
-            self.upstream = Upstream::NotYet;
-            return (Reply::Closed, 0.0);
-        }
         let t0 = Instant::now();
         let mut late = Late::Idle;
+        let mut stalled = false;
         loop {
             match pipe::available(up) {
                 Ok(n) if n >= 4 => break,
                 Ok(_) => {}
                 Err(_) => break,
+            }
+            if t0.elapsed() >= REPLY_LIMIT {
+                stalled = true;
+                break;
             }
             match (&mut watch, &mut late) {
                 (Watch::Shown(s), _) => s.pump(Duration::from_millis(10)),
@@ -198,9 +225,10 @@ impl<'a> Conn<'a> {
                             let Late::Waiting(ticket) = std::mem::replace(state, Late::Idle) else {
                                 unreachable!("matched above")
                             };
-                            if let Some(s) = ask::late(shared, ticket, (**facts).clone()) {
-                                *state = Late::Shown(Box::new(s));
-                            }
+                            *state = match ask::late(shared, ticket, (**facts).clone()) {
+                                Some(s) => Late::Shown(Box::new(s)),
+                                None => Late::Failed,
+                            };
                         }
                     } else if t0.elapsed() >= SLOW && matches!(state, Late::Idle) {
                         *state = Late::Waiting(ask::join(shared));
@@ -210,6 +238,10 @@ impl<'a> Conn<'a> {
             }
         }
         drop(late);
+        if stalled {
+            self.upstream = Upstream::NotYet;
+            return (Reply::Closed, t0.elapsed().as_secs_f64());
+        }
         let reply = match wire::read_message(up) {
             Ok(Some(body)) => Reply::Body(body),
             _ => {
@@ -262,6 +294,8 @@ impl<'a> Conn<'a> {
             onward_key: self.binds.onward.clone(),
         });
         let is_forwarded = forwarded.is_some();
+        let single = !is_forwarded && who.root.is_none()
+            || who.is_ssh && self.binds.host.is_none() && !is_forwarded;
         Facts {
             time: time::now().ymd_hms,
             mode: o.mode,
@@ -278,17 +312,25 @@ impl<'a> Conn<'a> {
             herdr: if is_forwarded {
                 None
             } else {
-                who.herdr.clone()
+                who.herdr.as_ref().map(|h| Herdr {
+                    workspace: tidy(&h.workspace),
+                    label: tidy(&h.label),
+                    pane: tidy(&h.pane),
+                })
             },
             distro: if is_forwarded {
                 None
             } else {
-                who.distro.clone()
+                who.distro.as_deref().map(tidy)
             },
             place: if is_forwarded {
                 None
             } else {
-                who.place.clone()
+                who.place.as_ref().map(|p| Place {
+                    repo: p.repo.as_deref().map(tidy),
+                    branch: p.branch.as_deref().map(tidy),
+                    cwd: tidy(&p.cwd),
+                })
             },
             reason: if is_forwarded {
                 String::new()
@@ -296,13 +338,14 @@ impl<'a> Conn<'a> {
                 who.reason.clone()
             },
             command: who.command.clone(),
-            destination: who.destination.clone(),
+            destination: who.destination.as_deref().map(tidy),
             host_key: self.binds.host.clone(),
             forwarded,
             request,
             limit_minutes: o.limit_secs.div_ceil(60),
             waiting: 0,
             terminal: false,
+            single,
         }
     }
 
@@ -315,9 +358,9 @@ impl<'a> Conn<'a> {
             return Some(wire::failure());
         };
         let fp = wire::fingerprint(&req.key);
-        let comment = self.shared.lock().comments.get(&fp).cloned();
+        let comment = self.shared.lock().comments.get(&fp).map(|c| tidy(c));
         let mut facts = self.facts(Request::Sign {
-            purpose: wire::purpose(&req.data),
+            purpose: tidy_purpose(wire::purpose(&req.data)),
             comment,
             fingerprint: fp.clone(),
         });
@@ -331,11 +374,18 @@ impl<'a> Conn<'a> {
             return self.show_only(msg, &who, facts, &req, &id, t0);
         }
         let forwarded = self.binds.forwarded_from.is_some();
-        let origin = match (&who.root, forwarded) {
+        // An ssh.exe connection that signs before any session-bind@openssh.com: an OpenSSH older than 8.9, whose
+        // forwarded requests cannot be told from its own (design §5.3)
+        let unbound = self.unbound(&who);
+        let origin = match (&who.root, forwarded || unbound) {
             (Some(root), false) => Origin::Root(root.clone()),
             _ => Origin::Alone(self.shared.unique()),
         };
-        let shell = if forwarded { None } else { who.shell.clone() };
+        let shell = if forwarded || unbound {
+            None
+        } else {
+            who.shell.clone()
+        };
         facts.terminal = shell.is_some();
         let mark = Mark {
             origin,
@@ -429,6 +479,11 @@ impl<'a> Conn<'a> {
         Some(out)
     }
 
+    /// Whether a sign request comes from `ssh.exe` on a connection that carried no `session-bind@openssh.com`.
+    fn unbound(&self, who: &Who) -> bool {
+        who.is_ssh && self.binds.host.is_none() && self.binds.forwarded_from.is_none()
+    }
+
     /// 1Password closed a request without an answer: a toast once per run, which names the likely cause when the
     /// relay's parent is gone (design §15).
     fn no_answer(&self) {
@@ -480,8 +535,8 @@ impl<'a> Conn<'a> {
         let (key, purpose) = match req {
             Some(r) => {
                 let fp = wire::fingerprint(&r.key);
-                let comment = self.shared.lock().comments.get(&fp).cloned();
-                let purpose = match wire::purpose(&r.data) {
+                let comment = self.shared.lock().comments.get(&fp).map(|c| tidy(c));
+                let purpose = match tidy_purpose(wire::purpose(&r.data)) {
                     Purpose::UserAuth { user } => PurposeRec {
                         kind: "userauth".into(),
                         user: Some(user),
@@ -510,20 +565,26 @@ impl<'a> Conn<'a> {
         };
         let host = if forwarded {
             Some(HostRec {
-                name: who.destination.clone(),
+                name: who.destination.as_deref().map(tidy),
                 fp: self.binds.forwarded_from.clone(),
                 onward: self.binds.onward.clone(),
             })
         } else if who.destination.is_some() || self.binds.host.is_some() {
             Some(HostRec {
-                name: who.destination.clone(),
+                name: who.destination.as_deref().map(tidy),
                 fp: self.binds.host.clone(),
                 onward: None,
             })
         } else {
             None
         };
-        let rule = if forwarded { "alone" } else { who.rule };
+        let rule = if forwarded {
+            "alone"
+        } else if self.unbound(who) && req.is_some() {
+            "unbound"
+        } else {
+            who.rule
+        };
         let r = Sign {
             v: 1,
             id: id.to_owned(),
@@ -595,6 +656,27 @@ fn unknown(why: Unknown) -> Who {
         client: ClientRec::default(),
         command: String::new(),
         destination: None,
+        is_ssh: false,
+    }
+}
+
+/// A value from another process for the window and the records: control characters as spaces, at most [`VALUE_MAX`]
+/// characters.
+fn tidy(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    args::clip(&flat, VALUE_MAX, "…")
+}
+
+fn tidy_purpose(p: Purpose) -> Purpose {
+    match p {
+        Purpose::UserAuth { user } => Purpose::UserAuth { user: tidy(&user) },
+        Purpose::Sshsig { namespace } => Purpose::Sshsig {
+            namespace: tidy(&namespace),
+        },
+        Purpose::Other => Purpose::Other,
     }
 }
 
@@ -623,7 +705,7 @@ fn identify(pid: Option<u32>) -> Who {
             ..unknown(Unknown::Unreadable)
         };
     };
-    let nodes: Vec<Node> = chain
+    let mut nodes: Vec<Node> = chain
         .iter()
         .map(|l| Node {
             name: l.name.clone(),
@@ -634,6 +716,14 @@ fn identify(pid: Option<u32>) -> Who {
                 .unwrap_or_default(),
         })
         .collect();
+    // C:\Windows\System32\bash.exe starts WSL: it is an interop host, not a shell
+    if let Some(parent) = chain.get(1)
+        && parent.name.eq_ignore_ascii_case("bash.exe")
+        && procs::image_path(parent.pid)
+            .is_some_and(|p| p.to_ascii_lowercase().ends_with("\\system32\\bash.exe"))
+    {
+        nodes[1].name = "wsl.exe".to_owned();
+    }
     let client_args = &nodes[0].args;
     let client = ClientRec {
         pid,
@@ -652,6 +742,7 @@ fn identify(pid: Option<u32>) -> Who {
         client,
         command,
         destination,
+        is_ssh: first.name.eq_ignore_ascii_case("ssh.exe"),
         ..unknown(Unknown::Unreadable)
     };
     if found.rule == Rule::Wsl {
@@ -674,13 +765,18 @@ fn identify(pid: Option<u32>) -> Who {
             cmd: cmdline::shown(&nodes[i].args, call::CMD_MAX),
         })
     };
+    // A process whose start time cannot be read could be a reused PID: never remembered by it
     let id_of = |i: usize| {
-        chain.get(i).map(|l| ProcId {
+        chain.get(i).filter(|l| l.start != 0).map(|l| ProcId {
             scope: String::new(),
             pid: l.pid,
             start: l.start,
         })
     };
+    // The answer for the terminal: a command a person types, under a shell whose command line could be read
+    let terminal = found
+        .shell
+        .filter(|&i| roots::terminal_command(Os::Windows, &root.name) && !nodes[i].args.is_empty());
     let claude_pid = match found.rule {
         Rule::Claude => chain.get(found.root + 1).map(|l| l.pid),
         _ => None,
@@ -718,7 +814,7 @@ fn identify(pid: Option<u32>) -> Who {
     let shown_cwd = place::tilde(&cwd, env_nonempty("USERPROFILE").as_deref());
     Who {
         root: id_of(found.root),
-        shell: found.shell.and_then(id_of),
+        shell: terminal.and_then(id_of),
         rule: found.rule.as_str(),
         caller,
         caller_rec: Some(LogCaller {
@@ -785,8 +881,8 @@ fn from_wsl(base: Who, c: call::WslCall) -> Who {
     };
     Who {
         root: Some(id_of(&c.root)),
-        shell: (rule == "shell")
-            .then(|| c.shell.as_ref().map(id_of))
+        shell: (rule == "shell" && roots::terminal_command(Os::Linux, &c.root.name))
+            .then(|| c.shell.as_ref().filter(|s| s.start != 0).map(id_of))
             .flatten(),
         rule,
         caller,

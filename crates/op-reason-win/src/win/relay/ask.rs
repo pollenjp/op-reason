@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
 };
 
-use super::{Shared, State, peer, pipe};
+use super::{End, Shared, State, peer, pipe};
 use crate::relay_ui::{self, Facts, Phase};
 use crate::ui::Button;
 use crate::win::{app, holder, mutex, toast, window};
@@ -237,6 +237,25 @@ pub(super) fn per_call<'a>(
 ) -> Outcome<'a> {
     let mut st = shared.lock();
     loop {
+        // A request of this call asks already, in its window or with 1Password after the click: wait for it
+        if let Some(t) = st.queue.asking(mark) {
+            *st.followers.entry(t).or_default() += 1;
+            let following = Following { shared, t };
+            while st.queue.active(t) {
+                st = wait(shared, st);
+                if pipe::gone(client) {
+                    following.leave(&mut st);
+                    return Outcome::Gone;
+                }
+            }
+            following.leave(&mut st);
+            // that window ended without an answer: the requests that waited for it fail with it, unremembered
+            match st.ended.get(&t).map(|(_, end)| *end) {
+                Some(End::Timeout) => return Outcome::Timeout,
+                Some(End::Dismissed) => return Outcome::Dismissed,
+                None => continue,
+            }
+        }
         if let Some(d) = st.book.lookup(mark, shell, time::epoch_now(), &alive) {
             return if d.answer.allows() {
                 Outcome::Passed(d)
@@ -244,45 +263,45 @@ pub(super) fn per_call<'a>(
                 Outcome::Refused(d)
             };
         }
-        match st.queue.join(Some(mark)) {
-            Join::Follow(t) => {
-                *st.followers.entry(t).or_default() += 1;
-                let following = Following { shared, t };
-                while st.queue.active(t) {
-                    st = wait(shared, st);
-                    if pipe::gone(client) {
-                        following.leave(&mut st);
-                        return Outcome::Gone;
-                    }
-                }
-                following.leave(&mut st);
-            }
-            Join::Ask(t) => {
-                let ticket = Ticket { shared, t };
-                while !st.queue.turn(t) {
-                    st = wait(shared, st);
-                    if pipe::gone(client) {
-                        drop(st);
-                        drop(ticket);
-                        return Outcome::Gone;
-                    }
-                }
-                // an answer for the terminal may have come while it waited
-                if let Some(d) = st.book.lookup(mark, shell, time::epoch_now(), &alive) {
-                    drop(st);
-                    drop(ticket);
-                    return if d.answer.allows() {
-                        Outcome::Passed(d)
-                    } else {
-                        Outcome::Refused(d)
-                    };
-                }
-                let waiting = st.queue.waiting();
+        let Join::Ask(t) = st.queue.join(Some(mark)) else {
+            continue;
+        };
+        let ticket = Ticket { shared, t };
+        while !st.queue.turn(t) {
+            st = wait(shared, st);
+            if pipe::gone(client) {
                 drop(st);
-                return ask(shared, ticket, mark, shell, client, facts, waiting, id);
+                drop(ticket);
+                return Outcome::Gone;
             }
         }
+        // an answer for the terminal may have come while it waited
+        if let Some(d) = st.book.lookup(mark, shell, time::epoch_now(), &alive) {
+            drop(st);
+            drop(ticket);
+            return if d.answer.allows() {
+                Outcome::Passed(d)
+            } else {
+                Outcome::Refused(d)
+            };
+        }
+        if pipe::gone(client) {
+            drop(st);
+            drop(ticket);
+            return Outcome::Gone;
+        }
+        let waiting = st.queue.waiting();
+        drop(st);
+        return ask(shared, ticket, mark, shell, client, facts, waiting, id);
     }
+}
+
+/// Notes how a window ended without an answer, for the requests that waited for it (kept five minutes).
+fn ended(shared: &Shared, t: u64, end: End) {
+    let mut st = shared.lock();
+    st.ended
+        .retain(|_, (at, _)| at.elapsed() < Duration::from_secs(300));
+    st.ended.insert(t, (Instant::now(), end));
 }
 
 /// The window with buttons, until a click, the answer wait, the window closed, or the client gone with nobody of its
@@ -302,6 +321,10 @@ fn ask<'a>(
         Ok(h) => h,
         Err(o) => return o,
     };
+    // the client may have gone while the lock was busy
+    if pipe::gone(client) {
+        return Outcome::Gone;
+    }
     facts.waiting = waiting;
     let mut shown = match Shown::open(shared, ticket, held, facts, Phase::Ask) {
         Ok(s) => s,
@@ -327,9 +350,11 @@ fn ask<'a>(
             return Outcome::Asked(answer, Box::new(shown));
         }
         if !shown.window.is_open() {
+            ended(shared, shown.ticket(), End::Dismissed);
             return Outcome::Dismissed;
         }
         if Instant::now() >= deadline {
+            ended(shared, shown.ticket(), End::Timeout);
             return Outcome::Timeout;
         }
         if pipe::gone(client) {
@@ -370,7 +395,14 @@ pub(super) fn show_only<'a>(
         let st = shared.lock();
         drop(wait(shared, st));
     }
+    // the client may have gone in the last wait, or while the lock was busy
+    if pipe::gone(client) {
+        return Err(Outcome::Gone);
+    }
     let held = lock(shared, &|| pipe::gone(client))?;
+    if pipe::gone(client) {
+        return Err(Outcome::Gone);
+    }
     Shown::open(shared, ticket, held, facts, Phase::Asking).map_err(|_| Outcome::NoWindow)
 }
 

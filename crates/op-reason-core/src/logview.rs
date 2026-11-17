@@ -138,6 +138,7 @@ fn ssh_result_label(lang: Lang, result: &str) -> String {
         (Lang::En, "lock-timeout") => "lock wait timed out",
         (Lang::En, "signed") => "signed",
         (Lang::En, "malformed") => "malformed request",
+        (Lang::En, "no-window") => "no window",
         (Lang::Ja, "allowed") => "許可",
         (Lang::Ja, "passed") => "通過",
         (Lang::Ja, "denied") => "拒否",
@@ -150,6 +151,7 @@ fn ssh_result_label(lang: Lang, result: &str) -> String {
         (Lang::Ja, "lock-timeout") => "承認待ちが終わらない",
         (Lang::Ja, "signed") => "署名",
         (Lang::Ja, "malformed") => "壊れた依頼",
+        (Lang::Ja, "no-window") => "窓を出せなかった",
         _ => return format!("SSH {result}"),
     };
     format!("SSH {label}")
@@ -766,6 +768,11 @@ mod tests {
             ja[5].contains("SSH 拒否 (転送)") && ja[5].contains("プログラム"),
             "{}",
             ja[5]
+        );
+        assert_eq!(ssh_result_label(Lang::En, "no-window"), "SSH no window");
+        assert_eq!(
+            ssh_result_label(Lang::Ja, "no-window"),
+            "SSH 窓を出せなかった"
         );
         let json = view(&dir, Lang::En, &["--all", "--json"]);
         assert_eq!(json.len(), 5);

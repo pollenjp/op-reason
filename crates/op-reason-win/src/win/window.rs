@@ -49,6 +49,7 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
     MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
@@ -62,7 +63,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, SendMessageW, SetCursor, SetTimer, SetWindowTextW,
-    WM_CANCELMODE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
@@ -99,6 +100,9 @@ const BUTTON_GAP: f32 = 8.0;
 const BUTTON_PAD_X: f32 = 14.0;
 const BUTTON_MIN_W: f32 = 96.0;
 const BUTTON_RADIUS: f32 = 4.0;
+/// Buttons take no press until this long after they appear: a click meant for the window underneath, at the moment this
+/// one comes up on top, must not answer it.
+const BUTTON_ARMING: Duration = Duration::from_millis(400);
 
 const CLASS_NAME: PCWSTR = w!("op-reason-approval");
 /// The timer of [`Window::watch`].
@@ -208,6 +212,8 @@ struct State {
     opening: Vec<JoinHandle<()>>,
     /// The row of buttons (none in the windows of `op` calls).
     buttons: Vec<ButtonBox>,
+    /// When the buttons appeared ([`BUTTON_ARMING`]).
+    buttons_since: Instant,
     /// The button pressed and released (the answer).
     answer: Option<Button>,
 }
@@ -869,6 +875,7 @@ impl Window {
                 on_choose: Some(on_choose),
                 opening: Vec::new(),
                 buttons,
+                buttons_since: Instant::now(),
                 answer: None,
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
@@ -969,11 +976,16 @@ impl Window {
         let (title, client_h, dpi) = unsafe {
             let st = &mut *self.state;
             let old = std::mem::replace(&mut st.texts, texts.clone());
+            let had = st.buttons.len();
             if st.relayout(st.lang).is_err() {
                 st.texts = old;
                 return;
             }
-            st.pressed = None;
+            // the same buttons (a new count of waiting calls): a press in progress stays; new buttons arm again
+            if st.buttons.len() != had {
+                st.pressed = None;
+                st.buttons_since = Instant::now();
+            }
             (
                 HSTRING::from(st.texts.get(st.lang).title.as_str()),
                 st.client_height_dip(),
@@ -1213,10 +1225,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let on_button = {
                     let st = &mut *ptr;
                     let (x, y) = dip_point(lparam, st.dpi);
-                    st.pressed = st.target(x, y);
+                    let target = st.target(x, y);
+                    let early = matches!(target, Some(Target::Button(_)))
+                        && st.buttons_since.elapsed() < BUTTON_ARMING;
+                    st.pressed = if early { None } else { target };
                     matches!(st.pressed, Some(Target::Button(_)))
                 };
                 if on_button {
+                    // the release comes here even outside the window, so that only a press and a release on the
+                    // same button answers
+                    SetCapture(hwnd);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
+            WM_CAPTURECHANGED => {
+                let was_button = {
+                    let st = &mut *ptr;
+                    let was = matches!(st.pressed, Some(Target::Button(_)));
+                    if was {
+                        st.pressed = None;
+                    }
+                    was
+                };
+                if was_button {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
@@ -1232,6 +1264,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     )
                 };
                 if was_button {
+                    let _ = ReleaseCapture();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 match chosen {

@@ -226,6 +226,15 @@ impl Queue {
         }
     }
 
+    /// The ticket that asks for `mark` now (waiting or current), if any: a request of that call follows it.
+    pub fn asking(&self, mark: &Mark) -> Option<u64> {
+        self.current
+            .iter()
+            .chain(self.waiting.iter())
+            .find(|(_, m)| m.as_ref() == Some(mark))
+            .map(|(t, _)| *t)
+    }
+
     /// Whether the ticket is waiting or current.
     pub fn active(&self, ticket: u64) -> bool {
         self.current
@@ -419,5 +428,21 @@ mod tests {
         assert!(!q.active(tc), "a waiting ticket can leave");
         assert!(q.turn(tb));
         assert_eq!(q.waiting(), 1);
+    }
+
+    #[test]
+    fn the_ticket_that_asks_for_a_call_is_found() {
+        let mut q = Queue::default();
+        let a = mark(1, "K", "a");
+        assert_eq!(q.asking(&a), None);
+        let Join::Ask(t) = q.join(Some(&a)) else {
+            panic!("asks")
+        };
+        assert_eq!(q.asking(&a), Some(t), "waiting");
+        assert!(q.turn(t));
+        assert_eq!(q.asking(&a), Some(t), "current");
+        assert_eq!(q.asking(&mark(2, "K", "a")), None);
+        q.done(t);
+        assert_eq!(q.asking(&a), None);
     }
 }

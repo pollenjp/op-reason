@@ -4,6 +4,7 @@
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::time::Duration;
 
@@ -17,7 +18,9 @@ use windows::Win32::Security::{
     GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
-use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows::Win32::Storage::FileSystem::{
+    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
+};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
@@ -187,10 +190,17 @@ pub fn gone(file: &File) -> bool {
 }
 
 /// Connects to a pipe as a client (the 1Password agent): busy instances are waited for, up to two seconds, three times.
+/// The server may identify the relay's user but not act as it (`SECURITY_IDENTIFICATION`): a program that took the
+/// name before 1Password learns nothing more.
 pub fn connect(name: &str) -> io::Result<File> {
     let mut tries = 0;
     loop {
-        match OpenOptions::new().read(true).write(true).open(name) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION.0)
+            .open(name)
+        {
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) && tries < 3 => {
                 tries += 1;
                 // SAFETY: a valid name.

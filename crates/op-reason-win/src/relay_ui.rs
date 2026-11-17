@@ -88,6 +88,8 @@ pub struct Facts {
     pub waiting: usize,
     /// Offer the answer that allows the terminal (a person's command).
     pub terminal: bool,
+    /// The answer covers this signature only (a connection that cannot be tied to a call).
+    pub single: bool,
 }
 
 /// Which window.
@@ -136,6 +138,7 @@ struct Table {
     footer_ask_alone: &'static str,
     waiting: &'static str,
     footer_asking_per_call: &'static str,
+    footer_asking_slow: &'static str,
     footer_asking_show_only: &'static str,
 }
 
@@ -175,6 +178,7 @@ const EN: Table = Table {
     footer_ask_alone: "per-call mode · this answer covers this signature only",
     waiting: " · {0} more waiting",
     footer_asking_per_call: "per-call mode · allowed here; 1Password itself may ask now. Deny any 1Password prompt that comes without this window",
+    footer_asking_slow: "per-call mode · 1Password itself may ask now (to unlock it, for example). Deny any 1Password prompt that comes without this window",
     footer_asking_show_only: "show-only mode: decide in 1Password's prompt. Deny any 1Password prompt that comes without this window",
 };
 
@@ -214,6 +218,7 @@ const JA: Table = Table {
     footer_ask_alone: "呼び出しごとに決めるモード · この答えはこの署名だけに効きます",
     waiting: " · ほかに {0} 件待っています",
     footer_asking_per_call: "呼び出しごとに決めるモード · ここでは許可済み。いまは 1Password 自身が確認することがあります。この窓が出ていない 1Password の確認は拒否してください",
+    footer_asking_slow: "呼び出しごとに決めるモード · いまは 1Password 自身が確認することがあります (ロックの解除など)。この窓が出ていない 1Password の確認は拒否してください",
     footer_asking_show_only: "表示だけのモード: 決めるのは 1Password の画面です。この窓が出ていない 1Password の確認は拒否してください",
 };
 
@@ -296,11 +301,14 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     if let Some(k) = key {
         lines.push((t.key.to_owned(), k));
     }
-    let alone = matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
+    let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
     let mut footer = match (phase, f.mode) {
         (Phase::Ask, _) if alone => t.footer_ask_alone.to_owned(),
         (Phase::Ask, _) => fill(t.footer_ask, &f.limit_minutes.to_string()),
-        (Phase::Asking, Mode::PerCall) => t.footer_asking_per_call.to_owned(),
+        (Phase::Asking, Mode::PerCall) if matches!(f.request, Request::Sign { .. }) => {
+            t.footer_asking_per_call.to_owned()
+        }
+        (Phase::Asking, Mode::PerCall) => t.footer_asking_slow.to_owned(),
         (Phase::Asking, Mode::ShowOnly) => t.footer_asking_show_only.to_owned(),
     };
     if f.waiting > 0 {
@@ -490,6 +498,7 @@ mod tests {
             limit_minutes: 60,
             waiting: 0,
             terminal: false,
+            single: false,
         }
     }
 
@@ -635,6 +644,13 @@ mod tests {
             en.footer
         );
         assert!(!en.footer.contains("waiting"), "{}", en.footer);
+        let mut single = facts();
+        single.single = true;
+        assert!(
+            build(&single, Phase::Ask, Lang::En)
+                .footer
+                .contains("this signature only")
+        );
         let mut waiting = facts();
         waiting.waiting = 2;
         assert!(
@@ -659,6 +675,21 @@ mod tests {
             build(&show, Phase::Asking, Lang::Ja)
                 .footer
                 .contains("この窓が出ていない 1Password の確認は拒否")
+        );
+        // 1Password slow to answer the key list: nothing was allowed here
+        let mut list = facts();
+        list.request = Request::List;
+        let l = build(&list, Phase::Asking, Lang::En);
+        assert!(!l.footer.contains("allowed"), "{}", l.footer);
+        assert!(
+            l.footer.contains("Deny any 1Password prompt"),
+            "{}",
+            l.footer
+        );
+        assert!(
+            !build(&list, Phase::Asking, Lang::Ja)
+                .footer
+                .contains("許可済み")
         );
     }
 

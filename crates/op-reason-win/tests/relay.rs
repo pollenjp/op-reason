@@ -879,3 +879,152 @@ fn the_relay_says_when_its_parent_is_gone() {
     assert!(wait_until(Duration::from_secs(10), || sb.status().0 == Some(1)));
     assert!(ok, "the relay noticed that cmd ended: {:?}", sb.records());
 }
+
+#[test]
+fn a_client_that_goes_away_closes_its_window_and_a_queued_one_never_gets_one() {
+    let _g = serial();
+    let sb = Sandbox::new("gone");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&["--answer-wait", "4s"], &[]);
+    // the asking client goes away, nobody of its call waits: the window closes
+    let mut a = sb.client(Some("gone A"), &["sign"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(10), || screen::titled(ASK).is_some()));
+    let _ = a.kill();
+    let _ = a.wait();
+    assert!(
+        wait_until(Duration::from_secs(3), || screen::window().is_none()),
+        "the window closes when its client is gone"
+    );
+    // a client that goes away while it waits for its turn never gets a window
+    let b = sb.client(Some("gone B"), &["sign"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(10), || screen::titled(ASK).is_some()));
+    let mut c = sb.client(Some("gone C"), &["sign"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let _ = c.kill();
+    let _ = c.wait();
+    assert_eq!(
+        text(&b.wait_with_output().unwrap()),
+        "sign 5\n",
+        "B times out"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        screen::window().is_none(),
+        "no window for the client that left"
+    );
+    let results: Vec<(String, String)> = sb
+        .signs()
+        .iter()
+        .map(|s| {
+            (
+                s["reason"].as_str().unwrap_or("").to_owned(),
+                s["result"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    for (reason, result) in [
+        ("gone A", "gone"),
+        ("gone B", "timeout"),
+        ("gone C", "gone"),
+    ] {
+        assert!(
+            results.contains(&(reason.to_owned(), result.to_owned())),
+            "{reason} {result}: {results:?}"
+        );
+    }
+    assert_eq!(sb.agent_signs(), 0);
+}
+
+#[test]
+fn an_ssh_exe_connection_without_session_bind_asks_for_every_signature() {
+    let _g = serial();
+    let sb = Sandbox::new("unbound");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&["--answer-wait", "2s"], &[]);
+    let dir = sb.root.join("openssh");
+    fs::create_dir_all(&dir).unwrap();
+    fs::copy(fake_ssh(), dir.join("ssh.exe")).unwrap();
+    let run = |steps: &[&str]| {
+        Command::new(dir.join("ssh.exe"))
+            .arg("client")
+            .arg(sb.pipe())
+            .args(steps)
+            .env("OPREASON_SSH_REASON", "unbound check")
+            .env_remove("OPREASON_SSH_CALL")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    assert_eq!(text(&run(&["sign"])), "sign 5\n");
+    assert_eq!(text(&run(&["bind", "sign"])), "bind 5\nsign 5\n");
+    let rules: Vec<String> = sb
+        .signs()
+        .iter()
+        .map(|s| s["call"]["rule"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(rules.len(), 2, "{:?}", sb.signs());
+    assert_eq!(
+        rules[0], "unbound",
+        "an older OpenSSH: every signature asks"
+    );
+    assert_ne!(rules[1], "unbound", "with session-bind, the call's rule");
+}
+
+#[test]
+fn closing_the_window_fails_the_requests_that_wait_with_it() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let _g = serial();
+    let sb = Sandbox::new("dismiss");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let first = sb.client(Some("close check"), &["sign"]).spawn().unwrap();
+    let second = sb.client(Some("close check"), &["sign"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(10), || screen::titled(ASK).is_some()));
+    std::thread::sleep(Duration::from_secs(1));
+    let h = screen::titled(ASK).unwrap();
+    // SAFETY: a message to a window of this desktop.
+    unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
+    assert_eq!(text(&first.wait_with_output().unwrap()), "sign 5\n");
+    assert_eq!(text(&second.wait_with_output().unwrap()), "sign 5\n");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        screen::window().is_none(),
+        "no second window for the same call"
+    );
+    let results: Vec<String> = sb
+        .signs()
+        .iter()
+        .map(|s| s["result"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(results, ["dismissed", "dismissed"]);
+}
+
+#[test]
+fn an_allowed_call_whose_answer_never_comes_is_recorded() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("no-answer-per-call");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let a = sb
+        .client(Some("per-call no answer"), &["sign"])
+        .spawn()
+        .unwrap();
+    answer(true);
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 14\n");
+    fs::write(sb.agent_dir().join("close-on-sign"), "").unwrap();
+    let b = sb
+        .client(Some("per-call no answer"), &["sign"])
+        .output()
+        .unwrap();
+    assert_eq!(text(&b), "sign 5\n");
+    let last = sb.signs().last().cloned().unwrap();
+    assert_eq!(last["result"], "no-answer", "{last}");
+    assert!(last["decision"].is_string(), "{last}");
+}

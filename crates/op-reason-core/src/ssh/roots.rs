@@ -72,6 +72,26 @@ pub const LINUX_SHELLS: &[&str] = &[
 ];
 /// The processes that start Windows programs for WSL.
 pub const WSL_HOSTS: &[&str] = &["wsl.exe", "wslhost.exe"];
+/// The commands a person types that the answer "allow this terminal" covers (design §5.4): ssh and the programs that run
+/// it for a person. Programs that live on (terminal programs, AI agents' command-line tools) are left out: they would
+/// sign silently long after the click. Linux names are `comm`, cut at 15 characters (`ansible-playboo`).
+pub const TERMINAL_COMMANDS: &[&str] = &[
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "git",
+    "ssh-keygen",
+    "ssh-add",
+    "sshfs",
+    "mosh",
+    "ansible",
+    "ansible-playboo",
+    "ansible-playbook",
+    "ansible-pull",
+    "ansible-console",
+    "op-reason-ssh",
+];
 
 /// The root of the call of `chain[0]` (the client), by the rules above.
 pub fn find(os: Os, chain: &[Node]) -> Found {
@@ -119,6 +139,18 @@ fn named(os: Os, name: &str, names: &[&str]) -> bool {
     match os {
         Os::Windows => names.iter().any(|n| n.eq_ignore_ascii_case(name)),
         Os::Linux => names.contains(&name),
+    }
+}
+
+/// Whether a root may be covered by the answer that allows its terminal: one of [`TERMINAL_COMMANDS`] (on Windows with
+/// `.exe`, without regard to case).
+pub fn terminal_command(os: Os, name: &str) -> bool {
+    match os {
+        Os::Windows => name
+            .to_ascii_lowercase()
+            .strip_suffix(".exe")
+            .is_some_and(|stem| TERMINAL_COMMANDS.contains(&stem)),
+        Os::Linux => TERMINAL_COMMANDS.contains(&name),
     }
 }
 
@@ -331,5 +363,45 @@ mod tests {
             "Windows names on Linux"
         );
         assert!(interactive_shell(w, &n("bash.exe", &["bash", "-i"])));
+    }
+
+    #[test]
+    fn the_terminal_answer_is_for_commands_a_person_types() {
+        let w = Os::Windows;
+        for yes in [
+            "ssh.exe",
+            "SSH.EXE",
+            "git.exe",
+            "scp.exe",
+            "sftp.exe",
+            "ssh-keygen.exe",
+        ] {
+            assert!(terminal_command(w, yes), "{yes}");
+        }
+        for no in [
+            "codex.exe",
+            "node.exe",
+            "herdr-core.exe",
+            "pwsh.exe",
+            "bash.exe",
+            "fake-ssh.exe",
+        ] {
+            assert!(!terminal_command(w, no), "{no}");
+        }
+        let l = Os::Linux;
+        for yes in [
+            "ssh",
+            "git",
+            "scp",
+            "rsync",
+            "ansible-playboo",
+            "ansible",
+            "op-reason-ssh",
+        ] {
+            assert!(terminal_command(l, yes), "{yes}");
+        }
+        for no in ["codex", "gemini", "node", "python3", "herdr", "ssh.exe"] {
+            assert!(!terminal_command(l, no), "{no}");
+        }
     }
 }

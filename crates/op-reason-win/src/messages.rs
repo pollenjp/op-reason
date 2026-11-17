@@ -37,9 +37,10 @@ AI agents: run op-reason --skill once to learn how to call op here.
 SSH keys (the relay in front of the 1Password SSH agent)
   op-reason --ssh-agent [--mode per-call|show-only] [--pipe <name>]
                         [--upstream <name>] [--time-limit <n>[s|m|h]]
+                        [--answer-wait <n>[s|m]]
   op-reason --ssh-agent --status   whether the relay answers on its pipe
-  Point ssh at \\.\pipe\op-reason-ssh-agent (IdentityAgent or SSH_AUTH_SOCK)
-  and give the reason in OPREASON_SSH_REASON. per-call (the default) asks once
+  Point ssh at it with SSH_AUTH_SOCK=\\.\pipe\op-reason-ssh-agent and give
+  the reason in OPREASON_SSH_REASON. per-call (the default) asks once
   per call in op-reason's window; show-only only shows who and why while
   1Password asks. Keep it running from a scheduled task.
 
@@ -75,8 +76,9 @@ AI エージェントは、最初に op-reason --skill を打って呼び方を�
 SSH の鍵 (1Password の SSH agent の前に置く中継)
   op-reason --ssh-agent [--mode per-call|show-only] [--pipe <名前>]
                         [--upstream <名前>] [--time-limit <数>[s|m|h]]
+                        [--answer-wait <数>[s|m]]
   op-reason --ssh-agent --status   中継がパイプで答えるか
-  ssh を \\.\pipe\op-reason-ssh-agent に向け (IdentityAgent か SSH_AUTH_SOCK)、理由は
+  ssh は SSH_AUTH_SOCK=\\.\pipe\op-reason-ssh-agent で中継に向け、理由は
   OPREASON_SSH_REASON で渡します。per-call (既定) は呼び出しごとに 1 回、op-reason の
   窓で確認します。show-only は、1Password が確認する間、誰が何のためにを見せるだけ
   です。中継はタスク スケジューラーのタスクから起こしたままにしてください。
@@ -248,6 +250,7 @@ mod tests {
                 "op-reason --ssh-agent",
                 "--mode per-call|show-only",
                 "--time-limit",
+                "--answer-wait",
                 "--status",
                 "OPREASON_SSH_REASON",
             ] {
