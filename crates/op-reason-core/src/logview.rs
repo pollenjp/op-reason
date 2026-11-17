@@ -15,7 +15,8 @@ fn usage(lang: Lang) -> &'static str {
     match lang {
         Lang::En => {
             "Usage: op-reason-log [--since <n>(s|m|h|d)] [--all] [--json]
-  Lists the calls of op-reason (the 1Password CLI wrapper) by start time.
+  Lists the calls of op-reason (the 1Password CLI wrapper) by start time, and on
+  Windows the signatures of op-reason's SSH relay (ssh-log.jsonl).
   --since 30m / 2h / 1d   the period (default 1h)
   --all                   every record left
   --json                  one JSON object per call (reason and command not cut, every reference read)
@@ -24,6 +25,7 @@ fn usage(lang: Lang) -> &'static str {
         Lang::Ja => {
             "使い方: op-reason-log [--since <数>(s|m|h|d)] [--all] [--json]
   op-reason (1Password CLI の wrapper) の記録を、始まった時刻の順に表で出します。
+  Windows では、op-reason の SSH の中継の署名の記録 (ssh-log.jsonl) も並べます。
   --since 30m / 2h / 1d   出す期間 (既定 1h)
   --all                   残っている記録を全部出す
   --json                  1 呼び出し 1 行の JSON で出す (理由とコマンドを切らず、読む参照を全部)
@@ -35,6 +37,9 @@ fn usage(lang: Lang) -> &'static str {
 struct Labels {
     header: [&'static str; 6],
     human: &'static str,
+    program: &'static str,
+    terminal: &'static str,
+    forwarded: &'static str,
     running: &'static str,
     refused: &'static str,
     no_window: &'static str,
@@ -55,6 +60,9 @@ fn labels(lang: Lang) -> Labels {
         Lang::En => Labels {
             header: ["Time", "Result", "Secs", "Caller", "Reason", "Command"],
             human: "Human",
+            program: "Program",
+            terminal: " (terminal)",
+            forwarded: " (forwarded)",
             running: "running or interrupted",
             refused: "refused",
             no_window: " (no window)",
@@ -72,6 +80,9 @@ fn labels(lang: Lang) -> Labels {
         Lang::Ja => Labels {
             header: ["時刻", "結果", "秒", "呼び手", "理由", "コマンド"],
             human: "人",
+            program: "プログラム",
+            terminal: " (ターミナル)",
+            forwarded: " (転送)",
             running: "実行中か中断",
             refused: "断った",
             no_window: " (窓なし)",
@@ -110,6 +121,55 @@ fn result_label(lang: Lang, result: &str) -> String {
         _ => return result.to_string(),
     };
     label.to_string()
+}
+
+/// The result of a signature through the SSH relay (`ssh-sign`).
+fn ssh_result_label(lang: Lang, result: &str) -> String {
+    let label = match (lang, result) {
+        (Lang::En, "allowed") => "allowed",
+        (Lang::En, "passed") => "passed",
+        (Lang::En, "denied") => "denied",
+        (Lang::En, "timeout") => "timed out",
+        (Lang::En, "dismissed") => "window closed",
+        (Lang::En, "gone") => "caller left",
+        (Lang::En, "failed") => "failed in 1Password",
+        (Lang::En, "no-answer") => "no answer from 1Password",
+        (Lang::En, "no-upstream") => "no 1Password agent",
+        (Lang::En, "lock-timeout") => "lock wait timed out",
+        (Lang::En, "signed") => "signed",
+        (Lang::En, "malformed") => "malformed request",
+        (Lang::Ja, "allowed") => "許可",
+        (Lang::Ja, "passed") => "通過",
+        (Lang::Ja, "denied") => "拒否",
+        (Lang::Ja, "timeout") => "時間切れ",
+        (Lang::Ja, "dismissed") => "窓を閉じた",
+        (Lang::Ja, "gone") => "呼び手が去った",
+        (Lang::Ja, "failed") => "1Password で失敗",
+        (Lang::Ja, "no-answer") => "1Password が答えない",
+        (Lang::Ja, "no-upstream") => "1Password の agent が無い",
+        (Lang::Ja, "lock-timeout") => "承認待ちが終わらない",
+        (Lang::Ja, "signed") => "署名",
+        (Lang::Ja, "malformed") => "壊れた依頼",
+        _ => return format!("SSH {result}"),
+    };
+    format!("SSH {label}")
+}
+
+/// What the SSH relay itself recorded (`ssh-relay`).
+fn relay_label(lang: Lang, what: &str, mode: &str) -> String {
+    match (lang, what) {
+        (Lang::En, "start") => format!("SSH relay started ({mode})"),
+        (Lang::En, "exit") => "SSH relay stopped".to_string(),
+        (Lang::En, "no-prompt") => format!("SSH: 1Password did not ask ({mode})"),
+        (Lang::En, "no-parent") => "SSH relay without a parent process".to_string(),
+        (Lang::En, "parent-ended") => "SSH relay's parent process ended".to_string(),
+        (Lang::Ja, "start") => format!("SSH の中継を開始 ({mode})"),
+        (Lang::Ja, "exit") => "SSH の中継を終了".to_string(),
+        (Lang::Ja, "no-prompt") => format!("SSH: 1Password が確認しなかった ({mode})"),
+        (Lang::Ja, "no-parent") => "SSH の中継に親の process が無い".to_string(),
+        (Lang::Ja, "parent-ended") => "SSH の中継の親の process が終わった".to_string(),
+        _ => format!("SSH relay {what}"),
+    }
 }
 
 fn why_label(lang: Lang, why: &str) -> String {
@@ -209,10 +269,10 @@ fn who(lang: Lang, rec: &Value) -> String {
     if caller.is_null() {
         return "-".to_string();
     }
-    let mut s = if caller["type"] == "claude" {
-        "Claude".to_string()
-    } else {
-        labels(lang).human.to_string()
+    let mut s = match caller["type"].as_str() {
+        Some("claude") => "Claude".to_string(),
+        Some("program") => labels(lang).program.to_string(),
+        _ => labels(lang).human.to_string(),
     };
     let herdr = &caller["herdr"];
     if !herdr.is_null() {
@@ -261,7 +321,38 @@ fn refs_count(rec: &Value) -> Option<u64> {
     elsewhere.then(|| refs["total"].as_u64()).flatten()
 }
 
-fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
+/// The row of a signature through the SSH relay. A request that an earlier answer covered takes the caller and the
+/// reason of the record that has that answer (`decisions`, by id).
+fn ssh_row(
+    lang: Lang,
+    rec: &Value,
+    when: String,
+    decisions: &HashMap<String, Value>,
+) -> [String; 6] {
+    let l = labels(lang);
+    let facts = rec["decision"]
+        .as_str()
+        .filter(|_| rec["caller"].is_null())
+        .and_then(|id| decisions.get(id))
+        .unwrap_or(rec);
+    let mut result = ssh_result_label(lang, &text(&rec["result"]));
+    if rec["answer"] == "allow-terminal" {
+        result.push_str(l.terminal);
+    }
+    if rec["forwarded"] == true {
+        result.push_str(l.forwarded);
+    }
+    [
+        when,
+        result,
+        cell(&text(&rec["seconds"])),
+        who(lang, facts),
+        cell(&clip(&text(&facts["reason"]), 48, "…")),
+        cell(&clip(&text(&rec["client"]["cmd"]), 60, "…")),
+    ]
+}
+
+fn row(lang: Lang, rec: &Value, today: &str, decisions: &HashMap<String, Value>) -> [String; 6] {
     let l = labels(lang);
     let epoch = rec["epoch"].as_i64().unwrap_or(0);
     let (date, hms, md) = local_parts(epoch);
@@ -272,6 +363,15 @@ fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
     };
     let reason = cell(&clip(&text(&rec["reason"]), 48, "…"));
     match rec["event"].as_str().unwrap_or("") {
+        "ssh-sign" => ssh_row(lang, rec, when, decisions),
+        "ssh-relay" => [
+            when,
+            relay_label(lang, &text(&rec["what"]), &text(&rec["mode"])),
+            "-".into(),
+            "-".into(),
+            "-".into(),
+            cell(&text(&rec["pipe"])),
+        ],
         "start" => {
             let end = &rec["end"];
             let mut result = if end.is_null() {
@@ -401,10 +501,11 @@ pub fn run(
     };
 
     let main_log = state_dir.join("log.jsonl");
-    let files: Vec<_> = [state_dir.join("log.1.jsonl"), main_log.clone()]
+    let mut files: Vec<_> = [state_dir.join("log.1.jsonl"), main_log.clone()]
         .into_iter()
         .filter(|p| p.is_file())
         .collect();
+    files.extend(crate::ssh::record::files(state_dir));
     if files.is_empty() {
         let _ = writeln!(out, "{} ({})", l.no_log, main_log.display());
         return 0;
@@ -425,11 +526,13 @@ pub fn run(
         }
     }
     let mut ends: HashMap<String, Value> = HashMap::new();
+    let mut decisions: HashMap<String, Value> = HashMap::new();
     for r in &records {
-        if r["event"] == "end"
-            && let Some(id) = r["id"].as_str()
-        {
+        let Some(id) = r["id"].as_str() else { continue };
+        if r["event"] == "end" {
             ends.insert(id.to_string(), r.clone());
+        } else if r["event"] == "ssh-sign" && !r["caller"].is_null() {
+            decisions.insert(id.to_string(), r.clone());
         }
     }
     let mut rows: Vec<Value> = records
@@ -437,7 +540,7 @@ pub fn run(
         .filter(|r| {
             matches!(
                 r["event"].as_str(),
-                Some("start" | "refused" | "shared-approval")
+                Some("start" | "refused" | "shared-approval" | "ssh-sign" | "ssh-relay")
             ) && r["epoch"].as_i64().unwrap_or(0) >= cutoff
         })
         .map(|mut r| {
@@ -479,7 +582,7 @@ pub fn run(
     let mut table: Vec<[String; 6]> = vec![l.header.map(str::to_string)];
     table.extend(
         rows.iter()
-            .map(|r| row(lang, r, &today).map(|c| visible(&c))),
+            .map(|r| row(lang, r, &today, &decisions).map(|c| visible(&c))),
     );
     let mut widths = [0usize; 6];
     for r in &table {
@@ -537,16 +640,25 @@ mod tests {
                 "end":{"result":"approved","seconds":1,"window":"shown","runner":"launcher","fallback":{"why":"no-status","exit":1}}}"#,
         )
         .unwrap();
-        assert_eq!(row(Lang::En, &rec, "")[1], "approved (fallback)");
-        assert_eq!(row(Lang::Ja, &rec, "")[1], "許可 (回避経路)");
+        assert_eq!(
+            row(Lang::En, &rec, "", &HashMap::new())[1],
+            "approved (fallback)"
+        );
+        assert_eq!(
+            row(Lang::Ja, &rec, "", &HashMap::new())[1],
+            "許可 (回避経路)"
+        );
         let mut plain = rec.clone();
         plain["end"]["fallback"] = Value::Null;
-        assert_eq!(row(Lang::En, &plain, "")[1], "approved");
+        assert_eq!(row(Lang::En, &plain, "", &HashMap::new())[1], "approved");
         let refused: Value = serde_json::from_str(
             r#"{"event":"refused","epoch":0,"why":"no-exe","caller":{"type":"human"}}"#,
         )
         .unwrap();
-        assert_eq!(row(Lang::En, &refused, "")[1], "refused (no op-reason.exe)");
+        assert_eq!(
+            row(Lang::En, &refused, "", &HashMap::new())[1],
+            "refused (no op-reason.exe)"
+        );
     }
 
     #[test]
@@ -560,16 +672,105 @@ mod tests {
             .unwrap()
         };
         let file = r#"[{"kind":"args"},{"kind":"file","name":"t"}]"#;
-        let en = row(Lang::En, &rec(file, 5), "")[5].clone();
+        let en = row(Lang::En, &rec(file, 5), "", &HashMap::new())[5].clone();
         assert!(en.ends_with("… (5 refs)"), "{en}");
         assert_eq!(en.chars().count(), 61, "as long as a cut command: 60 and …");
-        assert!(row(Lang::En, &rec(file, 1), "")[5].ends_with("(1 ref)"));
-        assert!(row(Lang::Ja, &rec(file, 3), "")[5].ends_with("… (参照 3 件)"));
-        let only_args = row(Lang::En, &rec(r#"[{"kind":"args"}]"#, 2), "")[5].clone();
+        assert!(row(Lang::En, &rec(file, 1), "", &HashMap::new())[5].ends_with("(1 ref)"));
+        assert!(row(Lang::Ja, &rec(file, 3), "", &HashMap::new())[5].ends_with("… (参照 3 件)"));
+        let only_args = row(
+            Lang::En,
+            &rec(r#"[{"kind":"args"}]"#, 2),
+            "",
+            &HashMap::new(),
+        )[5]
+        .clone();
         assert!(!only_args.contains("refs"), "{only_args}");
         let mut none = rec(file, 2);
         none.as_object_mut().unwrap().remove("refs");
-        assert!(!row(Lang::Ja, &none, "")[5].contains("参照"));
+        assert!(!row(Lang::Ja, &none, "", &HashMap::new())[5].contains("参照"));
+    }
+
+    /// A state directory with the records of both logs: the SSH relay's in two files, an `op` call in the middle.
+    fn mixed_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "op-reason-logview-ssh-{}",
+            crate::log::random_u64()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let allowed = r#"{"v":1,"id":"s1","event":"ssh-sign","time":"t","epoch":1000,"mode":"per-call","result":"allowed","seconds":2.5,"answer":"allow","call":{"rule":"claude"},"caller":{"type":"claude","claude_pid":3,"herdr":{"workspace":"w","label":"lab","pane":"p"},"cwd":"~","repo":null,"branch":null},"reason":"push the fix","client":{"pid":11,"exe":"C:\\ssh.exe","cmd":"ssh.exe git@github.com \"git-receive-pack 'me/r.git'\""},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"git"},"forwarded":false}"#;
+        std::fs::write(dir.join("ssh-log.1.jsonl"), format!("{allowed}\n")).unwrap();
+        let newer = [
+            r#"{"v":1,"id":"r1","event":"ssh-relay","time":"t","epoch":900,"what":"start","mode":"per-call","pipe":"\\\\.\\pipe\\op-reason-ssh-agent","upstream":"u","limit":3600,"pid":5}"#,
+            r#"{"v":1,"id":"s2","event":"ssh-sign","time":"t","epoch":3000,"mode":"per-call","result":"passed","seconds":0.1,"decision":"s1","client":{"pid":12,"exe":"C:\\ssh.exe","cmd":"ssh.exe git@github.com"},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"git"},"forwarded":false}"#,
+            r#"{"v":1,"id":"s3","event":"ssh-sign","time":"t","epoch":4000,"mode":"per-call","result":"denied","seconds":4.0,"answer":"deny","call":{"rule":"alone"},"caller":{"type":"program","claude_pid":null,"herdr":null,"cwd":"","repo":null,"branch":null},"reason":"","client":{"pid":13,"exe":"C:\\ssh.exe","cmd":"ssh.exe -A lavie"},"key":{"fp":"SHA256:x"},"purpose":{"kind":"userauth","user":"me"},"forwarded":true}"#,
+        ];
+        std::fs::write(dir.join("ssh-log.jsonl"), newer.join("\n") + "\n").unwrap();
+        let op = [
+            r#"{"v":1,"id":"o1","event":"start","time":"t","epoch":2000,"session":null,"mode":"desktop","kind":"desktop","lock":"held","caller":{"type":"human","claude_pid":null,"herdr":null,"cwd":"/w","repo":null,"branch":null},"reason":"list vaults","args":["vault","list"]}"#,
+            r#"{"v":1,"id":"o1","event":"end","time":"t","epoch":2001,"session":null,"result":"approved","exit":0,"seconds":1,"window":"shown","toast":"shown","others":0,"signout":"ok","watch":{"start":null,"end":null}}"#,
+        ];
+        std::fs::write(dir.join("log.jsonl"), op.join("\n") + "\n").unwrap();
+        dir
+    }
+
+    fn view(dir: &Path, lang: Lang, args: &[&str]) -> Vec<String> {
+        let argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(run(&argv, dir, 5000, lang, &mut out, &mut err), 0);
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_ssh_records_are_merged_by_time_one_line_each() {
+        let dir = mixed_dir();
+        let lines = view(&dir, Lang::En, &["--all"]);
+        assert_eq!(lines.len(), 6, "the header and five rows: {lines:#?}");
+        assert!(
+            lines[1].contains("SSH relay started (per-call)"),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[2].contains("SSH allowed"), "{}", lines[2]);
+        assert!(
+            lines[2].contains("Claude lab p") && lines[2].contains("push the fix"),
+            "{}",
+            lines[2]
+        );
+        assert!(lines[2].contains("ssh.exe git@github.com"), "{}", lines[2]);
+        assert!(
+            lines[3].contains("approved") && lines[3].contains("list vaults"),
+            "{}",
+            lines[3]
+        );
+        assert!(lines[4].contains("SSH passed"), "{}", lines[4]);
+        assert!(
+            lines[4].contains("Claude lab p") && lines[4].contains("push the fix"),
+            "a passed request shows the caller and reason of its decision: {}",
+            lines[4]
+        );
+        assert!(
+            lines[5].contains("SSH denied (forwarded)") && lines[5].contains("Program"),
+            "{}",
+            lines[5]
+        );
+        let ja = view(&dir, Lang::Ja, &["--all"]);
+        assert!(ja[1].contains("SSH の中継を開始 (per-call)"), "{}", ja[1]);
+        assert!(ja[2].contains("SSH 許可"), "{}", ja[2]);
+        assert!(ja[4].contains("SSH 通過"), "{}", ja[4]);
+        assert!(
+            ja[5].contains("SSH 拒否 (転送)") && ja[5].contains("プログラム"),
+            "{}",
+            ja[5]
+        );
+        let json = view(&dir, Lang::En, &["--all", "--json"]);
+        assert_eq!(json.len(), 5);
+        assert!(json[1].contains(r#""id":"s1""#) && json[3].contains(r#""decision":"s1""#));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
