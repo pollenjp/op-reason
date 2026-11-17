@@ -1265,6 +1265,8 @@ fn run_follows_the_chosen_language_and_reports_it() {
 
 const ID_REF: &str = "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password";
 const ITEM_URL: &str = "onepassword://view-item?a=ABCDEFGHIJKLMNOPQRSTUVWXYZ&v=abcdefghijklmnopqrstuvwxyz&i=0123456789abcdefghijklmnop";
+/// The same URL as the Windows shell hands it to the handler: it adds the `/` of an empty path before the query.
+const ITEM_URL_SHELL: &str = "onepassword://view-item/?a=ABCDEFGHIJKLMNOPQRSTUVWXYZ&v=abcdefghijklmnopqrstuvwxyz&i=0123456789abcdefghijklmnop";
 /// What `op whoami --format json` prints, with the fields that must never be kept.
 const WHOAMI_JSON: &str = r#"{"url":"https://example.1password.com/","email":"someone@example.com","user_uuid":"USERUSERUSERUSERUSERUSER12","account_uuid":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","user_type":"HUMAN"}"#;
 const ACCOUNT_JSON: &str =
@@ -1538,7 +1540,7 @@ fn a_click_on_a_link_opens_the_item_and_leaves_the_focus_where_it_was() {
         "a click down the left of the window opened something"
     );
     assert!(
-        !text.is_empty() && text.lines().all(|l| l == ITEM_URL),
+        !text.is_empty() && text.lines().all(|l| l == ITEM_URL || l == ITEM_URL_SHELL),
         "exactly the item's URL ({found:?}): {text:?}"
     );
     assert_ne!(
