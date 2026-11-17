@@ -203,7 +203,7 @@ The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves t
 op-reason-log              # calls that started in the last hour
 op-reason-log --since 1d   # 30m, 2h, 1d, …
 op-reason-log --all        # everything kept
-op-reason-log --json       # one JSON object per call, reason and command not cut
+op-reason-log --json       # one JSON object per call, reason and command not cut, every reference read
 ```
 
 ![Animation: op-reason-log prints one line per call: the time, the result (approved, refused (no reason), denied), the seconds, the caller (Claude or Human), the reason and the command. The Caller, Reason and Result columns light up in turn.](docs/images/readme-4-log.en.svg)
@@ -212,6 +212,34 @@ The log is `${XDG_STATE_HOME:-~/.local/state}/op-reason/log.jsonl` on WSL and `%
 Windows, where `op-reason --log` takes the same options (renamed to `log.1.jsonl` at 1 MiB). It never holds
 `op`'s output or tokens; values of `--session`, `--secret-key` and `name=value` arguments are masked. The record format
 is described in [docs/architecture/README.md](docs/architecture/README.md).
+
+### The references a call reads
+
+The window lists the `op://` references the call reads, under the command line: those in the arguments, those in the
+template of `op inject` (its `-i` file, or the template on stdin) and those in the `--env-file`s of `op run`. It shows
+eight of them and then "and N more"; the log keeps all, and `op-reason-log` adds their number to the command when they
+came from a file or stdin.
+
+```text
+Command: op inject -i app.env.tpl -o .env
+References to read (10, from app.env.tpl):
+    op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password    ← a link
+    op://Private/proxmox/token
+    …
+    and 2 more
+```
+
+- A reference whose vault and item are IDs (26 lowercase letters or digits, as `op item get … --format json` and a
+  private link show them) is a link: press and release on it, and the item opens in the 1Password app. The click does
+  not take the focus from the approval prompt. References with names or variables (`$APP_ENV`) stay plain text.
+- The link needs the account ID. At the end of each approved call op-reason already runs `op whoami`; it now reads the
+  account ID and the sign-in address from its JSON output and keeps only those two in
+  `%LOCALAPPDATA%\op-reason\account.json`. So **the first call has no links** (the window says why), and later calls
+  link the references of the account `op` uses by default. With `--account`, the account must be one that whoami
+  reported before (by its ID, its sign-in address or the first part of the address). Delete the file to forget the
+  accounts.
+- From WSL the template on stdin is read by op-reason first (op gets the same bytes); the PowerShell entry (the Smart
+  App Control fallback) does not read stdin, so there only the arguments and files are listed.
 
 ### AI agents
 
@@ -279,6 +307,9 @@ The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` vari
 - The WSL watchdog runs `op.exe signout --all` outside the Windows lock; when it finds a shared approval it can close
   the session of a Windows call that runs at that moment (rare).
 - Not verified yet: whether plain `op signout` (without `--all`) closes only one process's session.
+- **A link while the approval prompt is up** opens the item in the 1Password app, which comes to the front; the
+  prompt itself is the app's. How the app shows both is still to be checked by hand
+  ([docs/manual-verification.md](docs/manual-verification.md)).
 
 ## Development
 
