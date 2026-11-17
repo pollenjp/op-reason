@@ -592,7 +592,9 @@ fn the_pipe_is_for_this_user_only_and_the_relay_needs_its_name_free() {
         let sid = user_sid();
         assert!(sid.starts_with("S-1-"), "{sid}");
         assert_eq!(dacl.matches("(A;").count(), 1, "one entry: {dacl}");
-        assert!(dacl.contains(&sid), "{dacl} for {sid}");
+        // SDDL names the built-in Administrator (RID 500, as on the CI runner) by its alias LA
+        let named = dacl.contains(&sid) || (sid.ends_with("-500") && dacl.contains(";;;LA)"));
+        assert!(named, "{dacl} for {sid}");
         assert!(dacl.starts_with("D:P"), "protected: {dacl}");
     }
     // another server took the name first: the relay does not start
