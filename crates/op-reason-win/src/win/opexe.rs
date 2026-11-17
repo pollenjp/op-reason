@@ -1,4 +1,5 @@
-//! Finding and starting op.exe. stdin and stdout are the caller's handles, passed down untouched; stderr goes
+//! Finding and starting op.exe. stdin and stdout are the caller's handles, passed down untouched (stdin is fed from
+//! bytes instead when the entry has read an `op inject` template from it); stderr goes
 //! through a pipe that a thread copies to our stderr while keeping a bounded copy (to tell `denied` and `timeout`), or,
 //! for a WSL call whose wrapper keeps that copy itself, is passed down too. op.exe runs in a kill-on-close Job Object
 //! ([`super::job`]).
@@ -18,6 +19,7 @@ use op_reason_core::args::Kind;
 use op_reason_core::contract::ENV_PAYLOAD;
 
 use super::job::{self, Job};
+use crate::account::{self, Account};
 
 /// Overrides the op.exe path (tests, unusual installs).
 pub const OP_EXE_VAR: &str = "OPREASON_OP_EXE";
@@ -116,12 +118,23 @@ pub struct Running {
 /// The longest stderr copy kept for classifying the result (the end of the stream).
 const KEEP: usize = 64 * 1024;
 
-/// Starts op.exe with the caller's stdin and stdout, in a kill-on-close Job Object: created suspended, put into the
-/// job, then resumed (without the job when one cannot be made or joined).
-pub fn start(op: &Path, args: &[OsString], env: Env, stderr: Stderr) -> std::io::Result<Running> {
+/// Starts op.exe with the caller's stdin (or `input`, written to it from a thread: the template the entry read from
+/// stdin, design `2026-11-17-refs-in-window-design.md` §2) and stdout, in a kill-on-close Job Object: created
+/// suspended, put into the job, then resumed (without the job when one cannot be made or joined).
+pub fn start(
+    op: &Path,
+    args: &[OsString],
+    env: Env,
+    stderr: Stderr,
+    input: Option<Vec<u8>>,
+) -> std::io::Result<Running> {
     let mut cmd = Command::new(op);
     cmd.args(args)
-        .stdin(Stdio::inherit())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .stdout(Stdio::inherit())
         .stderr(match stderr {
             Stderr::Tee => Stdio::piped(),
@@ -137,6 +150,12 @@ pub fn start(op: &Path, args: &[OsString], env: Env, stderr: Stderr) -> std::io:
         return Err(std::io::Error::other(
             "op.exe was created but could not be resumed",
         ));
+    }
+    if let (Some(bytes), Some(mut pipe)) = (input, child.stdin.take()) {
+        // Dropping the pipe at the end closes op.exe's stdin, so that it sees the end of the template.
+        thread::spawn(move || {
+            let _ = pipe.write_all(&bytes);
+        });
     }
     let Some(mut err) = child.stderr.take() else {
         return Ok(Running {
@@ -223,12 +242,20 @@ fn relay(out: &mut impl Write, chunk: &[u8]) {
 /// `whoami` and `signout` get this long; a stuck one is killed (the mutex must not stay held forever).
 const QUIET_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Runs op.exe with no window and all streams redirected (`whoami`, `signout`): nothing reaches the caller.
-fn quiet(op: &Path, args: &[&str]) -> std::io::Result<(i32, String)> {
+/// The most of `whoami`'s stdout that is kept (its JSON is a few hundred bytes).
+const QUIET_OUT_MAX: u64 = 64 * 1024;
+
+/// Runs op.exe with no window and all streams redirected (`whoami`, `signout`): nothing reaches the caller. Returns
+/// the exit code, stdout (kept only with `keep_out`, at most [`QUIET_OUT_MAX`] bytes) and stderr.
+fn quiet(op: &Path, args: &[&str], keep_out: bool) -> std::io::Result<(i32, String, String)> {
     let mut cmd = Command::new(op);
     cmd.args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(if keep_out {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW.0);
     apply_env(&mut cmd, Env::Kind(Kind::Desktop));
@@ -238,6 +265,17 @@ fn quiet(op: &Path, args: &[&str]) -> std::io::Result<(i32, String)> {
         let mut text = Vec::new();
         if let Some(mut e) = err {
             let _ = e.read_to_end(&mut text);
+        }
+        text
+    });
+    let out = child.stdout.take();
+    let out_reader = thread::spawn(move || {
+        let mut text = Vec::new();
+        if let Some(o) = out {
+            let mut o = o.take(QUIET_OUT_MAX);
+            let _ = o.read_to_end(&mut text);
+            // Read the rest away, so that a long output cannot block op.exe.
+            let _ = std::io::copy(o.get_mut(), &mut std::io::sink());
         }
         text
     });
@@ -261,8 +299,10 @@ fn quiet(op: &Path, args: &[&str]) -> std::io::Result<(i32, String)> {
         thread::sleep(Duration::from_millis(20));
     };
     let text = reader.join().unwrap_or_default();
+    let out = out_reader.join().unwrap_or_default();
     Ok((
         status.code().unwrap_or(1),
+        String::from_utf8_lossy(&out).into_owned(),
         String::from_utf8_lossy(&text).into_owned(),
     ))
 }
@@ -278,16 +318,22 @@ pub fn short(s: &str, n: usize) -> String {
 }
 
 /// Closes this process's CLI sessions: `whoami` first (it does not prompt without a session), then
-/// `signout --all` only when signed in. Returns the `signout` field of the record.
-pub fn close_session(op: &Path) -> String {
-    match quiet(op, &["whoami"]) {
-        Err(e) => format!("failed: {}", short(&e.to_string(), 120)),
-        Ok((code, _)) if code != 0 => "not-signed-in".to_owned(),
-        Ok(_) => match quiet(op, &["signout", "--all"]) {
-            Ok((0, _)) => "ok".to_owned(),
-            Ok((code, err)) => format!("failed: exit {code}: {}", short(&err, 120)),
-            Err(e) => format!("failed: {}", short(&e.to_string(), 120)),
-        },
+/// `signout --all` only when signed in. Returns the `signout` field of the record, and the account whoami reported
+/// (its JSON output: only the account ID and the sign-in host are read, design `2026-11-17-refs-in-window-design.md`
+/// §5.2).
+pub fn close_session(op: &Path) -> (String, Option<Account>) {
+    match quiet(op, &["whoami", "--format", "json"], true) {
+        Err(e) => (format!("failed: {}", short(&e.to_string(), 120)), None),
+        Ok((code, _, _)) if code != 0 => ("not-signed-in".to_owned(), None),
+        Ok((_, out, _)) => {
+            let seen = account::from_whoami(&out);
+            let signout = match quiet(op, &["signout", "--all"], false) {
+                Ok((0, _, _)) => "ok".to_owned(),
+                Ok((code, _, err)) => format!("failed: exit {code}: {}", short(&err, 120)),
+                Err(e) => format!("failed: {}", short(&e.to_string(), 120)),
+            };
+            (signout, seen)
+        }
     }
 }
 

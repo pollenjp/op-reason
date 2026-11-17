@@ -4,10 +4,12 @@
 //!   (which variables it saw, and `PID=` its process id). Windows arguments are written as UTF-16LE units separated by
 //!   a NUL unit, so the test can compare them exactly (unpaired surrogates included); elsewhere as UTF-8 bytes
 //!   separated by NUL.
-//! - `whoami`: exits with `FAKE_WHOAMI_RC` (default 1, "not signed in").
+//! - `whoami`: prints `FAKE_WHOAMI_OUT` (when set) and exits with `FAKE_WHOAMI_RC` (default 1, "not signed in").
 //! - `signout`: prints `SIGNOUT-OUT` and `SIGNOUT-ERR`, exits 0.
 //! - anything else: copies stdin to stdout, sleeps `FAKE_SLEEP_MS`, prints `FAKE_STDERR` (default
 //!   `FAKE-ERR 日本語`) to stderr and exits with `FAKE_RC` (default 0).
+//! - `--opened <file> <url>` (not op's: the tests register it as the handler of `onepassword:` URLs): appends the URL
+//!   and a newline to the file, records no call and exits 0.
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -74,11 +76,25 @@ fn record(dir: &Path, args: &[OsString]) {
 
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if args.first().and_then(|a| a.to_str()) == Some("--opened") {
+        if let (Some(file), Some(url)) = (args.get(1), args.get(2)) {
+            let line = format!("{}\n", url.to_string_lossy());
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+        }
+        return;
+    }
     if let Some(dir) = std::env::var_os("FAKE_OP_DIR") {
         record(Path::new(&dir), &args);
     }
     match args.first().and_then(|a| a.to_str()) {
         Some("whoami") => {
+            if let Some(out) = var("FAKE_WHOAMI_OUT") {
+                println!("{out}");
+            }
             let rc = var("FAKE_WHOAMI_RC")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1);

@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
-    CTRL_SHUTDOWN_EVENT, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, SetConsoleCtrlHandler,
+    CTRL_SHUTDOWN_EVENT, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
+    STD_INPUT_HANDLE, SetConsoleCtrlHandler,
 };
 use windows::core::BOOL;
 
@@ -76,9 +77,22 @@ pub fn interrupted() -> bool {
 
 /// Our stderr is a console (not a pipe or a file): only then is the "waiting" note printed.
 pub fn stderr_is_console() -> bool {
+    is_console(STD_ERROR_HANDLE)
+}
+
+/// Our stdin is something to read: not a console (where reading would wait for typing) and not missing. An
+/// `op inject` template is read from it only then (design `2026-11-17-refs-in-window-design.md` §2).
+pub fn stdin_is_readable() -> bool {
+    // SAFETY: GetStdHandle only reads process state.
+    let present = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+        .is_ok_and(|h| h != HANDLE::default() && !h.is_invalid());
+    present && !is_console(STD_INPUT_HANDLE)
+}
+
+fn is_console(which: STD_HANDLE) -> bool {
     // SAFETY: GetStdHandle and GetConsoleMode only read process state.
     unsafe {
-        let Ok(h) = GetStdHandle(STD_ERROR_HANDLE) else {
+        let Ok(h) = GetStdHandle(which) else {
             return false;
         };
         if h == HANDLE::default() || h.is_invalid() {

@@ -3,12 +3,15 @@
 //! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
 //! red. It asks nothing; the decision is made in the 1Password prompt.
 //!
-//! Its one control is the language switch `English | 日本語` at the right of the footer (design
+//! Its controls are the language switch `English | 日本語` at the right of the footer (design
 //! `2026-11-15-language-toggle-design.md` §4): a click on the other language lays the window out again in that
-//! language and hands the choice to the caller, without activating the window.
+//! language and hands the choice to the caller; and the links of the references the call reads (design
+//! `2026-11-17-refs-in-window-design.md` §4): a click opens the item in the 1Password app. Neither activates the window.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use op_reason_core::lang::Lang;
 use windows::Win32::Foundation::{
@@ -27,9 +30,10 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_LINE_METRICS,
-    DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_HIT_TEST_METRICS, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
+    DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Gdi::{
@@ -57,7 +61,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, SendMessageW, SetCursor, SetTimer, SetWindowTextW,
     WM_CANCELMODE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
 };
-use windows::core::{HSTRING, PCWSTR, Result, w};
+use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
 use crate::ui::{self, Both, Texts};
@@ -79,6 +83,10 @@ const SWITCH_HIT_X: f32 = 4.0;
 const SWITCH_HIT_Y: f32 = 3.0;
 /// The width of a switch part's layout: wide enough never to wrap.
 const NO_WRAP: f32 = 10_000.0;
+/// How far the references, "and N more" and the hint are indented under their head.
+const REF_INDENT: f32 = 12.0;
+/// How long a closing window waits for the threads that open links.
+const OPENING_WAIT: Duration = Duration::from_secs(2);
 
 const CLASS_NAME: PCWSTR = w!("op-reason-approval");
 /// The timer of [`Window::watch`].
@@ -101,6 +109,8 @@ const DARK_ORANGE: D2D1_COLOR_F = rgb(0xFF, 0x8C, 0x00);
 const FIREBRICK: D2D1_COLOR_F = rgb(0xB2, 0x22, 0x22);
 const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);
 const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);
+/// "and N more" and the hint under the references.
+const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -117,6 +127,17 @@ struct Para {
     role: Role,
     /// The baseline of its last line, from its top (the switch sits on the footer's).
     last_baseline: f32,
+    /// How far it is drawn right of the text area's left edge.
+    indent: f32,
+    /// The URL a click on its text opens (a reference of the call).
+    link: Option<String>,
+}
+
+/// What the left button went down on: a language of the switch, or the paragraph of a link.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Switch(Lang),
+    Link(usize),
 }
 
 /// One part of the language switch: a language's name or the bar.
@@ -156,10 +177,12 @@ struct State {
     painted: bool,
     /// The op.exe whose end must break a modal loop (moving the window, its system menu).
     watched: Option<HANDLE>,
-    /// The language whose word the left button went down on (a click is a press and a release on the same word).
-    pressed: Option<Lang>,
+    /// What the left button went down on (a click is a press and a release on the same word or link).
+    pressed: Option<Target>,
     /// Told the language chosen with the switch (taken out while it runs).
     on_choose: Option<Box<dyn FnMut(Lang)>>,
+    /// The threads that open links (waited for a moment when the window closes).
+    opening: Vec<JoinHandle<()>>,
 }
 
 impl State {
@@ -213,6 +236,36 @@ impl State {
             (SWITCH_HIT_X, SWITCH_HIT_Y),
             (x, y),
         )
+    }
+
+    /// The link under the point (DIPs of the client area): the index of its paragraph. Only the text itself counts
+    /// (DirectWrite's hit test), on any of its lines.
+    fn link_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.tops().into_iter().find_map(|(i, top)| {
+            let p = &self.paras[i];
+            p.link.as_ref()?;
+            let (lx, ly) = (x - PAD_LEFT - p.indent, y - top);
+            if lx < 0.0 || ly < 0.0 || ly >= p.height {
+                return None;
+            }
+            let mut trailing = BOOL(0);
+            let mut inside = BOOL(0);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            // SAFETY: a valid layout and out parameters on the stack.
+            unsafe {
+                p.layout
+                    .HitTestPoint(lx, ly, &mut trailing, &mut inside, &mut m)
+                    .ok()?;
+            }
+            inside.as_bool().then_some(i)
+        })
+    }
+
+    /// What a press or a release at the point is on: the switch's other language, or a link.
+    fn target(&self, x: f32, y: f32) -> Option<Target> {
+        self.hit(x, y)
+            .map(Target::Switch)
+            .or_else(|| self.link_at(x, y).map(Target::Link))
     }
 
     /// Lays the window out in `lang`. Everything is built before anything is replaced, so a failure keeps the old
@@ -289,7 +342,7 @@ impl State {
             for (i, top) in &tops {
                 t.DrawTextLayout(
                     Vector2 {
-                        X: PAD_LEFT,
+                        X: PAD_LEFT + self.paras[*i].indent,
                         Y: *top,
                     },
                     &self.paras[*i].layout,
@@ -416,6 +469,8 @@ fn para(
             height: m.height,
             role,
             last_baseline,
+            indent: 0.0,
+            link: None,
         })
     }
 }
@@ -437,7 +492,8 @@ fn last_baseline(layout: &IDWriteTextLayout) -> Result<f32> {
     })
 }
 
-/// The title, the lines, the orange line and the footer (narrower, to leave room for the switch).
+/// The title, the lines (with the block of references after the command line), the orange line and the footer
+/// (narrower, to leave room for the switch).
 fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Result<Vec<Para>> {
     let dw = &fonts.dw;
     let mut paras = vec![para(
@@ -449,7 +505,10 @@ fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Re
         BLACK,
         Role::Title,
     )?];
-    for (label, value) in &text.lines {
+    for (k, (label, value)) in text.lines.iter().enumerate() {
+        if k == text.refs_at {
+            add_refs(fonts, text.refs.as_ref(), width, &mut paras)?;
+        }
         let head = format!("{label}: ");
         let line = format!("{head}{value}");
         paras.push(para(
@@ -461,6 +520,9 @@ fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Re
             BLACK,
             Role::Line,
         )?);
+    }
+    if text.refs_at >= text.lines.len() {
+        add_refs(fonts, text.refs.as_ref(), width, &mut paras)?;
     }
     paras.push(para(
         dw,
@@ -481,6 +543,49 @@ fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Re
         Role::Footer,
     )?);
     Ok(paras)
+}
+
+/// The block of references: the head in bold, then each reference indented (a link blue and underlined, like the
+/// switch's), then "and N more" and the hint in dark gray.
+fn add_refs(
+    fonts: &Fonts,
+    refs: Option<&ui::RefLines>,
+    width: f32,
+    paras: &mut Vec<Para>,
+) -> Result<()> {
+    let Some(r) = refs else {
+        return Ok(());
+    };
+    let dw = &fonts.dw;
+    let head = format!("{}:", r.head);
+    paras.push(para(dw, &fonts.bold, &head, 0, width, BLACK, Role::Line)?);
+    let inner = (width - REF_INDENT).max(width / 2.0);
+    for (text, url) in &r.items {
+        let color = if url.is_some() { LINK_BLUE } else { BLACK };
+        let mut p = para(dw, &fonts.body, text, 0, inner, color, Role::Line)?;
+        if url.is_some() {
+            let length = text.encode_utf16().count() as u32;
+            // SAFETY: a valid layout; the range is its whole text.
+            unsafe {
+                p.layout.SetUnderline(
+                    true,
+                    DWRITE_TEXT_RANGE {
+                        startPosition: 0,
+                        length,
+                    },
+                )?;
+            }
+        }
+        p.indent = REF_INDENT;
+        p.link = url.clone();
+        paras.push(p);
+    }
+    for line in [&r.more, &r.hint].into_iter().flatten() {
+        let mut p = para(dw, &fonts.body, line, 0, inner, DIM, Role::Line)?;
+        p.indent = REF_INDENT;
+        paras.push(p);
+    }
+    Ok(())
 }
 
 /// The parts of the switch with `shown` in bold black; the other language blue and underlined (the link), the bar gray.
@@ -618,6 +723,7 @@ impl Window {
                 watched: None,
                 pressed: None,
                 on_choose: Some(on_choose),
+                opening: Vec::new(),
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -738,11 +844,23 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         // SAFETY: destroy the window first (its procedure reads the state), then free the state.
-        unsafe {
+        let opening = unsafe {
             if !(*self.state).destroyed {
                 let _ = DestroyWindow(self.hwnd);
             }
+            let opening = std::mem::take(&mut (*self.state).opening);
             drop(Box::from_raw(self.state));
+            opening
+        };
+        // A link clicked just before the call ended: give the shell a moment to hand it on.
+        let t0 = Instant::now();
+        for t in opening {
+            while !t.is_finished() && t0.elapsed() < OPENING_WAIT {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -767,12 +885,12 @@ fn dip_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
     (f32::from(x) * k, f32::from(y) * k)
 }
 
-/// Whether the mouse pointer is on the switch's clickable word.
+/// Whether the mouse pointer is on the switch's clickable word or on a link.
 ///
 /// # Safety
 ///
 /// `ptr` is the window's state.
-unsafe fn pointer_on_switch(hwnd: HWND, ptr: *mut State) -> bool {
+unsafe fn pointer_on_target(hwnd: HWND, ptr: *mut State) -> bool {
     let mut pt = POINT::default();
     // SAFETY: valid window handle and out parameter.
     let found = unsafe { GetCursorPos(&mut pt).is_ok() && ScreenToClient(hwnd, &mut pt).as_bool() };
@@ -782,7 +900,7 @@ unsafe fn pointer_on_switch(hwnd: HWND, ptr: *mut State) -> bool {
     // SAFETY: (caller) a valid state; the reference ends in this function.
     let st = unsafe { &*ptr };
     let k = 96.0 / st.dpi.max(1) as f32;
-    st.hit(pt.x as f32 * k, pt.y as f32 * k).is_some()
+    st.target(pt.x as f32 * k, pt.y as f32 * k).is_some()
 }
 
 /// Switches the window to `lang` (texts, caption, height) and then tells the owner. Nothing here activates the
@@ -887,9 +1005,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-            // The hand over the switch's clickable word; elsewhere the class's arrow.
+            // The hand over the switch's clickable word and over links; elsewhere the class's arrow.
             WM_SETCURSOR
-                if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && pointer_on_switch(hwnd, ptr) =>
+                if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && pointer_on_target(hwnd, ptr) =>
             {
                 match LoadCursorW(None, IDC_HAND) {
                     Ok(hand) => {
@@ -902,7 +1020,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_LBUTTONDOWN => {
                 let st = &mut *ptr;
                 let (x, y) = dip_point(lparam, st.dpi);
-                st.pressed = st.hit(x, y);
+                st.pressed = st.target(x, y);
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -910,10 +1028,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let st = &mut *ptr;
                     let (x, y) = dip_point(lparam, st.dpi);
                     let pressed = st.pressed.take();
-                    st.hit(x, y).filter(|l| pressed == Some(*l))
+                    st.target(x, y).filter(|t| pressed == Some(*t))
                 };
-                if let Some(lang) = chosen {
-                    choose(hwnd, ptr, lang);
+                match chosen {
+                    Some(Target::Switch(lang)) => choose(hwnd, ptr, lang),
+                    Some(Target::Link(i)) => {
+                        let st = &mut *ptr;
+                        if let Some(url) = st.paras.get(i).and_then(|p| p.link.clone())
+                            && let Some(t) = super::shell::open_item(&url)
+                        {
+                            st.opening.push(t);
+                        }
+                    }
+                    None => {}
                 }
                 LRESULT(0)
             }

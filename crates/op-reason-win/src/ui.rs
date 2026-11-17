@@ -4,10 +4,16 @@
 //!
 //! The window of `op-reason.exe` also switches language ([`Both`], [`SWITCH_LABELS`], [`switch_hit`]; design
 //! `2026-11-15-language-toggle-design.md` §4). The launcher's window has no switch.
+//!
+//! Both windows list the references the call reads after the command line, and link those whose vault and item are
+//! IDs to the 1Password app ([`RefLines`]; design `2026-11-17-refs-in-window-design.md` §4 and §5).
 
-use op_reason_core::contract::{Facts, Notify};
+use op_reason_core::contract::{Facts, Notify, Refs};
 use op_reason_core::lang::Lang;
+use op_reason_core::refs;
 use serde_json::{Value, json};
+
+use crate::account;
 
 /// The texts of one window and its toast (the launcher's status `ui`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,22 +21,45 @@ pub struct Texts {
     pub title: String,
     /// `(label, value)` per line.
     pub lines: Vec<(String, String)>,
+    /// The references the call reads, shown before `lines[refs_at]` (after the command line, before the notes).
+    pub refs: Option<RefLines>,
+    pub refs_at: usize,
     pub footer: String,
     /// Shown only while another op.exe runs.
     pub others: String,
     pub toast: Vec<String>,
 }
 
+/// The block of references: a head, the references shown (each with the URL that opens its item, when it has one),
+/// "and N more", and the line that says why there are no links yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefLines {
+    pub head: String,
+    pub items: Vec<(String, Option<String>)>,
+    pub more: Option<String>,
+    pub hint: Option<String>,
+}
+
 impl Texts {
-    /// The status `ui` of a desktop call, in the launcher's shape (`lines` as pairs of label and value).
+    /// The status `ui` of a desktop call, in the launcher's shape (`lines` as pairs of label and value; `refs` only
+    /// when the block is shown, with `linked` instead of the URL).
     pub fn json(&self) -> Value {
-        json!({
+        let mut ui = json!({
             "title": self.title,
             "lines": self.lines.iter().map(|(l, v)| json!([l, v])).collect::<Vec<_>>(),
             "footer": self.footer,
             "others": self.others,
             "toast": self.toast,
-        })
+        });
+        if let Some(r) = &self.refs {
+            ui["refs"] = json!({
+                "head": r.head,
+                "items": r.items.iter().map(|(text, url)| json!({"text": text, "linked": url.is_some()})).collect::<Vec<_>>(),
+                "more": r.more,
+                "hint": r.hint,
+            });
+        }
+        ui
     }
 }
 
@@ -42,11 +71,11 @@ pub struct Both {
 }
 
 impl Both {
-    /// [`build`] in English and in Japanese.
-    pub fn build(f: &Facts) -> Both {
+    /// [`build`] in English and in Japanese. `account` is the account ID for the links ([`account::pick`]).
+    pub fn build(f: &Facts, account: Option<&str>) -> Both {
         Both {
-            en: build(f, Lang::En),
-            ja: build(f, Lang::Ja),
+            en: build(f, Lang::En, account),
+            ja: build(f, Lang::Ja, account),
         }
     }
 
@@ -178,6 +207,12 @@ pub struct Table {
     pub failed_body: &'static str,
     pub when_start: &'static str,
     pub when_end: &'static str,
+    pub refs: &'static str,
+    pub refs_args: &'static str,
+    pub refs_stdin: &'static str,
+    pub refs_sep: &'static str,
+    pub refs_more: &'static str,
+    pub refs_hint: &'static str,
 }
 
 pub const EN: Table = Table {
@@ -203,6 +238,12 @@ pub const EN: Table = Table {
     failed_body: "An approval usable from every WSL pane is left ({0}). Run op.exe signout --all in WSL, or lock 1Password.",
     when_start: "before the call",
     when_end: "after the call",
+    refs: "References to read ({0}, from {1})",
+    refs_args: "arguments",
+    refs_stdin: "stdin",
+    refs_sep: ", ",
+    refs_more: "and {0} more",
+    refs_hint: "Links to the items appear once an approved call has finished (op-reason then learns the ID of the account op uses by default)",
 };
 
 pub const JA: Table = Table {
@@ -228,6 +269,12 @@ pub const JA: Table = Table {
     failed_body: "WSL のどの pane からも使える承認が残っています ({0})。WSL で op.exe signout --all を打つか、1Password をロックしてください。",
     when_start: "op を打つ前",
     when_end: "op を打った後",
+    refs: "読む参照 ({0} 件・{1} から)",
+    refs_args: "引数",
+    refs_stdin: "標準入力",
+    refs_sep: "、",
+    refs_more: "ほか {0} 件",
+    refs_hint: "項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (そのとき、op が既定で使うアカウントの ID を覚えます)",
 };
 
 pub fn table(lang: Lang) -> &'static Table {
@@ -259,8 +306,8 @@ fn fill(template: &str, args: &[&str]) -> String {
     out
 }
 
-/// The launcher's `Build-Ui`.
-pub fn build(f: &Facts, lang: Lang) -> Texts {
+/// The launcher's `Build-Ui`. `account` is the account ID for the links ([`account::pick`]), when one is known.
+pub fn build(f: &Facts, lang: Lang, account: Option<&str>) -> Texts {
     let t = table(lang);
     let mut lines = vec![(t.time.to_owned(), f.time.clone())];
     let (mut desc, mut short) = if f.caller.kind == "claude" {
@@ -297,6 +344,12 @@ pub fn build(f: &Facts, lang: Lang) -> Texts {
     lines.push((t.place.to_owned(), place));
     lines.push((t.reason.to_owned(), f.reason.clone()));
     lines.push((t.command.to_owned(), f.command.clone()));
+    let refs_at = lines.len();
+    let refs = f
+        .refs
+        .as_ref()
+        .filter(|r| !r.list.is_empty())
+        .map(|r| ref_lines(t, r, account));
     for n in &f.notes {
         match n.kind.as_str() {
             "shared-cleared" => lines.push((t.note.to_owned(), t.shared_cleared.to_owned())),
@@ -315,9 +368,52 @@ pub fn build(f: &Facts, lang: Lang) -> Texts {
     Texts {
         title: t.title.to_owned(),
         lines,
+        refs,
+        refs_at,
         footer: t.footer.to_owned(),
         others: t.others.to_owned(),
         toast,
+    }
+}
+
+/// The launcher's `Build-RefLines`: the head with the count and the sources, at most [`refs::SHOWN`] references (an ID
+/// reference gets the URL of its item when the account is known), "and N more", and the hint when a reference shown
+/// could be a link but no account is known.
+fn ref_lines(t: &Table, r: &Refs, account: Option<&str>) -> RefLines {
+    let from: Vec<String> = r
+        .from
+        .iter()
+        .filter_map(|s| match s.kind.as_str() {
+            "args" => Some(t.refs_args.to_owned()),
+            "stdin" => Some(t.refs_stdin.to_owned()),
+            "file" | "env-file" => s.name.clone().filter(|n| !n.is_empty()),
+            _ => None,
+        })
+        .collect();
+    let from = if from.is_empty() {
+        "?".to_owned()
+    } else {
+        from.join(t.refs_sep)
+    };
+    let total = r.total.max(r.list.len());
+    let shown = &r.list[..r.list.len().min(refs::SHOWN)];
+    let items: Vec<(String, Option<String>)> = shown
+        .iter()
+        .map(|text| {
+            let url = account.and_then(|a| {
+                refs::link_ids(text).and_then(|(vault, item)| account::item_url(a, vault, item))
+            });
+            (text.clone(), url)
+        })
+        .collect();
+    let could_link = shown.iter().any(|text| refs::link_ids(text).is_some());
+    RefLines {
+        head: fill(t.refs, &[&total.to_string(), &from]),
+        more: (total > items.len())
+            .then(|| fill(t.refs_more, &[&(total - items.len()).to_string()])),
+        hint: (could_link && items.iter().all(|(_, url)| url.is_none()))
+            .then(|| t.refs_hint.to_owned()),
+        items,
     }
 }
 
@@ -361,7 +457,7 @@ pub fn build_notify(n: &Notify, lang: Lang) -> NotifyTexts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use op_reason_core::contract::{FactsCaller, Herdr, Note, Place};
+    use op_reason_core::contract::{FactsCaller, Herdr, Note, Place, RefSource};
     use std::collections::HashMap;
 
     /// `key = 'value'` lines of `Get-Texts`, Japanese block first, then English.
@@ -417,6 +513,12 @@ mod tests {
             ("failedBody", t.failed_body),
             ("whenStart", t.when_start),
             ("whenEnd", t.when_end),
+            ("refs", t.refs),
+            ("refsArgs", t.refs_args),
+            ("refsStdin", t.refs_stdin),
+            ("refsSep", t.refs_sep),
+            ("refsMore", t.refs_more),
+            ("refsHint", t.refs_hint),
         ]
     }
 
@@ -461,7 +563,7 @@ mod tests {
 
     #[test]
     fn builds_like_the_launcher() {
-        let t = build(&facts(), Lang::Ja);
+        let t = build(&facts(), Lang::Ja, None);
         assert_eq!(t.title, "1Password CLI の承認の依頼");
         let labels: Vec<&str> = t.lines.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(
@@ -487,7 +589,7 @@ mod tests {
             label: "lab".into(),
             pane: String::new(),
         });
-        let t = build(&f, Lang::En);
+        let t = build(&f, Lang::En, None);
         assert_eq!(t.lines[1].1, "Human (terminal)");
         assert_eq!(
             t.lines[2],
@@ -524,7 +626,7 @@ mod tests {
             "共有の 1Password CLI の承認を消せませんでした"
         );
         assert!(failed.toast[1].contains("(op を打った後)"));
-        let ui = build(&facts(), Lang::En).json();
+        let ui = build(&facts(), Lang::En, None).json();
         assert_eq!(ui["lines"][0], json!(["Time", "2026-11-15 06:05:00"]));
         assert_eq!(ui["toast"].as_array().map(Vec::len), Some(3));
     }
@@ -543,12 +645,144 @@ mod tests {
         assert_eq!(caller_short(None, Lang::En), "Human");
     }
 
+    const ACCOUNT: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const ID_REF: &str = "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password";
+
+    fn with_refs(list: &[&str], total: usize, from: Vec<RefSource>) -> Facts {
+        let mut f = facts();
+        f.refs = Some(Refs {
+            total,
+            from,
+            list: list.iter().map(|r| r.to_string()).collect(),
+            account: None,
+        });
+        f
+    }
+
+    fn src(kind: &str, name: Option<&str>) -> RefSource {
+        RefSource {
+            kind: kind.into(),
+            name: name.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_references_after_the_command_with_links_once_the_account_is_known() {
+        let mut list = vec![
+            ID_REF,
+            "op://Private/proxmox/token",
+            "op://$ENV/db/password",
+        ];
+        list.extend(["op://v/i/f"; 5]);
+        let f = with_refs(
+            &list,
+            11,
+            vec![
+                src("args", None),
+                src("file", Some("app.tpl")),
+                src("stdin", None),
+            ],
+        );
+        let t = build(&f, Lang::Ja, Some(ACCOUNT));
+        assert_eq!(
+            t.lines[t.refs_at - 1].0,
+            "コマンド",
+            "right after the command line"
+        );
+        assert_eq!(t.lines[t.refs_at].0, "注意", "before the notes");
+        let r = t.refs.as_ref().unwrap();
+        assert_eq!(r.head, "読む参照 (11 件・引数、app.tpl、標準入力 から)");
+        assert_eq!(r.items.len(), 8);
+        assert_eq!(
+            r.items[0].1.as_deref(),
+            Some(
+                "onepassword://view-item?a=ABCDEFGHIJKLMNOPQRSTUVWXYZ&v=abcdefghijklmnopqrstuvwxyz&i=0123456789abcdefghijklmnop"
+            )
+        );
+        assert!(
+            r.items[1..].iter().all(|(_, url)| url.is_none()),
+            "names and variables stay plain"
+        );
+        assert_eq!(r.more.as_deref(), Some("ほか 3 件"));
+        assert_eq!(r.hint, None);
+        let en = build(&f, Lang::En, Some(ACCOUNT));
+        let r = en.refs.as_ref().unwrap();
+        assert_eq!(
+            r.head,
+            "References to read (11, from arguments, app.tpl, stdin)"
+        );
+        assert_eq!(r.more.as_deref(), Some("and 3 more"));
+        assert_eq!(
+            en.json()["refs"],
+            json!({
+                "head": r.head,
+                "items": r.items.iter().map(|(text, url)| json!({"text": text, "linked": url.is_some()})).collect::<Vec<_>>(),
+                "more": "and 3 more",
+                "hint": null,
+            })
+        );
+        assert_eq!(en.json()["refs"]["items"][0]["linked"], true);
+    }
+
+    #[test]
+    fn the_hint_only_when_a_reference_could_be_a_link() {
+        let f = with_refs(
+            &[ID_REF, "op://Private/proxmox/token"],
+            2,
+            vec![src("env-file", Some(".env"))],
+        );
+        let t = build(&f, Lang::En, None);
+        let r = t.refs.as_ref().unwrap();
+        assert_eq!(r.head, "References to read (2, from .env)");
+        assert!(r.items.iter().all(|(_, url)| url.is_none()));
+        assert_eq!(r.more, None);
+        assert_eq!(r.hint.as_deref(), Some(EN.refs_hint));
+        assert_eq!(
+            build(&f, Lang::Ja, None).refs.unwrap().hint.as_deref(),
+            Some(JA.refs_hint)
+        );
+        let names = with_refs(&["op://Private/proxmox/token"], 1, vec![src("args", None)]);
+        assert_eq!(build(&names, Lang::En, None).refs.unwrap().hint, None);
+        assert_eq!(
+            build(&f, Lang::En, Some("not-an-account"))
+                .refs
+                .unwrap()
+                .hint
+                .as_deref(),
+            Some(EN.refs_hint),
+            "an account that cannot build a URL gives no links"
+        );
+    }
+
+    #[test]
+    fn no_block_without_references() {
+        let t = build(&facts(), Lang::En, Some(ACCOUNT));
+        assert_eq!(t.refs, None);
+        assert!(t.json().get("refs").is_none());
+        let empty = with_refs(&[], 0, vec![]);
+        assert_eq!(build(&empty, Lang::En, None).refs, None);
+    }
+
+    #[test]
+    fn the_shared_link_table_through_the_texts() {
+        let table: Value =
+            serde_json::from_str(include_str!("../../../tests/cases/refs.json")).unwrap();
+        for l in table["links"].as_array().unwrap() {
+            let r = l["ref"].as_str().unwrap();
+            let f = with_refs(&[r], 1, vec![src("args", None)]);
+            let linked = build(&f, Lang::En, Some(ACCOUNT)).refs.unwrap().items[0]
+                .1
+                .is_some();
+            assert_eq!(linked, l["vault"].is_string(), "{r}");
+        }
+    }
+
     #[test]
     fn both_languages_for_the_switch() {
-        let both = Both::build(&facts());
+        let both = Both::build(&facts(), None);
         assert_eq!(both.get(Lang::En).title, "1Password CLI approval request");
         assert_eq!(both.get(Lang::Ja).title, "1Password CLI の承認の依頼");
-        assert_eq!(both.get(Lang::Ja), &build(&facts(), Lang::Ja));
+        assert_eq!(both.get(Lang::Ja), &build(&facts(), Lang::Ja, None));
         assert_eq!(both.en.lines.len(), both.ja.lines.len());
         let labels: Vec<&str> = SWITCH_LABELS.iter().map(|(t, _)| *t).collect();
         assert_eq!(labels.concat(), "English | 日本語");

@@ -2,7 +2,8 @@
 //!
 //! Build the fake first: `cargo build -p fake-op` (it lands next to the test binaries' parent, `target\debug\op.exe`;
 //! `OPREASON_TEST_FAKE_OP` overrides the path). Desktop-mode tests really show the window on the runner's desktop.
-//! One test clicks the window's language switch with the real mouse: it runs only where `CI` is set.
+//! Two tests click the window with the real mouse (its language switch, and a link of a reference, for which a handler of
+//! `onepassword:` URLs is registered in HKCU for the time of the test): they run only where `CI` is set.
 #![cfg(windows)]
 
 use std::ffi::{OsStr, OsString};
@@ -157,6 +158,11 @@ fn s(v: &str) -> &OsStr {
     OsStr::new(v)
 }
 
+/// The arguments of the end-of-call whoami.
+fn whoami_call() -> Vec<OsString> {
+    ["whoami", "--format", "json"].map(OsString::from).to_vec()
+}
+
 fn lines_with<'a>(log: &'a str, event: &str) -> Vec<&'a str> {
     let needle = format!(r#""event":"{event}""#);
     log.lines().filter(|l| l.contains(&needle)).collect()
@@ -206,11 +212,7 @@ fn tricky_arguments_stdin_stderr_and_exit_code() {
         "stderr carries only op's text"
     );
     assert_eq!(out.status.code(), Some(42), "the exit code is op's");
-    assert_eq!(
-        sb.call(2),
-        vec![OsString::from("whoami")],
-        "whoami after op"
-    );
+    assert_eq!(sb.call(2), whoami_call(), "whoami after op");
     assert_eq!(sb.calls(), 2, "no signout without a session");
     assert!(
         sb.env_of(1).contains("OPREASON_OP_EXE=<unset>"),
@@ -800,7 +802,7 @@ fn run_desktop_follows_the_launcher_contract() {
         "the payload does not reach op: {}",
         sb.env_of(1)
     );
-    assert_eq!(sb.call(2), vec![OsString::from("whoami")]);
+    assert_eq!(sb.call(2), whoami_call());
     assert_eq!(sb.calls(), 2, "not signed in: no signout");
     let st = sb.status();
     assert_eq!(st["started"], true, "{st}");
@@ -882,7 +884,7 @@ fn run_help_and_service_modes() {
         ),
         "{st}"
     );
-    assert_eq!(sb.call(2), vec![OsString::from("whoami")]);
+    assert_eq!(sb.call(2), whoami_call());
 
     let sb = Sandbox::new("run-service");
     let out = sb.run_payload(
@@ -1259,16 +1261,300 @@ fn run_follows_the_chosen_language_and_reports_it() {
     );
 }
 
+// ---- The references a call reads (design 2026-11-17-refs-in-window-design.md)
+
+const ID_REF: &str = "op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password";
+const ITEM_URL: &str = "onepassword://view-item?a=ABCDEFGHIJKLMNOPQRSTUVWXYZ&v=abcdefghijklmnopqrstuvwxyz&i=0123456789abcdefghijklmnop";
+/// What `op whoami --format json` prints, with the fields that must never be kept.
+const WHOAMI_JSON: &str = r#"{"url":"https://example.1password.com/","email":"someone@example.com","user_uuid":"USERUSERUSERUSERUSERUSER12","account_uuid":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","user_type":"HUMAN"}"#;
+const ACCOUNT_JSON: &str =
+    r#"{"v":1,"accounts":[{"id":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","host":"example.1password.com"}]}"#;
+
+impl Sandbox {
+    /// `%LOCALAPPDATA%\op-reason\account.json` of this sandbox.
+    fn account_file(&self) -> PathBuf {
+        self.root.join("lad").join("op-reason").join("account.json")
+    }
+
+    /// A desktop payload whose facts carry references (an ID reference first, then a name).
+    fn payload_with_refs(&self) -> serde_json::Value {
+        let mut p = self.payload("desktop", &["inject"]);
+        p["facts"]["command"] = "op inject".into();
+        p["facts"]["refs"] = serde_json::json!({
+            "total": 2,
+            "from": [{"kind": "stdin"}],
+            "list": [ID_REF, "op://Private/proxmox/token"]
+        });
+        p
+    }
+}
+
+#[test]
+fn run_lists_the_references_and_links_them_once_whoami_told_the_account() {
+    let _g = serial();
+    let sb = Sandbox::new("refs-run");
+    let p = sb.payload_with_refs().to_string();
+    let envs = [("FAKE_WHOAMI_RC", "0"), ("FAKE_WHOAMI_OUT", WHOAMI_JSON)];
+    let out = sb.run_payload(&p, &envs, b"x");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    let refs = &st["ui"]["refs"];
+    assert_eq!(refs["head"], "References to read (2, from stdin)", "{st}");
+    assert_eq!(
+        refs["items"],
+        serde_json::json!([
+            {"text": ID_REF, "linked": false},
+            {"text": "op://Private/proxmox/token", "linked": false}
+        ]),
+        "the first call: no account yet: {st}"
+    );
+    assert!(
+        refs["hint"]
+            .as_str()
+            .is_some_and(|h| h.starts_with("Links to the items appear")),
+        "{st}"
+    );
+    assert_eq!(sb.call(2), whoami_call());
+    assert_eq!(
+        fs::read_to_string(sb.account_file()).unwrap_or_default(),
+        ACCOUNT_JSON,
+        "whoami's account ID and host, nothing else"
+    );
+    let out = sb.run_payload(&p, &envs, b"x");
+    assert_eq!(out.status.code(), Some(0));
+    let st = sb.status();
+    assert_eq!(st["ui"]["refs"]["items"][0]["linked"], true, "{st}");
+    assert_eq!(st["ui"]["refs"]["items"][1]["linked"], false, "{st}");
+    assert!(st["ui"]["refs"]["hint"].is_null(), "{st}");
+    let mut other = sb.payload_with_refs();
+    other["facts"]["refs"]["account"] = "other".into();
+    sb.run_payload(&other.to_string(), &[], b"x");
+    let st = sb.status();
+    assert_eq!(
+        st["ui"]["refs"]["items"][0]["linked"], false,
+        "--account of an account not remembered: {st}"
+    );
+    assert!(st["ui"]["refs"]["hint"].is_string(), "{st}");
+    let mut named = sb.payload_with_refs();
+    named["facts"]["refs"]["account"] = "example".into();
+    sb.run_payload(&named.to_string(), &[], b"x");
+    assert_eq!(
+        sb.status()["ui"]["refs"]["items"][0]["linked"],
+        true,
+        "--account by the host's first label"
+    );
+}
+
+#[test]
+fn whoami_output_keeps_only_the_account_id_and_host() {
+    let _g = serial();
+    let sb = Sandbox::new("refs-whoami");
+    let out = sb.run(
+        &[s("--reason"), s("whoami copy"), s("vault"), s("list")],
+        &[("FAKE_WHOAMI_RC", "0"), ("FAKE_WHOAMI_OUT", WHOAMI_JSON)],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(sb.call(2), whoami_call());
+    assert_eq!(
+        sb.call(3),
+        vec![OsString::from("signout"), OsString::from("--all")]
+    );
+    let copy = fs::read_to_string(sb.account_file()).unwrap_or_default();
+    assert_eq!(copy, ACCOUNT_JSON);
+    let all = format!(
+        "{}{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        sb.log()
+    );
+    assert!(
+        !all.contains("someone@") && !all.contains("USERUSER"),
+        "whoami's output goes nowhere: {all}"
+    );
+    let sb = Sandbox::new("refs-whoami-out");
+    sb.run(
+        &[s("--reason"), s("not signed in"), s("vault"), s("list")],
+        &[("FAKE_WHOAMI_OUT", WHOAMI_JSON)],
+        b"",
+    );
+    assert!(
+        !sb.account_file().exists(),
+        "a whoami that failed is not remembered"
+    );
+}
+
+#[test]
+fn the_entry_face_reads_a_template_on_stdin_and_hands_op_the_same_bytes() {
+    let _g = serial();
+    let sb = Sandbox::new("refs-stdin");
+    let template = format!("a={{{{ op://Private/db/password }}}}\nb={ID_REF}\n");
+    let out = sb.run(
+        &[s("--reason"), s("stdin template"), s("inject")],
+        &[],
+        template.as_bytes(),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        out.stdout,
+        template.as_bytes(),
+        "op.exe got the template on its stdin"
+    );
+    let log = sb.log();
+    let start = lines_with(&log, "start");
+    assert_eq!(start.len(), 1);
+    let rec: serde_json::Value = serde_json::from_str(start[0]).unwrap();
+    assert_eq!(
+        rec["refs"],
+        serde_json::json!({"total": 2, "from": [{"kind": "stdin"}], "list": ["op://Private/db/password", ID_REF]}),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_entry_face_reads_template_and_env_files_relative_to_its_directory() {
+    let _g = serial();
+    let sb = Sandbox::new("refs-files");
+    let dir = sb.root.join("work");
+    fs::create_dir_all(dir.join("conf")).unwrap();
+    fs::write(
+        dir.join("conf").join("app.tpl"),
+        "x={{ op://Shared/db/password }}",
+    )
+    .unwrap();
+    fs::write(dir.join(".env"), "TOKEN=op://Shared/api/token\n").unwrap();
+    for (args, want) in [
+        (
+            vec!["--reason", "file", "inject", "-i", "conf/app.tpl"],
+            serde_json::json!({"total": 1, "from": [{"kind": "file", "name": "app.tpl"}], "list": ["op://Shared/db/password"]}),
+        ),
+        (
+            vec!["--reason", "env", "run", "--env-file", ".env", "--", "cmd"],
+            serde_json::json!({"total": 1, "from": [{"kind": "env-file", "name": ".env"}], "list": ["op://Shared/api/token"]}),
+        ),
+    ] {
+        let _ = fs::remove_file(sb.root.join("lad").join("op-reason").join("log.jsonl"));
+        let args: Vec<&OsStr> = args.iter().map(|a| s(a)).collect();
+        let out = sb
+            .command(&args, &[])
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run op-reason.exe");
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        let log = sb.log();
+        let rec: serde_json::Value = serde_json::from_str(lines_with(&log, "start")[0]).unwrap();
+        assert_eq!(rec["refs"], want, "{args:?}: {log}");
+    }
+}
+
+/// The handler of `onepassword:` URLs in HKCU, for the time of a test: the fake op.exe appends each URL to a file. Only
+/// where no such key exists yet (a machine with 1Password has one; it is never replaced).
+struct UrlHandler;
+
+impl UrlHandler {
+    const KEY: &'static str = r"HKCU\Software\Classes\onepassword";
+
+    fn register(record: &Path) -> Option<UrlHandler> {
+        let exists = Command::new("reg")
+            .args(["query", Self::KEY])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if exists {
+            return None;
+        }
+        let command = format!(
+            "\"{}\" --opened \"{}\" \"%1\"",
+            fake_op().display(),
+            record.display()
+        );
+        let shell_open = format!(r"{}\shell\open\command", Self::KEY);
+        let steps: [&[&str]; 3] = [
+            &["add", Self::KEY, "/ve", "/d", "URL:onepassword", "/f"],
+            &["add", Self::KEY, "/v", "URL Protocol", "/d", "", "/f"],
+            &["add", &shell_open, "/ve", "/d", &command, "/f"],
+        ];
+        let handler = UrlHandler;
+        for step in steps {
+            let ok = Command::new("reg")
+                .args(step)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            assert!(ok, "reg {step:?}");
+        }
+        Some(handler)
+    }
+}
+
+impl Drop for UrlHandler {
+    fn drop(&mut self) {
+        let _ = Command::new("reg")
+            .args(["delete", Self::KEY, "/f"])
+            .output();
+    }
+}
+
+#[test]
+fn a_click_on_a_link_opens_the_item_and_leaves_the_focus_where_it_was() {
+    if std::env::var_os("CI").is_none() {
+        eprintln!("skipped: it moves the mouse and registers a URL handler (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("refs-click");
+    let record = sb.root.join("opened.txt");
+    let Some(_handler) = UrlHandler::register(&record) else {
+        eprintln!("skipped: a handler of onepassword: URLs exists already");
+        return;
+    };
+    fs::create_dir_all(sb.account_file().parent().unwrap()).unwrap();
+    fs::write(sb.account_file(), ACCOUNT_JSON).unwrap();
+    let p = sb.payload_with_refs().to_string();
+    let mut child = sb
+        .command(&[s("--run")], &[("FAKE_SLEEP_MS", "15000")])
+        .env("OPREASON_PAYLOAD", &p)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn op-reason.exe --run");
+    assert!(
+        wait_until(Duration::from_secs(10), || click::window().is_some()),
+        "the window appears"
+    );
+    let h = click::window().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let before = click::foreground();
+    let found = click::click_first_link(h);
+    let opened = wait_until(Duration::from_secs(10), || {
+        fs::read_to_string(&record).is_ok_and(|t| !t.is_empty())
+    });
+    let after = click::foreground();
+    let text = fs::read_to_string(&record).unwrap_or_default();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        found.is_some(),
+        "a point with the hand cursor on the left of the window"
+    );
+    assert!(opened, "the handler ran within 10 s ({found:?})");
+    assert_eq!(text, format!("{ITEM_URL}\n"), "exactly the item's URL");
+    assert_ne!(
+        after, h,
+        "the window did not take the focus (before: {before:?})"
+    );
+}
+
 mod click {
-    //! A real click on the window's switch, through the mouse of the desktop (CI only).
+    //! Real clicks on the window, through the mouse of the desktop (CI only).
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetClientRect, GetForegroundWindow, GetWindowTextW, IsWindowVisible,
-        SetCursorPos,
+        CURSORINFO, FindWindowW, GetClientRect, GetCursorInfo, GetForegroundWindow, GetWindowTextW,
+        IDC_HAND, IsWindowVisible, LoadCursorW, SetCursorPos,
     };
     use windows::core::{PCWSTR, w};
 
@@ -1298,6 +1584,56 @@ mod click {
     pub fn foreground() -> HWND {
         // SAFETY: no arguments.
         unsafe { GetForegroundWindow() }
+    }
+
+    /// Whether the mouse pointer shows the hand (the window shows it over its switch and its links).
+    fn hand() -> bool {
+        // SAFETY: valid out parameter; the hand is a shared system cursor, the same handle in every process.
+        unsafe {
+            let mut ci = CURSORINFO {
+                cbSize: size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            let Ok(hand) = LoadCursorW(None, IDC_HAND) else {
+                return false;
+            };
+            GetCursorInfo(&mut ci).is_ok() && ci.hCursor == hand
+        }
+    }
+
+    /// Finds the first link from the top, moving the pointer down the left of the text (40 DIPs in: past the padding
+    /// and the references' indent, away from the switch at the bottom right) until it shows the hand, and clicks there.
+    /// Returns the client point it clicked.
+    pub fn click_first_link(h: HWND) -> Option<(i32, i32)> {
+        // SAFETY: Win32 calls with valid arguments; the window belongs to another process of this desktop.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(h, &mut rc);
+            let k = GetDpiForWindow(h).max(96) as f32 / 96.0;
+            let x = (40.0 * k).round() as i32;
+            let step = (2.0 * k).round().max(1.0) as i32;
+            let mut y = 0;
+            while y < rc.bottom {
+                let mut pt = POINT { x, y };
+                let _ = ClientToScreen(h, &mut pt);
+                let _ = SetCursorPos(pt.x, pt.y);
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                if hand() {
+                    // a little lower, inside the line rather than on its top edge
+                    let mut pt = POINT { x, y: y + 2 * step };
+                    let _ = ClientToScreen(h, &mut pt);
+                    let _ = SetCursorPos(pt.x, pt.y);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    mouse_event(LEFTDOWN, 0, 0, 0, 0);
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    mouse_event(LEFTUP, 0, 0, 0, 0);
+                    return Some((x, y + 2 * step));
+                }
+                y += step;
+            }
+            None
+        }
     }
 
     /// Clicks `日本語`, the right end of the switch: 26 DIPs left of the client area's right edge (its 14 DIP padding,
