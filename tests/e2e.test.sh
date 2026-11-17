@@ -18,7 +18,8 @@
 #   desktop
 #     - tricky arguments (spaces, quotes, Japanese, empty) reach op unchanged, binary stdin comes out on stdout, stderr
 #       has only op's, the exit code is op's
-#     - after op the launcher runs whoami and, when signed in, signout --all; the log's end is approved with signout ok
+#     - after op the launcher runs whoami --format json and, when signed in, signout --all; the log's end is approved
+#       with signout ok
 #   denial: op's denial text → end denied, signout not-signed-in (the launcher's whoami fails)
 #   service account: the token and OP_BIOMETRIC_UNLOCK_ENABLED=false reach op; the launcher runs neither whoami nor
 #     signout (kind service-account, signout skipped)
@@ -28,13 +29,17 @@
 #   the language chosen in the window: the launcher reads settings.json (on Linux, ~/.local/share/op-reason) and reports
 #     it as chosenLang; the binary keeps it in <state>/lang.json and the next call speaks it despite OPREASON_LANG; a
 #     removed settings.json makes the launcher report null, and the copy goes too
+#   the references a call reads: an op inject template on stdin reaches op unchanged, its references the log and the
+#     launcher's window texts (facts.refs → ui.refs); the first call has no links and the hint, its whoami's account
+#     goes to account.json (on Linux, ~/.local/share/op-reason), and the next call links the ID reference
 #
 # ## How
 #
 # The fake op.exe writes its arguments NUL-separated to FAKE_DIR/call.<n>, and who started it (the binary's watchdog
 # when the parent's comm is op or op-reason, otherwise the launcher) and the token variables to FAKE_DIR/env.<n>. whoami
-# exits with FAKE_WHOAMI_RC only when the launcher runs it (the watchdog's direct whoami always fails); signout exits 0;
-# anything else copies stdin to stdout, writes FAKE_STDERR to stderr and exits with FAKE_RC.
+# prints FAKE_WHOAMI_OUT and exits with FAKE_WHOAMI_RC only when the launcher runs it (the watchdog's direct whoami
+# always fails); signout exits 0; anything else copies stdin to stdout, writes FAKE_STDERR to stderr and exits with
+# FAKE_RC. The fake powershell.exe keeps a copy of the launcher's last status file in FAKE_DIR/status.last.
 
 # No -e: a failed check must not stop the checks after it.
 set -u -o pipefail
@@ -66,7 +71,11 @@ ln -s "${here}/../launcher/launcher.ps1" "${work}/winapp/launcher.ps1"
 export OPREASON_EXE=${work}/winapp/op-reason.exe OPREASON_RUNNER=launcher
 
 fake "${work}/bin/powershell.exe" <<'EOF'
-exec pwsh "$@"
+status=$(jq -r '.status // empty' <<<"${OPREASON_PAYLOAD:-null}" 2>/dev/null)
+rc=0
+pwsh "$@" || rc=$?
+if [[ -n ${status} && -e ${status} ]]; then cp "${status}" "${FAKE_DIR}/status.last"; fi
+exit "${rc}"
 EOF
 fake "${work}/bin/wslpath" <<'EOF'
 printf '%s\n' "$2"
@@ -87,7 +96,10 @@ esac
 } >"${d}/env.${n}"
 case ${1-} in
   whoami)
-    [[ ${role} == launcher ]] && exit "${FAKE_WHOAMI_RC:-1}"
+    if [[ ${role} == launcher ]]; then
+      if [[ -n ${FAKE_WHOAMI_OUT:-} ]]; then printf '%s\n' "${FAKE_WHOAMI_OUT}"; fi
+      exit "${FAKE_WHOAMI_RC:-1}"
+    fi
     exit 1
     ;;
   signout) exit 0 ;;
@@ -149,7 +161,7 @@ else
   ng "arguments, binary stdin, stderr and the exit code go through end to end" \
     "rc=${rc} err=$(cat "${work}/desktop.err") calls=${from_pwsh[*]}"
 fi
-if ((${#from_pwsh[@]} == 3)) && call_is "${from_pwsh[1]}" whoami && call_is "${from_pwsh[2]}" signout --all \
+if ((${#from_pwsh[@]} == 3)) && call_is "${from_pwsh[1]}" whoami --format json && call_is "${from_pwsh[2]}" signout --all \
   && [[ $(end_field .result) == approved && $(end_field .signout) == ok && $(end_field .window) == skipped ]]; then
   ok "the launcher runs whoami and then signout --all; the log says approved, signout ok"
 else
@@ -195,7 +207,7 @@ unset OPREASON_LOCK_WAIT
 whoami_calls=0
 signout_calls=0
 for n in $(calls_from launcher); do
-  call_is "${n}" whoami && whoami_calls=$((whoami_calls + 1))
+  call_is "${n}" whoami --format json && whoami_calls=$((whoami_calls + 1))
   call_is "${n}" signout --all && signout_calls=$((signout_calls + 1))
 done
 send_end=$(jq -r 'select(.event == "start" and .reason == "送る") | .id' "${log}" | head -n 1)
@@ -234,6 +246,35 @@ else
     "copy=$(cat "${XDG_STATE_HOME}/op-reason/lang.json" 2>&1) err=$(cat "${work}/unchosen-refused.err")"
 fi
 unset OPREASON_LANG
+
+echo "== The references a call reads"
+reset
+account_file=${HOME}/.local/share/op-reason/account.json
+rm -f "${account_file}"
+id_ref=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password
+printf 'a={{ op://Private/db/password }}\nb=%s\n' "${id_ref}" >"${work}/tpl.in"
+export FAKE_WHOAMI_RC=0
+export FAKE_WHOAMI_OUT='{"url":"https://example.1password.com/","email":"someone@example.com","user_uuid":"USERUSERUSERUSERUSERUSER12","account_uuid":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","user_type":"HUMAN"}'
+stdin_file=${work}/tpl.in
+run_op refs1 --reason "stdin のテンプレート" inject
+first=$(jq -c '.ui.refs | [.head, [.items[] | [.text, .linked]], .more, (.hint != null)]' "${FAKE_DIR}/status.last" 2>/dev/null)
+copied=$(cat "${account_file}" 2>/dev/null)
+logged=$(jq -c 'select(.event == "start") | .refs' "${log}" 2>/dev/null)
+run_op refs2 --reason "二回目" inject
+second=$(jq -c '[.ui.refs.items[].linked, (.ui.refs.hint == null)]' "${FAKE_DIR}/status.last" 2>/dev/null)
+stdin_file=""
+unset FAKE_WHOAMI_RC FAKE_WHOAMI_OUT
+want_first=$(jq -cn --arg id "${id_ref}" '["References to read (2, from stdin)", [["op://Private/db/password", false], [$id, false]], null, true]')
+want_log=$(jq -cn --arg id "${id_ref}" '{total: 2, from: [{kind: "stdin"}], list: ["op://Private/db/password", $id]}')
+if [[ ${rc} == 0 ]] && cmp -s "${work}/tpl.in" "${work}/refs1.out" && [[ ${first} == "${want_first}" &&
+  ${copied} == '{"v":1,"accounts":[{"id":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","host":"example.1password.com"}]}' &&
+  ${logged} == "${want_log}" && ${second} == '[false,true,true]' ]]; then
+  ok "a template on stdin: op gets it, the log and the window list its references; links once whoami told the account"
+else
+  ng "a template on stdin: op gets it, the log and the window list its references; links once whoami told the account" \
+    "rc=${rc} first=${first} copy=${copied} log=${logged} second=${second}"
+fi
+rm -f "${account_file}"
 
 echo "== auto: an op-reason.exe that writes no status"
 reset

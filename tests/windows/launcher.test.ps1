@@ -15,6 +15,12 @@
 #   - service mode passes OP_SERVICE_ACCOUNT_TOKEN and runs neither whoami nor signout
 #   - the language chosen in op-reason.exe's window (%LOCALAPPDATA%\op-reason\settings.json) beats the payload's lang
 #     and is reported as status chosenLang; without the file, the payload's language and chosenLang null
+#   - the references a call reads (docs/superpowers/specs/2026-11-17-refs-in-window-design.md): whoami's JSON keeps only
+#     the account ID and host in account.json; status.ui.refs links an ID reference once the account is known, and
+#     says why there is no link before; on CI only (it moves the mouse and registers a handler of onepassword: URLs in
+#     HKCU, unless one exists), a real click on a link opens exactly the item's URL without making the window the
+#     foreground window
+#   - screenshots: the window with the block of references (links and "and N more"; the hint)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
@@ -36,7 +42,7 @@ $holderFile = Join-Path $env:LOCALAPPDATA 'op-reason\holder.json'
 
 function Reset-Fake {
   Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $fakeDir 'calls.jsonl'), $statusFile
-  foreach ($n in @('FAKE_RC', 'FAKE_WHOAMI_RC', 'FAKE_ERR_TEXT', 'FAKE_SLEEP_MS', 'FAKE_OUT', 'FAKE_NO_STDIN', 'OP_SERVICE_ACCOUNT_TOKEN')) {
+  foreach ($n in @('FAKE_RC', 'FAKE_WHOAMI_RC', 'FAKE_WHOAMI_OUT', 'FAKE_ERR_TEXT', 'FAKE_SLEEP_MS', 'FAKE_OUT', 'FAKE_NO_STDIN', 'OP_SERVICE_ACCOUNT_TOKEN')) {
     [Environment]::SetEnvironmentVariable($n, $null, 'Process')
   }
 }
@@ -200,7 +206,7 @@ $r = Invoke-Launcher (New-Payload 'desktop' @('item', 'get', 'x') 'en' 'held' 90
 $calls = @(Get-Calls)
 $st = Get-Status
 $seq = @($calls | ForEach-Object { @($_.args) -join ' ' }) -join ','
-Check 'desktop runs whoami after op and signout --all when signed in' ($seq -ceq 'item get x,whoami,signout --all' -and $st.signout -eq 'ok') "calls=$seq signout=$($st.signout)"
+Check 'desktop runs whoami after op and signout --all when signed in' ($seq -ceq 'item get x,whoami --format json,signout --all' -and $st.signout -eq 'ok') "calls=$seq signout=$($st.signout)"
 $both = [System.IO.File]::ReadAllText($r.out) + [System.IO.File]::ReadAllText($r.err)
 Check "whoami and signout write nothing to the launcher's stdout or stderr" (-not $both.Contains('SIGNOUT')) $both
 
@@ -284,15 +290,153 @@ Check 'without settings.json: the payload language and chosenLang null' (
   $r.rc -eq 0 -and $st.ui.title -ceq '1Password CLI の承認の依頼' -and $null -eq $st.chosenLang -and
   @($st.PSObject.Properties.Name) -contains 'chosenLang') ("status=" + ($st | ConvertTo-Json -Compress -Depth 5))
 
+Write-Host '== The references a call reads'
+$accountFile = Join-Path $env:LOCALAPPDATA 'op-reason\account.json'
+$accountJson = '{"v":1,"accounts":[{"id":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","host":"example.1password.com"}]}'
+$idRef = 'op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password'
+$itemUrl = 'onepassword://view-item?a=ABCDEFGHIJKLMNOPQRSTUVWXYZ&v=abcdefghijklmnopqrstuvwxyz&i=0123456789abcdefghijklmnop'
+function New-RefsFacts([string]$reason, [string]$command) {
+  $f = New-Facts 'human' $reason $command
+  $f.refs = [ordered]@{
+    total = 10
+    from  = @([ordered]@{ kind = 'args' }, [ordered]@{ kind = 'file'; name = 'app.tpl' })
+    list  = @($idRef, 'op://Private/proxmox/token', 'op://$APP_ENV/db/password', 'op://Shared/github/token', 'op://Shared/aws/access-key',
+      'op://Shared/aws/secret-key', 'op://Private/ssh/private key', 'op://Shared/slack/webhook')
+  }
+  return $f
+}
+Remove-Item -Force -ErrorAction SilentlyContinue $accountFile
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+$env:FAKE_WHOAMI_RC = '0'
+$env:FAKE_WHOAMI_OUT = '{"url":"https://example.1password.com/","email":"someone@example.com","user_uuid":"USERUSERUSERUSERUSERUSER12","account_uuid":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","user_type":"HUMAN"}'
+$r = Invoke-Launcher (New-Payload 'desktop' @('inject') 'ja' 'held' 90 'inherit' (New-RefsFacts '参照の欄' 'op inject')) 'refs-first'
+$st = Get-Status
+$copy = ''
+if (Test-Path -LiteralPath $accountFile) { $copy = [System.IO.File]::ReadAllText($accountFile) }
+$linkedFirst = @($st.ui.refs.items | ForEach-Object { [string]$_.linked }) -join ','
+Check 'the first call: no links and the hint; whoami keeps only the account ID and host in account.json' (
+  $r.rc -eq 0 -and $st.ui.refs.head -ceq '読む参照 (10 件・引数、app.tpl から)' -and $linkedFirst -ceq 'False,False,False,False,False,False,False,False' -and
+  $st.ui.refs.more -ceq 'ほか 2 件' -and ([string]$st.ui.refs.hint).StartsWith('項目へのリンクは') -and $copy -ceq $accountJson) ("copy=$copy status=" + ($st | ConvertTo-Json -Compress -Depth 6))
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+$r = Invoke-Launcher (New-Payload 'desktop' @('inject') 'en' 'held' 90 'inherit' (New-RefsFacts 'refs' 'op inject')) 'refs-second'
+$st = Get-Status
+$statusText = [System.IO.File]::ReadAllText($statusFile)
+Check 'the next call links the ID reference; the status says linked, not the URL' (
+  $r.rc -eq 0 -and $st.ui.refs.head -ceq 'References to read (10, from arguments, app.tpl)' -and $st.ui.refs.items[0].linked -eq $true -and
+  $st.ui.refs.items[1].linked -eq $false -and $null -eq $st.ui.refs.hint -and -not $statusText.Contains('onepassword:')) $statusText
+
+# A real click on the first link (CI only): a handler of onepassword: URLs in HKCU (the fake op.exe, which appends each
+# URL to a file) for the time of the test, unless one exists.
+if ($env:CI) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LinkClick
+{
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pt; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
+    [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr inst, IntPtr name);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+    public static bool Hand()
+    {
+        CURSORINFO ci = new CURSORINFO();
+        ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+        return GetCursorInfo(ref ci) && ci.hCursor == LoadCursor(IntPtr.Zero, (IntPtr)32649);
+    }
+}
+'@
+  $key = 'HKCU:\Software\Classes\onepassword'
+  if (Test-Path -LiteralPath $key) {
+    Write-Host '  skip a click on a link (a handler of onepassword: URLs exists already)'
+  } else {
+    $opened = Join-Path $work 'opened.txt'
+    try {
+      [void](New-Item -Path $key -Force)
+      Set-ItemProperty -LiteralPath $key -Name '(default)' -Value 'URL:onepassword'
+      Set-ItemProperty -LiteralPath $key -Name 'URL Protocol' -Value ''
+      [void](New-Item -Path ($key + '\shell\open\command') -Force)
+      Set-ItemProperty -LiteralPath ($key + '\shell\open\command') -Name '(default)' -Value ('"' + $opExe + '" --opened "' + $opened + '" "%1"')
+      [System.IO.File]::WriteAllText($accountFile, $accountJson)
+      Reset-Fake
+      $env:FAKE_NO_STDIN = '1'
+      $env:FAKE_SLEEP_MS = '15000'
+      $env:OPREASON_PAYLOAD = New-Payload 'desktop' @('inject') 'en' 'held' 90 'inherit' (New-RefsFacts 'click a link' 'op inject')
+      $proc = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $launcher) -PassThru -WindowStyle Hidden
+      Remove-Item Env:OPREASON_PAYLOAD -ErrorAction SilentlyContinue
+      $h = [IntPtr]::Zero
+      for ($k = 0; $k -lt 200 -and $h -eq [IntPtr]::Zero; $k++) {
+        Start-Sleep -Milliseconds 100
+        $h = [LinkClick]::FindWindow([NullString]::Value, '1Password CLI approval request')
+      }
+      Start-Sleep -Milliseconds 800
+      $before = [LinkClick]::GetForegroundWindow()
+      $found = $null
+      if ($h -ne [IntPtr]::Zero) {
+        $rc = New-Object LinkClick+RECT
+        [void][LinkClick]::GetClientRect($h, [ref]$rc)
+        $scale = [Math]::Max(96, [LinkClick]::GetDpiForWindow($h)) / 96.0
+        $x = [int][Math]::Round(40 * $scale)
+        $step = [int][Math]::Max(1, [Math]::Round(2 * $scale))
+        for ($y = 0; $y -lt $rc.Bottom -and $null -eq $found; $y += $step) {
+          $pt = New-Object LinkClick+POINT
+          $pt.X = $x
+          $pt.Y = $y
+          [void][LinkClick]::ClientToScreen($h, [ref]$pt)
+          [void][LinkClick]::SetCursorPos($pt.X, $pt.Y)
+          Start-Sleep -Milliseconds 30
+          if ([LinkClick]::Hand()) {
+            $pt = New-Object LinkClick+POINT
+            $pt.X = $x
+            $pt.Y = $y + 2 * $step
+            [void][LinkClick]::ClientToScreen($h, [ref]$pt)
+            [void][LinkClick]::SetCursorPos($pt.X, $pt.Y)
+            Start-Sleep -Milliseconds 100
+            [LinkClick]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 60
+            [LinkClick]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+            $found = "client ($x, $($y + 2 * $step))"
+          }
+        }
+      }
+      $text = ''
+      for ($k = 0; $k -lt 100 -and -not $text; $k++) {
+        Start-Sleep -Milliseconds 100
+        if (Test-Path -LiteralPath $opened) { $text = [System.IO.File]::ReadAllText($opened) }
+      }
+      $after = [LinkClick]::GetForegroundWindow()
+      try { $proc.Kill() } catch { }
+      $proc.WaitForExit()
+      Check 'a real click on a link opens exactly the item''s URL; the window does not take the focus' (
+        $h -ne [IntPtr]::Zero -and $null -ne $found -and $text -ceq ($itemUrl + "`n") -and $after -ne $h) "window=$h found=$found opened=[$text] before=$before after=$after"
+    } finally {
+      Remove-Item -LiteralPath $key -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -Force -ErrorAction SilentlyContinue $accountFile
+    }
+  }
+}
+
 Write-Host '== Screenshots'
 $shotCases = @(
   @{ file = '01-window-ja.png'; lang = 'ja'; title = '1Password CLI の承認の依頼'; facts = (New-Facts 'claude' 'staging の VM を作るのに Proxmox の API の token を読む' 'op read op://Private/proxmox/token' ([ordered]@{ workspace = 'w1'; label = 'op-reason の作業'; pane = 'w1:p2' }) @([ordered]@{ kind = 'shared-cleared' })) },
-  @{ file = '02-window-en.png'; lang = 'en'; title = '1Password CLI approval request'; facts = (New-Facts 'human' 'read the Proxmox API token to create the staging VM' 'op read op://Private/proxmox/token') }
+  @{ file = '02-window-en.png'; lang = 'en'; title = '1Password CLI approval request'; facts = (New-Facts 'human' 'read the Proxmox API token to create the staging VM' 'op read op://Private/proxmox/token') },
+  @{ file = '03-window-refs-ja.png'; lang = 'ja'; title = '1Password CLI の承認の依頼'; account = $true; facts = (New-RefsFacts 'テンプレートから設定ファイルを作る' 'op inject -i app.tpl op://Private/proxmox/token') },
+  @{ file = '04-window-refs-hint-en.png'; lang = 'en'; title = '1Password CLI approval request'; facts = (New-RefsFacts 'write the settings file from the template' 'op inject -i app.tpl op://Private/proxmox/token') }
 )
 foreach ($c in $shotCases) {
   Reset-Fake
   $env:FAKE_NO_STDIN = '1'
   $env:FAKE_SLEEP_MS = '6000'
+  if ($c.account) { [System.IO.File]::WriteAllText($accountFile, $accountJson) } else { Remove-Item -Force -ErrorAction SilentlyContinue $accountFile }
   $env:OPREASON_PAYLOAD = New-Payload 'desktop' @('read', 'op://Private/proxmox/token') $c.lang 'held' 90 'inherit' $c.facts
   $proc = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $launcher) -PassThru -WindowStyle Hidden
   Remove-Item Env:OPREASON_PAYLOAD -ErrorAction SilentlyContinue
