@@ -34,6 +34,15 @@ Wrapper options (first argument only)
 
 AI agents: run op-reason --skill once to learn how to call op here.
 
+SSH keys (the relay in front of the 1Password SSH agent)
+  op-reason --ssh-agent [--mode per-call|show-only] [--pipe <name>]
+                        [--upstream <name>] [--time-limit <n>[s|m|h]]
+  op-reason --ssh-agent --status   whether the relay answers on its pipe
+  Point ssh at \\.\pipe\op-reason-ssh-agent (IdentityAgent or SSH_AUTH_SOCK)
+  and give the reason in OPREASON_SSH_REASON. per-call (the default) asks once
+  per call in op-reason's window; show-only only shows who and why while
+  1Password asks. Keep it running from a scheduled task.
+
 Deny any 1Password CLI approval prompt that comes without the op-reason window.
 op-reason {version} is unofficial: it is not made or supported by 1Password.
 "#
@@ -62,6 +71,15 @@ wrapper の option (最初の引数のときだけ)
                         (--since 1d・--all・--json)
 
 AI エージェントは、最初に op-reason --skill を打って呼び方を読んでください。
+
+SSH の鍵 (1Password の SSH agent の前に置く中継)
+  op-reason --ssh-agent [--mode per-call|show-only] [--pipe <名前>]
+                        [--upstream <名前>] [--time-limit <数>[s|m|h]]
+  op-reason --ssh-agent --status   中継がパイプで答えるか
+  ssh を \\.\pipe\op-reason-ssh-agent に向け (IdentityAgent か SSH_AUTH_SOCK)、理由は
+  OPREASON_SSH_REASON で渡します。per-call (既定) は呼び出しごとに 1 回、op-reason の
+  窓で確認します。show-only は、1Password が確認する間、誰が何のためにを見せるだけ
+  です。中継はタスク スケジューラーのタスクから起こしたままにしてください。
 
 op-reason の窓が出ていない 1Password CLI の承認の画面は、拒否してください。
 op-reason {version} は非公式の道具です (1Password の製品ではありません)。
@@ -165,6 +183,23 @@ mod tests {
                 }
             }
             assert!(full.contains("op-reason 9.8.7"), "{full}");
+        }
+    }
+
+    /// The usage names the SSH relay's face and its options.
+    #[test]
+    fn usage_names_the_relay() {
+        for lang in [Lang::En, Lang::Ja] {
+            let full = usage_full(lang, "9.8.7");
+            for word in [
+                "op-reason --ssh-agent",
+                "--mode per-call|show-only",
+                "--time-limit",
+                "--status",
+                "OPREASON_SSH_REASON",
+            ] {
+                assert!(full.contains(word), "{word} in {full}");
+            }
         }
     }
 }
