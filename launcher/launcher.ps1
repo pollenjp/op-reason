@@ -27,13 +27,19 @@
 #   lockWait  seconds to wait for the named mutex
 #   stderr    inherit: op.exe writes to this process's stderr directly; scan: this script relays op.exe's stderr to
 #             its own and reports whether op denied or timed out the approval (the Windows entry cannot tee stderr)
-#   facts     desktop: time, caller, herdr, place, reason, command, notes; this script builds the texts
+#   facts     desktop: time, caller, herdr, place, reason, command, notes, refs; this script builds the texts. refs
+#             (optional): the op:// references the call reads (total, from, the first 8 in list, the call's
+#             --account), shown after the command line; one whose vault and item are IDs is a link that opens the
+#             item in the 1Password app (onepassword://view-item?a=<account>&v=<vault>&i=<item>), with the account ID
+#             from %LOCALAPPDATA%\op-reason\account.json (docs/superpowers/specs/2026-11-17-refs-in-window-design.md)
 #   notify    notify: kind, when, cleared, time
 #
 # Modes:
-#   desktop  show the window and the toast, run op.exe, then close the CLI sessions (whoami, then signout --all only
-#            when signed in: whoami does not prompt without a session). signout --all closes the sessions of other
-#            processes too, so a call with lock "skipped" does not close them.
+#   desktop  show the window (it never takes the focus) and the toast, run op.exe, then close the CLI sessions
+#            (whoami --format json, then signout --all only when signed in: whoami does not prompt without a
+#            session). signout --all closes the sessions of other processes too, so a call with lock "skipped" does
+#            not close them. The account ID and the sign-in host of a whoami that succeeded are kept in account.json
+#            (nothing else of its output), so that later windows can link the references.
 #   help     calls that need no reason (--version, --help): run op.exe without the window, then close the sessions
 #   service  service account or Connect token (the desktop app is not involved): run op.exe only
 #   notify   show the toast only
@@ -96,6 +102,12 @@ function Get-Texts([string]$lang) {
       failedBody    = 'WSL のどの pane からも使える承認が残っています ({0})。WSL で op.exe signout --all を打つか、1Password をロックしてください。'
       whenStart     = 'op を打つ前'
       whenEnd       = 'op を打った後'
+      refs          = '読む参照 ({0} 件・{1} から)'
+      refsArgs      = '引数'
+      refsStdin     = '標準入力'
+      refsSep       = '、'
+      refsMore      = 'ほか {0} 件'
+      refsHint      = '項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (そのとき、op が既定で使うアカウントの ID を覚えます)'
       holderLine    = '{0} {1} 理由「{2}」 {3}'
       unknown       = '(分からない)'
       waiting       = 'op-reason: launcher: ほかの op-reason の呼び出しの承認待ちが終わるのを待っています (最大 {0} 秒)。'
@@ -124,6 +136,12 @@ function Get-Texts([string]$lang) {
     failedBody    = 'An approval usable from every WSL pane is left ({0}). Run op.exe signout --all in WSL, or lock 1Password.'
     whenStart     = 'before the call'
     whenEnd       = 'after the call'
+    refs          = 'References to read ({0}, from {1})'
+    refsArgs      = 'arguments'
+    refsStdin     = 'stdin'
+    refsSep       = ', '
+    refsMore      = 'and {0} more'
+    refsHint      = 'Links to the items appear once an approved call has finished (op-reason then learns the ID of the account op uses by default)'
     holderLine    = '{0} {1} reason "{2}" {3}'
     unknown       = '(unknown)'
     waiting       = 'op-reason: launcher: waiting for another op-reason call to finish its approval (up to {0} seconds).'
@@ -157,8 +175,180 @@ function Get-CallerShort($facts, $T) {
   return $short
 }
 
-# Build the window and toast texts from the facts of a desktop call.
-function Build-Ui($facts, [string]$lang) {
+# The account copy (account.json in the state directory, design 2026-11-17-refs-in-window-design.md section 5):
+# {"v":1,"accounts":[{"id":"...","host":"..."}]}, the account the last whoami reported first, at most 5. op-reason.exe
+# keeps the same file by the same rules (crates/op-reason-win/src/account.rs).
+function Get-AccountFile {
+  return (Join-Path (Get-StateDir) 'account.json')
+}
+
+# The host of a sign-in address (https://Example.1password.com/ -> example.1password.com); '' when it is not a host.
+function Get-HostOf([string]$url) {
+  if ($null -eq $url) { return '' }
+  $s = $url.Trim()
+  $i = $s.IndexOf('://')
+  if ($i -ge 0) { $s = $s.Substring($i + 3) }
+  $s = ($s -split '[/?#]', 2)[0]
+  $s = ($s -split ':', 2)[0]
+  if ($s.Length -eq 0 -or $s.Length -gt 253 -or $s -cnotmatch '^[A-Za-z0-9.-]+\z') { return '' }
+  return $s.ToLowerInvariant()
+}
+
+# The remembered accounts (ordered hashtables with id and host), in order; none when the file is missing or broken.
+function Read-Accounts {
+  try {
+    $path = Get-AccountFile
+    if (-not [System.IO.File]::Exists($path)) { return @() }
+    $data = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json
+    $out = New-Object System.Collections.ArrayList
+    foreach ($a in @($data.accounts)) {
+      if ($null -eq $a) { continue }
+      $id = [string]$a.id
+      if ($id -cmatch '^[A-Za-z0-9]{26}\z') { [void]$out.Add([ordered]@{ id = $id; host = (Get-HostOf ([string]$a.host)) }) }
+    }
+    return $out.ToArray()
+  } catch {
+    return @()
+  }
+}
+
+# The account ID for the links of a call: with $want (the call's --account), the first account whose ID, host or the
+# host's first label equals it (ignoring case, https:// and a trailing /), else none; without, the first one.
+function Select-Account($accounts, [string]$want) {
+  $list = @($accounts)
+  $w = ''
+  if ($want) { $w = $want.Trim().ToLowerInvariant() }
+  if (-not $w) {
+    if ($list.Count -gt 0) { return $list[0].id }
+    return $null
+  }
+  if ($w.StartsWith('https://')) { $w = $w.Substring(8) }
+  $w = $w.TrimEnd('/')
+  foreach ($a in $list) {
+    if ($a.id -eq $w) { return $a.id }
+    if ($a.host -and ($a.host -eq $w -or ($a.host -split '\.')[0] -eq $w)) { return $a.id }
+  }
+  return $null
+}
+
+# Keeps the account of a whoami that succeeded (its JSON output: account_uuid and the host of url, nothing else).
+function Save-Account([string]$json) {
+  try {
+    $who = $json | ConvertFrom-Json
+    $id = [string]$who.account_uuid
+    if ($id -cnotmatch '^[A-Za-z0-9]{26}\z') { return }
+    $list = New-Object System.Collections.ArrayList
+    [void]$list.Add([ordered]@{ id = $id; host = (Get-HostOf ([string]$who.url)) })
+    foreach ($a in @(Read-Accounts)) {
+      if ($a.id -ne $id -and $list.Count -lt 5) { [void]$list.Add($a) }
+    }
+    $entries = @($list | ForEach-Object { '{"id":"' + $_.id + '","host":"' + $_.host + '"}' })
+    Write-FileReplacing (Get-AccountFile) ('{"v":1,"accounts":[' + ($entries -join ',') + ']}')
+  } catch { }
+}
+
+# Puts $text in place of the file: a temporary file in the same folder renamed over it (retried for a moment when
+# another process has the old one open), so that a reader never sees half a file.
+function Write-FileReplacing([string]$path, [string]$text) {
+  $dir = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Force -Path $dir) }
+  $tmp = $path + '.' + $PID + '.tmp'
+  [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($false)))
+  for ($i = 0; $i -lt 5; $i++) {
+    try {
+      if ([System.IO.File]::Exists($path)) { [System.IO.File]::Replace($tmp, $path, $null) } else { [System.IO.File]::Move($tmp, $path) }
+      return
+    } catch {
+      Start-Sleep -Milliseconds 20
+    }
+  }
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+}
+
+# The vault and item IDs of a reference whose vault and item are both IDs (26 lowercase letters or digits, as
+# written), or $null.
+function Get-LinkIds([string]$ref) {
+  if ($ref -cmatch '^op://([a-z0-9]{26})/([a-z0-9]{26})(/|\?|\z)') { return @($Matches[1], $Matches[2]) }
+  return $null
+}
+
+# The URL that opens an item in the 1Password app, built from the three IDs only, or $null.
+function Get-ItemUrl([string]$account, [string]$vault, [string]$item) {
+  if ($account -cmatch '^[A-Za-z0-9]{26}\z' -and $vault -cmatch '^[a-z0-9]{26}\z' -and $item -cmatch '^[a-z0-9]{26}\z') {
+    return ('onepassword://view-item?a=' + $account + '&v=' + $vault + '&i=' + $item)
+  }
+  return $null
+}
+
+# Opens an item's URL with the handler Windows has for it (only onepassword://view-item? URLs).
+function Open-ItemLink([string]$url) {
+  if (-not $url -or -not $url.StartsWith('onepassword://view-item?') -or $url -match '\s') { return }
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $url
+    $psi.UseShellExecute = $true
+    [void][System.Diagnostics.Process]::Start($psi)
+  } catch { }
+}
+
+# The block of references (op-reason.exe's ref_lines in crates/op-reason-win/src/ui.rs): the head with the count and
+# the sources, at most 8 references (an ID reference gets its item's URL when the account is known), "and N more",
+# and the hint when a reference shown could be a link but none got one.
+function Build-RefLines($refs, $T, [string]$account) {
+  $from = New-Object System.Collections.ArrayList
+  foreach ($src in @($refs.from)) {
+    if ($null -eq $src) { continue }
+    $kind = Get-Text $src.kind
+    $name = Get-Text $src.name
+    if ($kind -eq 'args') { [void]$from.Add($T.refsArgs) }
+    elseif ($kind -eq 'stdin') { [void]$from.Add($T.refsStdin) }
+    elseif (($kind -eq 'file' -or $kind -eq 'env-file') -and $name) { [void]$from.Add($name) }
+  }
+  $fromText = '?'
+  if ($from.Count -gt 0) { $fromText = $from.ToArray() -join $T.refsSep }
+  $list = @(@($refs.list) | Where-Object { $null -ne $_ } | ForEach-Object { Get-Text $_ })
+  $total = 0
+  if ($null -ne $refs.total) { $total = [int]$refs.total }
+  if ($list.Count -gt $total) { $total = $list.Count }
+  $items = New-Object System.Collections.ArrayList
+  $couldLink = $false
+  $linked = $false
+  foreach ($text in @($list | Select-Object -First 8)) {
+    $url = $null
+    $ids = Get-LinkIds $text
+    if ($null -ne $ids) {
+      $couldLink = $true
+      if ($account) { $url = Get-ItemUrl $account $ids[0] $ids[1] }
+    }
+    if ($url) { $linked = $true }
+    [void]$items.Add([ordered]@{ text = $text; url = $url })
+  }
+  $more = $null
+  if ($total -gt $items.Count) { $more = $T.refsMore -f ($total - $items.Count) }
+  $hint = $null
+  if ($couldLink -and -not $linked) { $hint = $T.refsHint }
+  return [ordered]@{ head = ($T.refs -f $total, $fromText); items = $items.ToArray(); more = $more; hint = $hint }
+}
+
+# The texts as the status records them: the block of references says linked, not the URL.
+function Get-StatusUi($ui) {
+  if ($null -eq $ui -or -not $ui.Contains('refs')) { return $ui }
+  $copy = [ordered]@{}
+  foreach ($k in @($ui.Keys)) {
+    if ($k -ne 'refs' -and $k -ne 'refsAt') { $copy[$k] = $ui[$k] }
+  }
+  $r = $ui.refs
+  $copy.refs = [ordered]@{
+    head  = $r.head
+    items = @(@($r.items) | ForEach-Object { [ordered]@{ text = $_.text; linked = [bool]$_.url } })
+    more  = $r.more
+    hint  = $r.hint
+  }
+  return $copy
+}
+
+# Build the window and toast texts from the facts of a desktop call. $account: the account ID for the links.
+function Build-Ui($facts, [string]$lang, [string]$account) {
   $T = Get-Texts $lang
   $lines = New-Object System.Collections.ArrayList
   [void]$lines.Add(@($T.time, (Get-Text $facts.time)))
@@ -195,6 +385,11 @@ function Build-Ui($facts, [string]$lang) {
   [void]$lines.Add(@($T.place, $place))
   [void]$lines.Add(@($T.reason, (Get-Text $facts.reason)))
   [void]$lines.Add(@($T.command, (Get-Text $facts.command)))
+  $refsAt = $lines.Count
+  $refs = $null
+  if ($null -ne $facts.refs -and @(@($facts.refs.list) | Where-Object { $null -ne $_ }).Count -gt 0) {
+    $refs = Build-RefLines $facts.refs $T $account
+  }
   foreach ($note in @($facts.notes)) {
     if ($null -eq $note) { continue }
     $kind = Get-Text $note.kind
@@ -207,13 +402,18 @@ function Build-Ui($facts, [string]$lang) {
     ($T.toastReason -f (Get-Clip (Get-Text $facts.reason) 100)),
     ($short + ' · ' + (Get-Clip (Get-Text $facts.command) 80))
   )
-  return [ordered]@{
+  $ui = [ordered]@{
     title  = $T.title
     lines  = $lines.ToArray()
     footer = $T.footer
     others = $T.others
     toast  = $toast
   }
+  if ($null -ne $refs) {
+    $ui.refs = $refs
+    $ui.refsAt = $refsAt
+  }
+  return $ui
 }
 
 # Build the toast texts of a notify call (a shared approval found by the WSL watchdog).
@@ -280,19 +480,19 @@ function Invoke-Quiet([string]$exe, [string]$argLine) {
   $out = $proc.StandardOutput.ReadToEndAsync()
   $err = $proc.StandardError.ReadToEndAsync()
   $proc.WaitForExit()
-  [void]$out.Result
-  return @{ code = $proc.ExitCode; err = $err.Result }
+  return @{ code = $proc.ExitCode; out = $out.Result; err = $err.Result }
 }
 
 # Close the CLI sessions: whoami first (it does not prompt without a session), then signout --all only when signed
 # in (plain signout closes only the most recently used account). signout --all closes other processes' sessions too.
 function Close-Session([string]$op) {
   try {
-    $who = Invoke-Quiet $op 'whoami'
+    $who = Invoke-Quiet $op 'whoami --format json'
     if ($who.code -ne 0) {
       $script:status.signout = 'not-signed-in'
       return
     }
+    Save-Account $who.out
     $out = Invoke-Quiet $op 'signout --all'
     if ($out.code -eq 0) { $script:status.signout = 'ok' }
     else { $script:status.signout = 'failed: exit ' + $out.code + ': ' + (Get-Short $out.err 120) }
@@ -356,9 +556,56 @@ function New-TextLine([string]$text, [double]$size, [bool]$bold, $brush) {
   return $tb
 }
 
-# The window: on top of other windows without taking the focus (ShowActivated), at the top right of the work area so
-# that it does not cover the 1Password prompt in the middle of the screen. It asks nothing; the decision is made in
-# the 1Password prompt only.
+# The block of references after the command line: the head in bold, then each reference indented, a link as a WPF
+# Hyperlink (blue, underlined, the hand cursor); "and N more" and the hint in dark gray. The Hyperlink is not focusable:
+# a focusable one makes WPF call SetFocus on a click, which would activate the window.
+function Add-RefLines($panel, $refs) {
+  [void]$panel.Children.Add((New-TextLine ([string]$refs.head + ':') 0 $true $null))
+  $blue = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x00, 0x66, 0xCC))
+  $dim = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x55, 0x55, 0x55))
+  foreach ($item in @($refs.items)) {
+    $tb = New-TextLine '' 0 $false $null
+    $tb.Margin = New-Object System.Windows.Thickness(12, 2, 0, 2)
+    if ($item.url) {
+      $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run ([string]$item.text))
+      $link.Foreground = $blue
+      $link.Focusable = $false
+      $link.Tag = [string]$item.url
+      $link.Add_Click({ param($sender, $e) Open-ItemLink ([string]$sender.Tag) })
+      [void]$tb.Inlines.Add($link)
+    } else {
+      $tb.Text = [string]$item.text
+    }
+    [void]$panel.Children.Add($tb)
+  }
+  foreach ($text in @($refs.more, $refs.hint)) {
+    if (-not $text) { continue }
+    $tb = New-TextLine ([string]$text) 0 $false $dim
+    $tb.Margin = New-Object System.Windows.Thickness(12, 2, 0, 2)
+    [void]$panel.Children.Add($tb)
+  }
+}
+
+# Keeps clicks (on a link) from activating the window, so that the 1Password prompt keeps the focus: WPF's Popup
+# answers WM_MOUSEACTIVATE with MA_NOACTIVATE in its compiled message filter, and the window takes that filter as a
+# hook. A script block cannot be the hook (PowerShell does not write back the hook's ref parameter, seen on CI), and a
+# WPF window cannot get WS_EX_NOACTIVATE without compiled code. When the filter is not there, a click activates the
+# window, as it always did.
+function Set-NoActivate($win) {
+  try {
+    $flags = [System.Reflection.BindingFlags]'NonPublic, Instance'
+    $filter = [System.Windows.Controls.Primitives.Popup].GetMethod('PopupFilterMessage', $flags)
+    if ($null -eq $filter) { return }
+    $popup = New-Object System.Windows.Controls.Primitives.Popup
+    $hook = [Delegate]::CreateDelegate([System.Windows.Interop.HwndSourceHook], $popup, $filter)
+    $source = [System.Windows.Interop.HwndSource]::FromHwnd((New-Object System.Windows.Interop.WindowInteropHelper $win).Handle)
+    $source.AddHook($hook)
+  } catch { }
+}
+
+# The window: on top of other windows without taking the focus (ShowActivated, and Set-NoActivate for clicks), at the
+# top right of the work area so that it does not cover the 1Password prompt in the middle of the screen. It asks
+# nothing; the decision is made in the 1Password prompt only.
 function New-ApprovalWindow($ui) {
   Add-Type -AssemblyName PresentationFramework
   $win = New-Object System.Windows.Window
@@ -375,11 +622,17 @@ function New-ApprovalWindow($ui) {
   $win.Left = $area.Right - $win.Width - 16
   $win.Top = $area.Top + 16
   $win.Background = [System.Windows.Media.Brushes]::LightYellow
+  $win.Add_SourceInitialized({ param($sender, $e) Set-NoActivate $sender })
 
   $panel = New-Object System.Windows.Controls.StackPanel
   $panel.Margin = New-Object System.Windows.Thickness(14, 10, 14, 12)
   [void]$panel.Children.Add((New-TextLine ([string]$ui.title) 16 $true $null))
+  $refsAt = -1
+  if ($ui.Contains('refs')) { $refsAt = [int]$ui.refsAt }
+  $k = 0
   foreach ($line in @($ui.lines)) {
+    if ($k -eq $refsAt) { Add-RefLines $panel $ui.refs }
+    $k++
     $tb = New-TextLine '' 0 $false $null
     $label = New-Object System.Windows.Documents.Run ([string]$line[0] + ': ')
     $label.FontWeight = [System.Windows.FontWeights]::Bold
@@ -387,6 +640,7 @@ function New-ApprovalWindow($ui) {
     [void]$tb.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$line[1])))
     [void]$panel.Children.Add($tb)
   }
+  if ($refsAt -ge $k) { Add-RefLines $panel $ui.refs }
   $others = New-TextLine ([string]$ui.others) 0 $true ([System.Windows.Media.Brushes]::DarkOrange)
   $others.Visibility = [System.Windows.Visibility]::Collapsed
   [void]$panel.Children.Add($others)
@@ -656,8 +910,10 @@ try {
     }
     $ui = $null
     if ($mode -eq 'desktop' -and $null -ne $payload.facts) {
-      $ui = Build-Ui $payload.facts $lang
-      $script:status.ui = $ui
+      $account = $null
+      if ($null -ne $payload.facts.refs) { $account = Select-Account @(Read-Accounts) ([string]$payload.facts.refs.account) }
+      $ui = Build-Ui $payload.facts $lang $account
+      $script:status.ui = Get-StatusUi $ui
     }
     $T = Get-Texts $lang
     $locked = $true

@@ -129,7 +129,9 @@ fn holder_reason_command(p: &Payload) -> (String, String) {
 fn call(p: &Payload, lang: Lang, out: &Out) -> i32 {
     let mut st = Status::default();
     let texts = if p.mode == "desktop" {
-        p.facts.as_ref().map(ui::Both::build)
+        p.facts
+            .as_ref()
+            .map(|f| ui::Both::build(f, app::account_for(f).as_deref()))
     } else {
         None
     };
@@ -203,6 +205,7 @@ fn call(p: &Payload, lang: Lang, out: &Out) -> i32 {
             } else {
                 opexe::Stderr::Inherit
             },
+            input: None,
         };
         let mut o = Outcome::default();
         let code = match p.mode.as_str() {

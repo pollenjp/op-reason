@@ -201,7 +201,7 @@ op --reason "staging の VM を作るのに Proxmox の API の token を読む"
 op-reason-log              # 直近 1 時間に始まった呼び出し
 op-reason-log --since 1d   # 30m・2h・1d…
 op-reason-log --all        # 残っている記録を全部
-op-reason-log --json       # 1 呼び出し 1 行の JSON (理由とコマンドを切らない)
+op-reason-log --json       # 1 呼び出し 1 行の JSON (理由とコマンドを切らず、読む参照を全部)
 ```
 
 ![アニメーション: op-reason-log が 1 呼び出し 1 行で、時刻・結果 (許可・断った (理由なし)・拒否)・秒・呼び手 (Claude か人)・理由・コマンドを出す。呼び手・理由・結果の列が順に光る。](docs/images/readme-4-log.ja.svg)
@@ -210,6 +210,33 @@ op-reason-log --json       # 1 呼び出し 1 行の JSON (理由とコマンド
 です (1 MiB で `log.1.jsonl` へ回します。Windows の `op-reason --log` も同じ option を取ります)。`op` の出力と
 token は書かず、`--session`・`--secret-key` と `name=value` の引数の値は伏せます。記録の形は
 [docs/architecture/README.md](docs/architecture/README.md) にあります。
+
+### 読む参照
+
+窓のコマンドの行の下に、その呼び出しが読む `op://` の参照が並びます。引数の参照、`op inject` のテンプレート (`-i` の
+ファイルか、stdin のテンプレート) の参照、`op run` の `--env-file` の参照です。窓には 8 件まで出し、残りは「ほか N 件」と
+します。記録には全部残り、`op-reason-log` はファイルか stdin から読んだ参照の数をコマンドに添えます。
+
+```text
+コマンド: op inject -i app.env.tpl -o .env
+読む参照 (10 件・app.env.tpl から):
+    op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password    ← リンク
+    op://Private/proxmox/token
+    …
+    ほか 2 件
+```
+
+- vault と項目が ID (小文字と数字の 26 字。`op item get … --format json` やプライベートリンクに出る形) の参照はリンクです。
+  押して離すと、1Password のアプリがその項目を開いて前に出ます。承認の画面はその手前に残り、そのまま答えられます。
+  op-reason の窓はフォーカスを取りません。1Password がロック中のときは、押しても何も変わりません。名前や変数
+  (`$APP_ENV`) の参照は文字のままです。
+- リンクにはアカウントの ID が要ります。op-reason は承認が通った呼び出しの終わりにもともと `op whoami` を打っており、その
+  JSON の出力からアカウントの ID とサインインのアドレスを読み、その 2 つだけを `%LOCALAPPDATA%\op-reason\account.json` に
+  控えます。そのため **最初の呼び出しにはリンクが付きません** (窓にわけが出ます)。次からは、`op` が既定で使うアカウントの
+  参照にリンクが付きます。`--account` を付けたときは、そのアカウントが前に whoami に出たもの (ID・サインインのアドレス・
+  アドレスの最初の部分のどれかが合うもの) でなければなりません。ファイルを消すと、控えたアカウントを忘れます。
+- WSL では stdin のテンプレートを op-reason が先に読みます (op には同じ中身を渡します)。PowerShell の入口 (Smart App
+  Control のときの回り道) は stdin を読まないので、引数とファイルの参照だけが並びます。
 
 ### AI エージェント
 
@@ -275,6 +302,8 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 - WSL の見張りは Windows の lock の外で `op.exe signout --all` を打つので、共有の承認を見つけたときに、その時動いている
   Windows の呼び出しの session を閉じることがあります (まれ)。
 - まだ確かめていないこと: `--all` の無い `op signout` が、1 つのプロセスの session だけを閉じるか。
+- **承認の画面が出ている間のリンク**は、1Password のアプリで項目を開き、アプリが前に出ます。承認の画面もアプリのものです。
+  アプリが 2 つをどう見せるかは、まだ手で確かめていません ([docs/manual-verification.ja.md](docs/manual-verification.ja.md))。
 
 ## 開発
 

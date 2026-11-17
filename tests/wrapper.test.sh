@@ -83,6 +83,12 @@
 #       OPREASON_LANG=ja (its refusal, its payload's lang, op-reason-log); the launcher's status counts the same
 #     - no chosenLang, an unknown language or a malformed value leave lang.json as it is (and the call's result stays);
 #       null removes it, and OPREASON_LANG counts again
+#   The references a call reads (design 2026-11-17-refs-in-window-design.md)
+#     - an argument reference: facts.refs and start.refs; no reference: neither
+#     - op inject from stdin: its references reach the facts (with the --account value) and the log, op gets the same
+#       bytes, op-reason-log adds the count to the command
+#     - op inject -i and op run --env-file: the files' references, read relative to the current directory
+#     - a service call collects none
 #
 # ## How
 #
@@ -1167,6 +1173,58 @@ reset
 OPREASON_RUNNER=launcher FAKE_CHOSEN='"en"' run_op chosenps --reason "launcher の status" item get a
 detail="runner=$(runner_of) copy=$(cat "${copy}" 2>&1)"
 check "the launcher's chosenLang counts the same" test "$(runner_of)" == powershell.exe -a "$(cat "${copy}" 2>/dev/null)" == '{"v":1,"lang":"en"}'
+
+echo "== The references a call reads (design 2026-11-17-refs-in-window-design.md)"
+refs_dir=${work}/refs
+mkdir -p "${refs_dir}"
+reset
+run_op refsarg --reason "引数の参照" read op://Private/proxmox/token
+detail="$(payload_field '.facts.refs') $(last start)"
+check "an argument reference: facts.refs and start.refs (total, from args, list)" \
+  test "$(payload_field '.facts.refs | tojson')" == '{"total":1,"from":[{"kind":"args"}],"list":["op://Private/proxmox/token"]}' \
+  -a "$(last_field start '.refs | tojson')" == '{"total":1,"from":[{"kind":"args"}],"list":["op://Private/proxmox/token"]}'
+reset
+run_op refsnone --reason "参照なし" vault list
+detail="$(payload_field '.facts') $(last start)"
+check "no reference: no refs in the facts or the log" \
+  test "$(payload_field '.facts | has("refs")')" == false -a "$(last_field start 'has("refs")')" == false
+reset
+printf 'x={{ op://v/i/a }}\ny=op://v/i/b\nz=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/f\n' >"${refs_dir}/tpl.in"
+stdin_file=${refs_dir}/tpl.in run_op refsstdin --reason "stdin のテンプレート" inject --account acct
+"${work}/names/op-reason-log" >"${work}/refslog.out" 2>&1
+detail="rc=${rc} refs=$(payload_field '.facts.refs') out=$(cat "${work}/refsstdin.out") log=$(cat "${work}/refslog.out")"
+if [[ ${rc} == 0 && $(payload_field '.facts.refs.list | join(",")') == "op://v/i/a,op://v/i/b,op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/f" &&
+$(payload_field '.facts.refs.from | tojson') == '[{"kind":"stdin"}]' && $(payload_field '.facts.refs.account') == acct &&
+$(last_field start '.refs.total') == 3 && $(last_field start '.refs | has("account")') == false ]] \
+  && cmp -s "${refs_dir}/tpl.in" "${work}/refsstdin.out" && grep -q '(参照 3 件)' "${work}/refslog.out"; then
+  ok "op inject from stdin: its references reach the facts and the log, op gets the same bytes, op-reason-log counts them"
+else
+  ng "op inject from stdin: its references reach the facts and the log, op gets the same bytes, op-reason-log counts them" "${detail}"
+fi
+reset
+printf 'a={{ op://Shared/db/password }}\n' >"${refs_dir}/app.tpl"
+printf '# env\nTOKEN=op://Shared/api/token\nQUOTED="op://Shared/api/with space"\n' >"${refs_dir}/.env"
+cd "${refs_dir}" || exit 1
+stdin_file=${refs_dir}/tpl.in run_op refsfile --reason "-i のテンプレート" inject -i app.tpl
+file_refs=$(payload_field '.facts.refs | tojson')
+file_out_same=no
+cmp -s "${refs_dir}/tpl.in" "${work}/refsfile.out" && file_out_same=yes
+run_op refsenv --reason "env file" run --env-file .env -- printenv TOKEN
+env_refs=$(payload_field '.facts.refs | tojson' 2)
+cd "${here}" || exit 1
+detail="file=${file_refs} env=${env_refs} same=${file_out_same}"
+if [[ ${file_refs} == '{"total":1,"from":[{"kind":"file","name":"app.tpl"}],"list":["op://Shared/db/password"]}' &&
+  ${file_out_same} == yes &&
+  ${env_refs} == '{"total":2,"from":[{"kind":"env-file","name":".env"}],"list":["op://Shared/api/token","op://Shared/api/with space"]}' ]]; then
+  ok "op inject -i and op run --env-file: the files' references (relative to the current directory); stdin goes on unread"
+else
+  ng "op inject -i and op run --env-file: the files' references (relative to the current directory); stdin goes on unread" "${detail}"
+fi
+reset
+OP_SERVICE_ACCOUNT_TOKEN=tok stdin_file=${refs_dir}/tpl.in run_op refssa --reason "service account" inject
+detail="facts=$(payload_field '.facts') $(last start)"
+check "a service call collects no references (no window)" \
+  test "$(payload_field '.facts')" == null -a "$(last_field start 'has("refs")')" == false
 
 echo "== Unusual inputs"
 reset

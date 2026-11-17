@@ -10,7 +10,9 @@
 # Writes <Out>\*.png (the window per scene, and the whole screen once), <Out>\timing.json and <Out>\timing.md, and
 # appends timing.md to the job summary. Every window of the exe shows its language switch ("English | " and the
 # Japanese name); one scene clicks the Japanese name in an English window with the real mouse and shows the window
-# after the switch. Timings are black-box: from starting the process until a visible window with the expected title
+# after the switch. The scenes with an op inject template show the references it reads: ID references as links (an
+# account.json is put in place first), "and N more", and, without account.json, the line that says why there are no
+# links (docs/superpowers/specs/2026-11-17-refs-in-window-design.md). Timings are black-box: from starting the process until a visible window with the expected title
 # exists (FindWindow), and until the process exits.
 #
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
@@ -96,7 +98,7 @@ if ($env:USERPROFILE -and $cwd.StartsWith($env:USERPROFILE, [StringComparison]::
 
 # The payload of one desktop call (the launcher contract, docs/architecture/README.md). $Herdr and $Notes are what only a
 # WSL call sends.
-function New-Payload([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, $Herdr = $null, $Notes = @()) {
+function New-Payload([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [string] $Reason, [string] $Command, $Herdr = $null, $Notes = @(), $Refs = $null) {
   $facts = [ordered]@{
     time    = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     caller  = $Caller
@@ -106,6 +108,7 @@ function New-Payload([string[]] $OpArgs, [string] $Lang, [hashtable] $Caller, [s
     command = $Command
     notes   = @($Notes)
   }
+  if ($Refs) { $facts.refs = $Refs }
   $payload = [ordered]@{
     v        = 1
     mode     = 'desktop'
@@ -186,6 +189,34 @@ $claudeEnv = @{ OPREASON_LANG = 'ja'; CLAUDECODE = '1'; CLAUDE_PID = '4242'; CLA
 $wslPayload = New-Payload $readArgs 'ja' ([ordered]@{ type = 'claude'; pid = 4242; session = 'demo'; detail = $null }) $reasonJa `
   'op read op://Private/proxmox/token' ([ordered]@{ workspace = 'w1'; label = (& $u '\u30c7\u30d7\u30ed\u30a4'); pane = 'w1:p2' }) `
   @([ordered]@{ kind = 'shared-cleared' })
+# An op inject template with ten references, three of them ID references (made-up IDs), and the account copy that
+# links them
+$tplRefs = @(
+  'op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password',
+  'op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/username',
+  'op://Private/proxmox/token',
+  'op://$APP_ENV/sentry/dsn',
+  'op://Shared/aws/access-key-id',
+  'op://Shared/aws/secret-access-key',
+  'op://zyxwvutsrqponmlkjihgfedcba/abcdefghij0123456789klmnop/token',
+  'op://Shared/slack/webhook',
+  'op://Private/ssh/private key',
+  'op://Shared/smtp/password'
+)
+$tplPath = Join-Path $work 'app.env.tpl'
+$tplLines = @('DB_HOST=db.internal') + @($tplRefs | ForEach-Object { 'VALUE_' + [array]::IndexOf($tplRefs, $_) + '={{ ' + $_ + ' }}' })
+Set-Content -LiteralPath $tplPath -Value ($tplLines -join "`n") -Encoding utf8NoBOM
+New-Item -ItemType Directory -Force -Path (Join-Path $work 'op-reason') | Out-Null
+Set-Content -LiteralPath (Join-Path $work 'op-reason\account.json') -NoNewline -Encoding utf8NoBOM `
+  -Value '{"v":1,"accounts":[{"id":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","host":"example.1password.com"}]}'
+$firstDir = Join-Path $work 'first-call'
+New-Item -ItemType Directory -Force -Path $firstDir | Out-Null
+$reasonTpl = & $u '\u30c6\u30f3\u30d7\u30ec\u30fc\u30c8\u304b\u3089 .env \u3092\u4f5c\u308b'
+$injectArgs = @('inject', '-i', $tplPath, '-o', '.env')
+$injectCommand = 'op inject -i ' + $tplPath + ' -o .env'
+$wslRefs = [ordered]@{ total = 10; from = @([ordered]@{ kind = 'stdin' }); list = @($tplRefs | Select-Object -First 8) }
+$wslRefsPayload = New-Payload @('inject', '-o', '.env') 'ja' ([ordered]@{ type = 'claude'; pid = 4242; session = 'demo'; detail = $null }) $reasonTpl `
+  'op inject -o .env' $null @() $wslRefs
 $scenes = @(
   @{ name = '01-exe-claude-ja'; title = $TitleJa; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
   @{ name = '02-entry-claude-ja'; title = $TitleJa; entry = $true; env = $claudeEnv; args = @('--reason', $reasonJa) + $readArgs },
@@ -195,7 +226,12 @@ $scenes = @(
      args = @('--reason', $reasonJa, 'item', 'get', 'proxmox', '--fields', 'password') },
   @{ name = '05-exe-long-en'; title = $TitleEn; env = @{ OPREASON_LANG = 'en' };
      args = @('--reason', $longReason, 'item', 'create', '--category', 'login', '--title', 'deploy key', 'username=ci', 'password=not-shown') },
-  @{ name = '06-run-wsl-ja'; title = $TitleJa; run = $wslPayload; env = @{} }
+  @{ name = '06-run-wsl-ja'; title = $TitleJa; run = $wslPayload; env = @{} },
+  @{ name = '09-exe-refs-links-ja'; title = $TitleJa; env = $claudeEnv; args = @('--reason', $reasonTpl) + $injectArgs },
+  @{ name = '10-exe-refs-first-call-en'; title = $TitleEn; env = @{ OPREASON_LANG = 'en'; LOCALAPPDATA = $firstDir };
+     args = @('--reason', 'Write .env from the template') + $injectArgs },
+  @{ name = '11-run-refs-wsl-ja'; title = $TitleJa; run = $wslRefsPayload; env = @{} },
+  @{ name = '12-entry-refs-links-ja'; title = $TitleJa; entry = $true; env = $claudeEnv; args = @('--reason', $reasonTpl) + $injectArgs }
 )
 # Minimize the runner's own windows (its console shows job logs), so that the screen shot shows only our window.
 (New-Object -ComObject Shell.Application).MinimizeAll()

@@ -18,7 +18,7 @@ fn usage(lang: Lang) -> &'static str {
   Lists the calls of op-reason (the 1Password CLI wrapper) by start time.
   --since 30m / 2h / 1d   the period (default 1h)
   --all                   every record left
-  --json                  one JSON object per call (reason and command not cut)
+  --json                  one JSON object per call (reason and command not cut, every reference read)
 "
         }
         Lang::Ja => {
@@ -26,7 +26,7 @@ fn usage(lang: Lang) -> &'static str {
   op-reason (1Password CLI の wrapper) の記録を、始まった時刻の順に表で出します。
   --since 30m / 2h / 1d   出す期間 (既定 1h)
   --all                   残っている記録を全部出す
-  --json                  1 呼び出し 1 行の JSON で出す (理由とコマンドを切らない)
+  --json                  1 呼び出し 1 行の JSON で出す (理由とコマンドを切らず、読む参照を全部)
 "
         }
     }
@@ -225,7 +225,7 @@ fn who(lang: Lang, rec: &Value) -> String {
     cell(&clip(&s, 40, "…"))
 }
 
-fn command(rec: &Value) -> String {
+fn command(lang: Lang, rec: &Value) -> String {
     let args: Vec<String> = rec["args"]
         .as_array()
         .map(|a| a.iter().map(text).collect())
@@ -235,7 +235,30 @@ fn command(rec: &Value) -> String {
         s.push(' ');
         s.push_str(&a);
     }
-    clip(&s, 60, "…")
+    match refs_count(rec) {
+        None => clip(&s, 60, "…"),
+        // The count is never cut off with the command.
+        Some(n) => {
+            let count = match (lang, n) {
+                (Lang::En, 1) => " (1 ref)".to_string(),
+                (Lang::En, _) => format!(" ({n} refs)"),
+                (Lang::Ja, _) => format!(" (参照 {n} 件)"),
+            };
+            let room = 60usize.saturating_sub(count.chars().count());
+            format!("{}{count}", clip(&s, room, "…"))
+        }
+    }
+}
+
+/// The number of references a call reads, when a source other than the arguments gave some (those in the arguments
+/// are in the command already).
+fn refs_count(rec: &Value) -> Option<u64> {
+    let refs = &rec["refs"];
+    let elsewhere = refs["from"]
+        .as_array()?
+        .iter()
+        .any(|s| s["kind"].as_str().is_some_and(|k| k != "args"));
+    elsewhere.then(|| refs["total"].as_u64()).flatten()
 }
 
 fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
@@ -278,7 +301,7 @@ fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
                 cell(&text(&end["seconds"])),
                 who(lang, rec),
                 reason,
-                command(rec),
+                command(lang, rec),
             ]
         }
         "refused" => [
@@ -287,7 +310,7 @@ fn row(lang: Lang, rec: &Value, today: &str) -> [String; 6] {
             "-".into(),
             who(lang, rec),
             reason,
-            command(rec),
+            command(lang, rec),
         ],
         _ => [
             when,
@@ -524,6 +547,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(row(Lang::En, &refused, "")[1], "refused (no op-reason.exe)");
+    }
+
+    #[test]
+    fn the_command_counts_references_read_from_elsewhere() {
+        let rec = |from: &str, total: u64| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"event":"start","epoch":0,"kind":"desktop","reason":"r","args":["inject","-i","{}"],
+                    "caller":{{"type":"human"}},"refs":{{"total":{total},"from":{from},"list":[]}}}}"#,
+                "t".repeat(70)
+            ))
+            .unwrap()
+        };
+        let file = r#"[{"kind":"args"},{"kind":"file","name":"t"}]"#;
+        let en = row(Lang::En, &rec(file, 5), "")[5].clone();
+        assert!(en.ends_with("… (5 refs)"), "{en}");
+        assert_eq!(en.chars().count(), 61, "as long as a cut command: 60 and …");
+        assert!(row(Lang::En, &rec(file, 1), "")[5].ends_with("(1 ref)"));
+        assert!(row(Lang::Ja, &rec(file, 3), "")[5].ends_with("… (参照 3 件)"));
+        let only_args = row(Lang::En, &rec(r#"[{"kind":"args"}]"#, 2), "")[5].clone();
+        assert!(!only_args.contains("refs"), "{only_args}");
+        let mut none = rec(file, 2);
+        none.as_object_mut().unwrap().remove("refs");
+        assert!(!row(Lang::Ja, &none, "")[5].contains("参照"));
     }
 
     #[test]

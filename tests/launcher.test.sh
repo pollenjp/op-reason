@@ -21,7 +21,8 @@
 #     - the exit code is op's
 #     - OPREASON_PAYLOAD is not inherited by op
 #   Closing the sessions
-#     - desktop runs whoami after op and signout --all only when whoami succeeds (status signout ok / not-signed-in)
+#     - desktop runs whoami --format json after op and signout --all only when whoami succeeds (status signout ok /
+#       not-signed-in)
 #     - whoami and signout write nothing to the launcher's stdout or stderr
 #     - help closes the same way; service runs neither (status signout skipped)
 #     - a call with lock "skipped" (the sender of a pipe) runs neither (status signout skipped)
@@ -38,6 +39,11 @@
 #     ~/.local/share/op-reason): it beats the payload's lang in the window and toast texts (desktop and notify) and is
 #     reported as status.chosenLang; no file or a broken file → the payload's language and chosenLang null; the launcher
 #     never writes the file
+#   The references a call reads (design 2026-11-17-refs-in-window-design.md): status.ui.refs (head, items with linked,
+#     more, hint) in Japanese and English; the hint and no links without account.json; whoami's JSON keeps only the
+#     account ID and host in account.json; then ID references are links, also with --account naming the account by its
+#     host's first label, not with another account; the shared link table (tests/cases/refs.json); no URL in the status;
+#     no block without references
 #   stderr scan: op's stderr reaches the launcher's stderr; a denial or a timeout from op's [ERROR] lines is reported in
 #     status.stderrMatch (a child's "Connection timed out" is not); stdin and stdout stay binary-safe
 #   The named mutex Local\op-reason (.NET supports named mutexes on Linux too): a call takes it (status lock held) and
@@ -47,8 +53,8 @@
 # ## How
 #
 # The fake op (bash) counts its calls, writes its arguments NUL-separated to FAKE_DIR/call.<n> and whether
-# OPREASON_PAYLOAD was inherited and OP_SERVICE_ACCOUNT_TOKEN to FAKE_DIR/env.<n>. whoami exits with
-# FAKE_WHOAMI_RC (default 1); signout writes SIGNOUT-OUT / SIGNOUT-ERR and exits 0; anything else copies stdin to stdout,
+# OPREASON_PAYLOAD was inherited and OP_SERVICE_ACCOUNT_TOKEN to FAKE_DIR/env.<n>. whoami prints FAKE_WHOAMI_OUT and
+# exits with FAKE_WHOAMI_RC (default 1); signout writes SIGNOUT-OUT / SIGNOUT-ERR and exits 0; anything else copies stdin to stdout,
 # writes "FAKE-ERR 日本語" to stderr and exits with FAKE_RC (default 0).
 
 # No -e: a failed check must not stop the checks after it.
@@ -84,7 +90,10 @@ printf '%s\0' "$@" >"${d}/call.${n}"
   echo "sa=${OP_SERVICE_ACCOUNT_TOKEN-<unset>}"
 } >"${d}/env.${n}"
 case ${1-} in
-  whoami) exit "${FAKE_WHOAMI_RC:-1}" ;;
+  whoami)
+    if [[ -n ${FAKE_WHOAMI_OUT:-} ]]; then printf '%s\n' "${FAKE_WHOAMI_OUT}"; fi
+    exit "${FAKE_WHOAMI_RC:-1}"
+    ;;
   signout)
     echo SIGNOUT-OUT
     echo SIGNOUT-ERR >&2
@@ -189,7 +198,7 @@ fi
 echo "== Closing the sessions"
 export FAKE_WHOAMI_RC=0
 run closes "$(payload desktop "${fake_op}" item get x)"
-if [[ $(calls) == 3 ]] && expect_args 1 item get x && expect_args 2 whoami && expect_args 3 signout --all \
+if [[ $(calls) == 3 ]] && expect_args 1 item get x && expect_args 2 whoami --format json && expect_args 3 signout --all \
   && [[ $(status_field '.signout') == ok ]]; then
   ok "desktop runs whoami after op and signout --all when signed in"
 else
@@ -203,14 +212,14 @@ else
 fi
 export FAKE_WHOAMI_RC=1
 run notsigned "$(payload desktop "${fake_op}" item get x)"
-if [[ $(calls) == 2 ]] && expect_args 2 whoami && [[ $(status_field '.signout') == not-signed-in ]]; then
+if [[ $(calls) == 2 ]] && expect_args 2 whoami --format json && [[ $(status_field '.signout') == not-signed-in ]]; then
   ok "no signout without a session (status not-signed-in)"
 else
   ng "no signout without a session (status not-signed-in)" "calls=$(calls) status=$(cat "${work}/status.json" 2>&1)"
 fi
 export FAKE_WHOAMI_RC=0
 run help "$(payload help "${fake_op}" --version)"
-if [[ $(calls) == 3 ]] && expect_args 1 --version && expect_args 2 whoami && expect_args 3 signout --all \
+if [[ $(calls) == 3 ]] && expect_args 1 --version && expect_args 2 whoami --format json && expect_args 3 signout --all \
   && [[ $(status_field '.window') == skipped && $(status_field '.toast') == skipped && $(status_field '.ui') == null ]]; then
   ok "help closes the sessions the same way, without window, toast or texts"
 else
@@ -325,6 +334,61 @@ else
     "broken: ${broken} | notify: $(cat "${work}/status.json" 2>&1)"
 fi
 rm -f "${settings_file}"
+
+echo "== The references a call reads"
+account_file=${HOME}/.local/share/op-reason/account.json
+rm -f "${account_file}"
+id_ref=op://abcdefghijklmnopqrstuvwxyz/0123456789abcdefghijklmnop/password
+whoami_json='{"url":"https://example.1password.com/","email":"someone@example.com","user_uuid":"USERUSERUSERUSERUSERUSER12","account_uuid":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","user_type":"HUMAN"}'
+account_json='{"v":1,"accounts":[{"id":"ABCDEFGHIJKLMNOPQRSTUVWXYZ","host":"example.1password.com"}]}'
+# refs_facts <list JSON> [<account>]: the human facts with references (10 in all, from the arguments and a template)
+refs_facts() {
+  jq -c --argjson list "$1" --arg account "${2-}" \
+    '. + {refs: ({total: 10, from: [{kind: "args"}, {kind: "file", name: "app.tpl"}], list: $list}
+      + (if $account == "" then {} else {account: $account} end))}' <<<"${human_facts}"
+}
+eight=$(jq -cn --arg id "${id_ref}" '[$id, "op://Private/proxmox/token", "op://$ENV/db/password"] + [range(5) | "op://v/i/f\(.)"]')
+facts=$(refs_facts "${eight}")
+FAKE_WHOAMI_RC=0 FAKE_WHOAMI_OUT=${whoami_json} run refs-first "$(FACTS=${facts} payload desktop "${fake_op}" inject)"
+first=$(status_field '.ui.refs | [.head, ([.items[].linked] | map(tostring) | join(",")), .more, .hint] | join(" / ")')
+first_items=$(status_field '[.ui.refs.items[].text] | join(",")')
+copied=$(cat "${account_file}" 2>/dev/null)
+detail="first: ${first} | items: ${first_items} | copy: ${copied} | $(cat "${work}/status.json")"
+if [[ ${first} == "読む参照 (10 件・引数、app.tpl から) / false,false,false,false,false,false,false,false / ほか 2 件 / 項目へのリンクは、承認が通った呼び出しを 1 回終えると付きます (そのとき、op が既定で使うアカウントの ID を覚えます)" &&
+  ${first_items} == "$(jq -r 'join(",")' <<<"${eight}")" && ${copied} == "${account_json}" ]] \
+  && expect_args 2 whoami --format json; then
+  ok "the first call: the block without links and the hint; whoami keeps only the account ID and host in account.json"
+else
+  ng "the first call: the block without links and the hint; whoami keeps only the account ID and host in account.json" "${detail}"
+fi
+LANG_CODE=en run refs-second "$(LANG_CODE=en FACTS=${facts} payload desktop "${fake_op}" inject)"
+second=$(status_field '.ui.refs | [.head, ([.items[].linked] | map(tostring) | join(",")), .more, (.hint | tostring)] | join(" / ")')
+detail="${second} | $(cat "${work}/status.json")"
+if [[ ${second} == "References to read (10, from arguments, app.tpl) / true,false,false,false,false,false,false,false / and 2 more / null" ]] \
+  && ! grep -q 'onepassword:' "${work}/status.json"; then
+  ok "the next call links the ID reference (English texts); the status says linked, not the URL"
+else
+  ng "the next call links the ID reference (English texts); the status says linked, not the URL" "${detail}"
+fi
+run refs-other "$(FACTS=$(refs_facts "${eight}" other) payload desktop "${fake_op}" inject)"
+other=$(status_field '[.ui.refs.items[0].linked, (.ui.refs.hint != null)] | map(tostring) | join(",")')
+run refs-named "$(FACTS=$(refs_facts "${eight}" Example) payload desktop "${fake_op}" inject)"
+named=$(status_field '.ui.refs.items[0].linked | tostring')
+detail="other=${other} named=${named}"
+check "--account of an account not remembered: no link and the hint; by the host's first label: the link" \
+  test "${other}" == "false,true" -a "${named}" == true
+link_problems=""
+while IFS=$'\t' read -r ref want; do
+  run refs-link "$(FACTS=$(refs_facts "$(jq -cn --arg r "${ref}" '[$r]')") payload desktop "${fake_op}" read)"
+  got=$(status_field '.ui.refs.items[0].linked | tostring')
+  [[ ${got} == "${want}" ]] || link_problems+="${ref}: ${got} (want ${want}); "
+done < <(jq -r '.links[] | [.ref, (.vault != null | tostring)] | @tsv' "${here}/cases/refs.json")
+detail=${link_problems}
+check "the shared link table (tests/cases/refs.json): an ID reference is a link, nothing else is" test -z "${link_problems}"
+run refs-none "$(FACTS=${human_facts} payload desktop "${fake_op}" item get x)"
+detail="$(cat "${work}/status.json")"
+check "no references: no block" test "$(status_field '.ui | has("refs")')" == false
+rm -f "${account_file}"
 
 echo "== stderr scan (the Windows entry)"
 STDERR_MODE=scan FAKE_RC=1 FAKE_ERR_TEXT="[ERROR] 2026/11/08 00:00:00 authorization prompt dismissed, please try again" \

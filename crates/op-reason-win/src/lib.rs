@@ -7,8 +7,10 @@
 //! crate adds what the A' PowerShell entry and launcher do on Windows: the lock and its holder file, the caller from
 //! the process tree, the window (Direct2D), the toast, starting `op.exe` in a Job Object and signing out ([`win`],
 //! Windows only), plus platform-neutral parts that are tested everywhere: the window texts ([`ui`]), the payload and
-//! status of the runner ([`payload`]) and the command-line length ([`cmdline`]).
+//! status of the runner ([`payload`]), the command-line length ([`cmdline`]) and the account copy that links references
+//! to the 1Password app ([`account`]).
 
+pub mod account;
 pub mod cmdline;
 pub mod messages;
 pub mod payload;

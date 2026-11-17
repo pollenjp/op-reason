@@ -3,7 +3,7 @@
 //! goes to the runner face ([`super::run`]), which shares the window, op.exe and sign-out code below.
 
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use op_reason_core::args::{self, Invocation, Kind, Mode, Parsed, Plan, Refusal};
 use op_reason_core::contract::{self, Facts, FactsCaller, Place, Status};
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::log::{self, Caller, Watch};
-use op_reason_core::{logview, messages, place, result, settings, time};
+use op_reason_core::{logview, messages, place, refs, result, settings, time};
 use serde_json::Value;
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::WaitForSingleObject;
@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::opexe::{self, Found, Running};
 use super::{console, holder, mutex, procs, toast, window};
+use crate::account::{self, Account};
 use crate::{cmdline, ui};
 
 /// The version of op-reason.
@@ -72,6 +73,27 @@ pub(super) fn chosen() -> Option<Lang> {
 fn remember(lang: Lang) {
     if let Some(file) = settings_file() {
         let _ = settings::write(&file, lang);
+    }
+}
+
+/// `%LOCALAPPDATA%\op-reason\account.json`, the copy of the account that whoami reported (design
+/// `2026-11-17-refs-in-window-design.md` §5.2).
+fn account_file() -> Option<PathBuf> {
+    state_dir().map(|d| d.join(account::ACCOUNT_FILE))
+}
+
+/// The account ID for the links of a call with references: the remembered account that the call's `--account` names,
+/// else the one seen last (design `2026-11-17-refs-in-window-design.md` §5.3).
+pub(super) fn account_for(facts: &Facts) -> Option<String> {
+    let refs = facts.refs.as_ref()?;
+    let accounts = account::read(&account_file()?);
+    account::pick(&accounts, refs.account.as_deref()).map(|a| a.id.clone())
+}
+
+/// Keeps the account whoami reported at the end of a call; quiet when it cannot.
+fn remember_account(seen: Option<Account>) {
+    if let (Some(seen), Some(file)) = (seen, account_file()) {
+        let _ = account::remember(&file, &seen);
     }
 }
 
@@ -296,11 +318,13 @@ pub(super) struct Outcome {
     pub stderr: Vec<u8>,
 }
 
-/// How op.exe is started: its environment and its stderr.
-#[derive(Clone, Copy)]
+/// How op.exe is started: its environment, its stderr, and its stdin when it is fed from bytes (the `op inject`
+/// template the entry read from stdin).
+#[derive(Clone)]
 pub(super) struct How {
     pub env: opexe::Env,
     pub stderr: opexe::Stderr,
+    pub input: Option<Vec<u8>>,
 }
 
 /// The fields an `end` line needs besides the outcome (cloned into the console-close hook).
@@ -355,6 +379,21 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
             &crate::messages::too_long(lang, len),
         );
     }
+
+    // op inject without -i reads its template from stdin: read it before the lock (not from a console), to list its
+    // references; op.exe gets the same bytes (design 2026-11-17-refs-in-window-design.md §2)
+    let op_text = parsed.op_args_text();
+    let template_on_stdin = mode == Mode::Desktop && refs::plan(&op_text).stdin;
+    let input = (template_on_stdin && console::stdin_is_readable()).then(|| {
+        let mut bytes = Vec::new();
+        let _ = std::io::stdin().lock().read_to_end(&mut bytes);
+        bytes
+    });
+    let collected = (mode == Mode::Desktop).then(|| {
+        let text = input.as_deref().map(String::from_utf8_lossy);
+        refs::collect(&op_text, &refs::read_file, text.as_deref())
+    });
+    let log_refs = collected.as_ref().and_then(refs::Collected::log);
 
     let wait = env_nonempty("OPREASON_LOCK_WAIT")
         .and_then(|v| v.parse::<u64>().ok())
@@ -415,6 +454,7 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         caller: &ctx.caller,
         reason: &args::clip(&ctx.reason, 500, "…"),
         args: &ctx.masked,
+        refs: log_refs.as_ref(),
     }));
 
     // Closing the console ends the process a few seconds after the handler: the hook writes `end` (timed then) and
@@ -452,13 +492,15 @@ fn run_call(ctx: &Ctx, parsed: &Parsed, mode: Mode, kind: Kind) -> i32 {
         reason: args::clip(&ctx.reason, 200, "…"),
         command: args::clip(&ctx.display, 300, "…"),
         notes: Vec::new(),
+        refs: collected.as_ref().and_then(refs::Collected::facts),
     };
     let mut o = Outcome::default();
     let how = How {
         env: opexe::Env::Kind(kind),
         stderr: opexe::Stderr::Tee,
+        input,
     };
-    let texts = ui::Both::build(&facts);
+    let texts = ui::Both::build(&facts, account_for(&facts).as_deref());
     let code = match mode {
         Mode::Desktop => run_desktop(&op, &parsed.op_args, how, lang, Some(&texts), true, &mut o),
         Mode::Help => run_plain(&op, &parsed.op_args, how, mode, lang, true, &mut o),
@@ -608,7 +650,7 @@ pub(super) fn run_desktop(
         o.exit = EXIT_INTERRUPTED;
         return EXIT_INTERRUPTED;
     }
-    let mut running = match opexe::start(op, args, how.env, how.stderr) {
+    let mut running = match opexe::start(op, args, how.env, how.stderr, how.input) {
         Ok(r) => r,
         Err(e) => {
             drop(win);
@@ -634,7 +676,9 @@ pub(super) fn run_desktop(
     drop(win);
     o.stderr = running.stderr_copy();
     o.signout = Some(if close {
-        opexe::close_session(op)
+        let (signout, seen) = opexe::close_session(op);
+        remember_account(seen);
+        signout
     } else {
         "skipped".to_owned()
     });
@@ -664,7 +708,7 @@ pub(super) fn run_plain(
         o.exit = EXIT_INTERRUPTED;
         return EXIT_INTERRUPTED;
     }
-    let mut running = match opexe::start(op, args, how.env, how.stderr) {
+    let mut running = match opexe::start(op, args, how.env, how.stderr, how.input) {
         Ok(r) => r,
         Err(e) => return start_failed(lang, &e, o),
     };
@@ -672,7 +716,9 @@ pub(super) fn run_plain(
     let code = wait_op(&mut running, false, || {});
     let copy = running.stderr_copy();
     o.signout = Some(if close {
-        opexe::close_session(op)
+        let (signout, seen) = opexe::close_session(op);
+        remember_account(seen);
+        signout
     } else {
         "skipped".to_owned()
     });

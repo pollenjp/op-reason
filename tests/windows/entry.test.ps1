@@ -16,6 +16,9 @@
 #   - service account: op gets the token and OP_BIOMETRIC_UNLOCK_ENABLED=false; kind service-account
 #   - --skill and --version
 #   - the language chosen in op-reason.exe's window (settings.json) beats OPREASON_LANG; a broken file counts as none
+#   - the references a call reads (docs/superpowers/specs/2026-11-17-refs-in-window-design.md): start.refs has those of
+#     the arguments and of an op inject template file (read relative to the current directory); a template on stdin
+#     is not read, and op still gets it
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
@@ -106,6 +109,27 @@ Check "the caller's environment and console encoding are put back" ($env:OP_CONN
 Reset-Fake
 $piped = ('{"title":"piped"}' | & $entry --reason 'pipe a template' item create --dry-run -)
 Check 'from PowerShell, pipeline input reaches op on stdin' ((@($piped) -join "`n") -ceq '{"title":"piped"}') ("got: " + (@($piped) -join '|'))
+
+Write-Host '== The references a call reads'
+Reset-Fake
+$env:FAKE_NO_STDIN = '1'
+$refsDir = Join-Path $work 'refs'
+[void](New-Item -ItemType Directory -Force -Path $refsDir)
+[System.IO.File]::WriteAllText((Join-Path $refsDir 'app.tpl'), 'x={{ op://Shared/db/password }}')
+Push-Location $refsDir
+$null = & $entry --reason 'template references' inject -i app.tpl op://Private/proxmox/token
+Pop-Location
+$start = @(Get-Records 'start') | Select-Object -Last 1
+$refs = $null
+if ($null -ne $start) { $refs = $start.refs }
+Check 'start.refs: the references of the arguments and of the template file, from args and the file' (
+  $null -ne $refs -and $refs.total -eq 2 -and (@($refs.list) -join '|') -ceq 'op://Private/proxmox/token|op://Shared/db/password' -and
+  (ConvertTo-Json -InputObject @($refs.from) -Compress) -ceq '[{"kind":"args"},{"kind":"file","name":"app.tpl"}]') ($start | ConvertTo-Json -Compress -Depth 6)
+Reset-Fake
+$piped = ('x={{ op://Shared/db/password }}' | & $entry --reason 'template on stdin' inject)
+$start = @(Get-Records 'start') | Select-Object -Last 1
+Check 'a template on stdin is not read (no start.refs), and op still gets it' (
+  $null -ne $start -and $null -eq $start.refs -and (@($piped) -join "`n") -ceq 'x={{ op://Shared/db/password }}') ("got: " + (@($piped) -join '|') + ' ' + ($start | ConvertTo-Json -Compress -Depth 6))
 
 Write-Host '== Refusal'
 Reset-Fake

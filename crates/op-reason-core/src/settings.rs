@@ -74,13 +74,19 @@ pub fn read(path: &Path) -> io::Result<Option<Lang>> {
 /// Writes `lang` into the file, keeping its other fields: a temporary file in the same folder (created when missing)
 /// renamed over it, so that a reader never sees half a file.
 pub fn write(path: &Path, lang: Lang) -> io::Result<()> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::create_dir_all(dir)?;
-    }
     let old = fs::read(path)
         .ok()
         .map(|b| String::from_utf8_lossy(&b).into_owned());
-    let text = render(old.as_deref(), lang);
+    replace(path, &render(old.as_deref(), lang))
+}
+
+/// Puts `text` in place of the file: a temporary file in the same folder (the folder is created when missing),
+/// renamed over the file and retried for a moment when another process has the old one open, so that a reader never
+/// sees half a file. Also used for `account.json` (design `2026-11-17-refs-in-window-design.md` §5.2).
+pub fn replace(path: &Path, text: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
     let tmp = temporary(path);
     fs::write(&tmp, text.as_bytes())?;
     let mut last = None;

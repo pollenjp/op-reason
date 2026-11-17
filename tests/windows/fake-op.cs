@@ -2,10 +2,12 @@
 //
 // Every call appends one JSON line to %FAKE_DIR%\calls.jsonl: the arguments as received, whether OPREASON_PAYLOAD was
 // inherited, OP_SERVICE_ACCOUNT_TOKEN and OP_BIOMETRIC_UNLOCK_ENABLED.
-//   whoami   exits with FAKE_WHOAMI_RC (default 1)
+//   whoami   writes FAKE_WHOAMI_OUT (when set) and exits with FAKE_WHOAMI_RC (default 1)
 //   signout  writes SIGNOUT-OUT / SIGNOUT-ERR and exits 0
 //   other    sleeps FAKE_SLEEP_MS, writes FAKE_OUT, copies stdin to stdout byte for byte (unless FAKE_NO_STDIN is set),
 //            writes FAKE_ERR_TEXT (default "FAKE-ERR") to stderr and exits with FAKE_RC (default 0)
+//   --opened <file> <url>   not op's: the click tests register it as the handler of onepassword: URLs; appends the
+//            URL and a newline to the file, records no call and exits 0
 using System;
 using System.IO;
 using System.Text;
@@ -35,6 +37,11 @@ public static class FakeOp
 
     public static int Main(string[] args)
     {
+        if (args.Length >= 3 && args[0] == "--opened")
+        {
+            File.AppendAllText(args[1], args[2] + "\n", new UTF8Encoding(false));
+            return 0;
+        }
         string dir = Env("FAKE_DIR") ?? Path.GetTempPath();
         var line = new StringBuilder("{\"args\":[");
         for (int i = 0; i < args.Length; i++)
@@ -49,7 +56,12 @@ public static class FakeOp
         File.AppendAllText(Path.Combine(dir, "calls.jsonl"), line.ToString(), new UTF8Encoding(false));
 
         string first = args.Length > 0 ? args[0] : "";
-        if (first == "whoami") return int.Parse(Env("FAKE_WHOAMI_RC") ?? "1");
+        if (first == "whoami")
+        {
+            string who = Env("FAKE_WHOAMI_OUT");
+            if (who != null) Console.Out.Write(who + "\n");
+            return int.Parse(Env("FAKE_WHOAMI_RC") ?? "1");
+        }
         if (first == "signout")
         {
             Console.Out.Write("SIGNOUT-OUT\n");
