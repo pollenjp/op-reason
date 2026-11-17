@@ -255,6 +255,9 @@ The relay reads both, and the command line, from the client's process (its envir
 - Many connections at once (ansible's forks); a decision waits without blocking other connections.
 - A way for the dotfiles to tell whether the relay runs (for example `op-reason.exe --ssh-agent --status`, exit 0 when
   its pipe answers).
+- The relay needs a live parent process (§15): started from a logon task, its parent is the Task Scheduler's host.
+  When its parent is missing at start or ends later, the relay says so (a toast and a record), because 1Password
+  would leave its requests unanswered for 60 seconds. How the relay notices is the implementer's.
 
 ## 9. Records
 
@@ -317,7 +320,8 @@ way: `git-upload-pack '…'` is worth seeing.
 
 ## 12. The dotfiles, after a release (not this repository)
 
-- Install the release and start `op-reason.exe --ssh-agent` at logon (a scheduled task, hidden, restarted on failure).
+- Install the release and start `op-reason.exe --ssh-agent` at logon (a scheduled task, hidden, restarted on failure),
+  from a scheduled task, so that its parent stays alive (not from a script that exits).
 - Point clients at the relay, including the terminal program's own connections (so that forwarded requests come
   through it).
 - Run `op-reason-ssh` instead of `ssh.exe` from WSL.
@@ -344,10 +348,18 @@ The first rows answer the builder check (decided before the implementation); the
 
 ## 15. Checked with the real app, and not yet
 
-- First try of C1 (2026-11-17, the throwaway relay of §4.1, 1Password at "application and terminal session"): the
-  first signature through the relay showed one prompt and passed once it was approved. The next four (Windows, WSL,
-  and two to a remote host) each waited 60 seconds, and 1Password closed the connection without an answer. The relay had
-  been started from a short-lived shell that had exited by then; whether 1Password asks again when the relay's parent is
-  gone, or for every connection, is not known yet. To be checked again with the relay started from a long-lived parent
-  (as from a logon task).
-- Not yet: C1 (again), C2–C4 (§4.2) and the manual checks of §11.
+- C1 and C4, checked with a throwaway pass-through relay (2026-11-17 and 18; 1Password at "application and terminal
+  session"; the author's machine):
+  - First try: the relay had been started from a short-lived shell that had exited by the second signature. The
+    first signature showed one prompt and passed once approved (21.9 s); each of the next four waited 60 seconds
+    without a prompt, and 1Password closed the connection.
+  - Second try, the relay started from Explorer (`pwsh.exe ← cmd.exe ← explorer.exe`, all alive): the first signature
+    showed one prompt and passed once approved (18.4 s); the next ones passed without a prompt in 0.1–0.2 s: from
+    Windows, from WSL, the authentication to a remote host, and a signature forwarded back from that host (C1).
+  - A forwarded agent connection is a new connection from the local `ssh.exe` that starts with
+    `session-bind@openssh.com` with the forwarding flag set and the remote host's key; the remote client's own
+    `session-bind@openssh.com` (flag clear, the destination's host key) follows on it (C4). `ssh -A` also opens
+    connections that close without a message.
+  - So 1Password binds its approval to the relay, but it leaves a relay whose parent process has ended unanswered
+    (most likely: the parent was the only difference between the two tries).
+- Not yet: C2, C3 (§4.2) and the manual checks of §11.
