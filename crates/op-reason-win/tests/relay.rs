@@ -547,11 +547,17 @@ fn pipe_dacl(name: &str) -> String {
     };
     use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
     use windows::core::PWSTR;
-    let f = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name)
-        .expect("open the pipe");
+    // a client waits while every instance is busy (the relay creates the next one at once)
+    let mut tries = 0;
+    let f = loop {
+        match fs::OpenOptions::new().read(true).write(true).open(name) {
+            Err(e) if e.raw_os_error() == Some(231) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            r => break r.expect("open the pipe"),
+        }
+    };
     // SAFETY: a valid handle; the descriptor and the string are freed with LocalFree.
     unsafe {
         let mut sd = PSECURITY_DESCRIPTOR::default();

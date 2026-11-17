@@ -225,28 +225,25 @@ pub fn run(args: &[OsString]) -> i32 {
     0
 }
 
-/// Accepts clients for ever, one thread each.
+/// Accepts clients for ever, one thread each. The next instance is created as soon as a client is connected, so that
+/// the pipe is busy for as short a time as possible (clients wait for a busy pipe, but only so long).
 fn accept(shared: &Arc<Shared>, first: pipe::Server) {
-    let mut next = Some(first);
-    loop {
-        let server = match next.take() {
-            Some(s) => s,
-            None => match pipe::Server::create(&shared.opts.pipe, false) {
-                Ok(s) => s,
-                Err(_) => {
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-            },
-        };
-        if server.accept().is_err() {
-            drop(server);
-            thread::sleep(Duration::from_millis(50));
-            continue;
+    let create = || loop {
+        match pipe::Server::create(&shared.opts.pipe, false) {
+            Ok(s) => break s,
+            Err(_) => thread::sleep(Duration::from_secs(1)),
         }
-        let s = Arc::clone(shared);
-        // A thread that cannot be started drops the connection; the relay goes on.
-        let _ = thread::Builder::new().spawn(move || conn::serve(s, server));
+    };
+    let mut server = first;
+    loop {
+        let connected = server.accept().is_ok();
+        let next = create();
+        if connected {
+            let s = Arc::clone(shared);
+            // A thread that cannot be started drops the connection; the relay goes on.
+            let _ = thread::Builder::new().spawn(move || conn::serve(s, server));
+        }
+        server = next;
     }
 }
 
