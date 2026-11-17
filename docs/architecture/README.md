@@ -176,24 +176,32 @@ a console is attached (without one of its own, the relay calls `FreeConsole`).
    (`ProcessCommandLineInformation`), and the client's environment and directory (from its PEB). The root by the rules
    of `tests/cases/roots.json`: a `claude.exe` ancestor's child; else an interactive shell's child (a shell whose
    arguments run no command and no script; this rule also gives the shell, for the terminal answer); else the client's
-   parent. A client whose parent is `wsl.exe` or `wslhost.exe` is a WSL call: its root, caller, place and reason come
-   from `OPREASON_SSH_CALL` in its environment, or it has none (each connection a call of its own). Windows clients give
-   their reason in `OPREASON_SSH_REASON`. No 1Password agent: the request fails at once (`no-upstream`).
+   parent. A client whose parent is `wsl.exe`, `wslhost.exe` or `C:\Windows\System32\bash.exe` is a WSL call: its root,
+   caller, place and reason come from `OPREASON_SSH_CALL` in its environment, or it has none (each signature a call of
+   its own). Windows clients give their reason in `OPREASON_SSH_REASON`. A root or shell whose start time cannot be read
+   is not remembered. The terminal answer is offered only for a root among `ssh`, `scp`, `sftp`, `rsync`, `git`,
+   `ssh-keygen`, `ssh-add`, `sshfs`, `mosh`, `ansible*` and `op-reason-ssh`, under a shell whose command line could be
+   read. No 1Password agent: the request fails at once (`no-upstream`).
 3. **per-call**: the mark is the root (scope, PID, start time), the key's fingerprint and the reason (a forwarded
-   request, or one without a root, is a call of its own). An answer in the book (or, for a person's command, the
-   terminal's) passes or fails the request at once. Otherwise the request joins the queue: a request of the same mark
-   follows the one that asks; others wait in order. On its turn the thread takes `Local\op-reason` (up to
+   request, one without a root, and one from an `ssh.exe` connection that signs before any `session-bind@openssh.com`
+   (OpenSSH before 8.9: rule `unbound`) are each a call of their own). A request of a call whose request is in its
+   window or with 1Password follows it; an answer in the book (or, for a person's command, the terminal's) passes or
+   fails the request at once. Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
    `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons and the toast,
    and keeps the footer's count of waiting calls current. A click (press and release on a button) is remembered for the
    call (Allow this terminal: also for the shell and the key); after Allow the window drops its buttons ("1Password is
    asking") until 1Password answers, then closes, and the lock and the turn pass on. No click within `--answer-wait`
-   (`timeout`), the close button (`dismissed`) and a client gone with no request of its call waiting (`gone`) fail the
-   request without remembering.
+   (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed it, without
+   remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a press only
+   400 ms after they appear, and the window captures the mouse from a press on a button until its release.
 4. **show-only**: every signature waits for its turn and the lock, shows the window without buttons, goes to 1Password
    and closes the window with the answer. A signature that passes in under half a second gets a toast once per run, and
    a `no-prompt` record (1Password most likely did not ask).
 5. **Answer** the client with 1Password's reply (or `SSH_AGENT_FAILURE`), and **record** the signature. A request that
-   1Password closes without an answer is `no-answer` (a toast once per run says that a relay without a parent gets none).
+   1Password closes without an answer, or does not answer within 300 seconds, is `no-answer` (a toast once per run says
+   that a relay without a parent gets none). A connection to 1Password that has closed since is opened again once before
+   a request is sent; it identifies the relay's user to 1Password's pipe but does not let the server act as it
+   (`SECURITY_IDENTIFICATION`). Four instances of the relay's pipe wait for clients at once.
 
 Decisions live in memory only: forgotten when a Windows root ends (checked on lookup and once a minute), after the time
 limit (`--time-limit`, default 60 minutes; WSL roots only time out), or when the relay exits.
@@ -207,7 +215,7 @@ the record with that answer.
 
 | `event` | Fields |
 | --- | --- |
-| `ssh-sign` | `v`, `id`, `time`, `epoch`, `mode` (`per-call`, `show-only`), `result` (`allowed`, `passed`, `denied`, `timeout`, `dismissed`, `gone`, `signed`, `failed` (1Password refused), `no-answer`, `no-upstream`, `lock-timeout`, `no-window`, `malformed`), `seconds` (to a tenth), `answer` (`allow`, `allow-terminal`, `deny`), `decision` (the `id` of the record whose answer covered it; then the call's facts are there), `call` (`rule`: `claude`, `shell`, `parent`, `alone`; `root` and `shell`: `pid`, `start`, `name`, `cmd`; `distro`), `caller` (as in `start`; `type` also `program`), `session`, `reason` (≤ 500), `client` (`pid`, `exe`, `cmd` masked, ≤ 1000), `key` (`fp`, `comment`, `type`), `purpose` (`kind`: `userauth` with `user`, `sshsig` with `namespace`, `other`), `host` (`name` from the command line, `fp`, and `onward` for a forwarded connection), `forwarded` |
+| `ssh-sign` | `v`, `id`, `time`, `epoch`, `mode` (`per-call`, `show-only`), `result` (`allowed`, `passed`, `denied`, `timeout`, `dismissed`, `gone`, `signed`, `failed` (1Password refused), `no-answer`, `no-upstream`, `lock-timeout`, `no-window`, `malformed`), `seconds` (to a tenth), `answer` (`allow`, `allow-terminal`, `deny`), `decision` (the `id` of the record whose answer covered it; then the call's facts are there), `call` (`rule`: `claude`, `shell`, `parent`, `alone`, `unbound`; `root` and `shell`: `pid`, `start`, `name`, `cmd`; `distro`), `caller` (as in `start`; `type` also `program`), `session`, `reason` (≤ 500), `client` (`pid`, `exe`, `cmd` masked, ≤ 1000), `key` (`fp`, `comment`, `type`), `purpose` (`kind`: `userauth` with `user`, `sshsig` with `namespace`, `other`), `host` (`name` from the command line, `fp`, and `onward` for a forwarded connection), `forwarded` |
 | `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent` |
 
 Command lines are masked with the rules of `op` calls, word by word inside a remote command, without the rule for what

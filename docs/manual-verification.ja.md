@@ -158,12 +158,12 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
    中の `op-reason-windows.zip` を新しいフォルダーに展開します (例: `$dir = "$env:LOCALAPPDATA\Programs\op-reason-ssh-check"`。
    `gh run download <run の ID> -n op-reason-windows -D $dir` で落として展開してもよい)。`& "$dir\op-reason-windows\op-reason.exe" --version`
    で確かめ、以下では `$exe = "$dir\op-reason-windows\op-reason.exe"` と置きます。
-2. **WSL**: 上の「用意」のとおりにこの branch を build し、`ln -sf op-reason target/release/op-reason-ssh` を足します。S4 の
-   繰り返しの script を書きます:
-   `printf '%s\n' 'for i in 1 2 3 4 5; do op-reason-ssh -o "IdentityAgent=$PIPE" -T git@github.com; done' > /tmp/s4.sh`
-   と `export PIPE='\\.\pipe\op-reason-ssh-agent'`。
-3. Windows PowerShell か PowerShell 7 でも同じパイプを置きます: `$pipe = '\\.\pipe\op-reason-ssh-agent'`。ほかにその名前で
-   待ち受けているものが無いこと (前に試した中継は止める)。
+2. **WSL**: 上の「用意」のとおりにこの branch を build し、`ln -sf op-reason target/release/op-reason-ssh` を足します。
+   この確かめ用に開いたままにする WSL の shell で (その shell の Linux の ssh は agent を失います)、中継のパイプを `ssh.exe` に
+   渡します: `export SSH_AUTH_SOCK='\\.\pipe\op-reason-ssh-agent' WSLENV="${WSLENV:+$WSLENV:}SSH_AUTH_SOCK"`。S4 の繰り返しの
+   script を書きます: `printf '%s\n' 'for i in 1 2 3 4 5; do op-reason-ssh -T git@github.com; done' > /tmp/s4.sh`。
+3. 2 つ目の PowerShell の窓で `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`。ほかにその名前で待ち受けているものが
+   無いこと (前に試した中継は止める)。
 4. 1Password: **設定 → 開発者 → SSH エージェントを使用する** がオンで、GitHub が知っている鍵があり、**新しいものごとに承認を
    求める** が **アプリケーションおよびターミナルセッション** であること (S10 の後で必ず戻す)。
 5. **中継を起こす**: 開いたままにする PowerShell の窓で (親が生きている必要があります) `& $exe --ssh-agent`。
@@ -172,22 +172,23 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 
 | # | すること | 期待 |
 | --- | --- | --- |
-| S1 | 2 つ目の PowerShell で `$env:OPREASON_SSH_REASON = 'check S1: who am I on GitHub'; ssh -o "IdentityAgent=$pipe" -T git@github.com`。**この呼び出しを許可** を押し、1Password の画面を承認する | 右上に op-reason の窓「SSH key: allow this call?」(日本語なら「SSH の鍵: この呼び出しを許可しますか」)。呼び手「Human (terminal) · pwsh.exe」(か powershell.exe)・起点「ssh.exe (pid …)」・理由・コマンド・接続先「git@github.com · host key SHA256:…」・用途「logging in as git」・鍵「<鍵の名前> · SHA256:…」と、ボタン 3 つ (この呼び出しを許可・このターミナルを 60 分許可・拒否)。押すと題が「SSH key: 1Password is asking」に変わり、1Password が答えるまで残る。**画面 1 回** (op-reason.exe の名前が出る)。続いて `Hi <ユーザー>!` (終了コード 1 は GitHub のもの)。呼び手が「Program: pwsh.exe」なら、その shell の command line (`(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").CommandLine`) を書き留める (対話の shell と見なせなかった。そのとき S2 は窓なしで通る) |
-| S2 (C1) | S1 のコマンドをもう一度打ち、**この呼び出しを許可** を押す | 窓がまた出る (新しい呼び出し)。**1Password の画面は出ず**、1 秒もかからずに通る |
-| S3 (C1) | WSL で `OPREASON_SSH_REASON='check S3 from WSL' op-reason-ssh -o "IdentityAgent=$PIPE" -T git@github.com`。**この呼び出しを許可** を押す | 窓に WSL の行 (ディストリビューション)、herdr の中なら herdr の行、呼び手「Human (terminal) · <使っている shell>」と理由が出る。**画面なし** |
+| S1 | 2 つ目の PowerShell で `$env:OPREASON_SSH_REASON = 'check S1: who am I on GitHub'; ssh -T git@github.com`。**この呼び出しを許可** を押し、1Password の画面を承認する | 右上に op-reason の窓「SSH key: allow this call?」(日本語なら「SSH の鍵: この呼び出しを許可しますか」)。呼び手「Human (terminal) · pwsh.exe」(か powershell.exe)・起点「ssh.exe (pid …)」・理由・コマンド・接続先「git@github.com · host key SHA256:…」・用途「logging in as git」・鍵「<鍵の名前> · SHA256:…」と、ボタン 3 つ (この呼び出しを許可・このターミナルを 60 分許可・拒否)。押すと題が「SSH key: 1Password is asking」に変わり、1Password が答えるまで残る。**画面 1 回** (op-reason.exe の名前が出る)。続いて `Hi <ユーザー>!` (終了コード 1 は GitHub のもの)。呼び手が「Program: pwsh.exe」なら、その shell の command line (`(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").CommandLine`) を書き留める (対話の shell と見なせなかった。そのとき S2 は窓なしで通る) |
+| S2 (C1) | S1 のコマンドを、今度は `SSH_AUTH_SOCK` でなく設定の書き方でもう一度打つ: `Remove-Item Env:SSH_AUTH_SOCK; ssh -o 'IdentityAgent=\\\\.\pipe\op-reason-ssh-agent' -T git@github.com; $env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`。**この呼び出しを許可** を押す | 窓がまた出る (新しい呼び出し)。**1Password の画面は出ず**、1 秒もかからずに通る。先頭の 2 つの `\` を重ねた `IdentityAgent` が中継に届くことの確かめも兼ねる。ssh が agent につなげないと言ったら書き留める |
+| S3 (C1) | WSL で `OPREASON_SSH_REASON='check S3 from WSL' op-reason-ssh -T git@github.com`。**この呼び出しを許可** を押す | 窓に WSL の行 (ディストリビューション)、herdr の中なら herdr の行、呼び手「Human (terminal) · <使っている shell>」と理由が出る。**画面なし** |
 | S4 | WSL で `OPREASON_SSH_REASON='check S4: five connections' bash /tmp/s4.sh`。**この呼び出しを許可** を 1 回押す | 5 回の接続に窓は 1 つ (起点「bash (pid …) · bash /tmp/s4.sh」)。`Hi <ユーザー>!` が 5 回、画面なし。もう一度打つと、窓がまた 1 つ出る (新しい呼び出し) |
 | S5 | S4 を `check S5: deny` で打ち、**拒否** を押す | 5 回とも、押した直後にまとめて失敗する (`Permission denied (publickey)`)。窓はそれ以上出ない |
-| S6 (任意) | ansible があれば、鍵の通るホストへの playbook を `ANSIBLE_SSH_EXECUTABLE=op-reason-ssh OPREASON_SSH_REASON='check S6: playbook' ansible-playbook …` で流す (パイプは `ansible_ssh_common_args` の `-o IdentityAgent=…`)。許可し、もう一度流す | タスクとホストの数によらず、1 回の実行に窓は 1 つ |
-| S7 | 2 つ目の PowerShell で理由なしに `ssh -o "IdentityAgent=$pipe" -T git@github.com`。**このターミナルを 60 分許可** を押し、もう一度打つ。次に PowerShell の新しいタブで打つ | 理由は「no reason given」(理由なし)。2 回目は窓なしで通る。新しいタブではまた窓が出る (拒否する) |
+| S6 (任意) | ansible があれば、鍵の通るホストへの playbook を `ANSIBLE_SSH_EXECUTABLE=op-reason-ssh OPREASON_SSH_REASON='check S6: playbook' ansible-playbook …` で流す。許可し、もう一度流す | タスクとホストの数によらず、1 回の実行に窓は 1 つ。fork が動く間に、ボタンの無い窓と toast がいくつ出るかを書き留める |
+| S7 | 2 つ目の PowerShell で理由なしに (`Remove-Item Env:OPREASON_SSH_REASON`) `ssh -T git@github.com`。**このターミナルを 60 分許可** を押し、もう一度打つ。続けて `git ls-remote git@github.com:<あなた>/<あなたの repository>.git`。次に PowerShell の新しいタブで (そこでも `SSH_AUTH_SOCK` を置いて) ssh のコマンドを打つ | 理由は「no reason given」(理由なし)。2 回目と `git ls-remote` は窓なしで通る (そのターミナルで打ったコマンド)。新しいタブではまた窓が出る (拒否する) |
 | S8 | S1 のコマンドを `check S8: no answer` で打ち、60 秒押さない | 60 秒で窓が閉じ、ssh は失敗する。もう一度打つと、また窓が出る |
-| S9 (C4) | `ssh -A -o "IdentityAgent=$pipe" <エージェント転送を許すあなたのホスト>` (その呼び出しは許可)、そのホストで `ssh -T git@github.com` を 2 回 | ホストからの署名ごとに窓が出る: 呼び手「unknown (forwarded from a remote host)」、接続先「forwarded from <ホスト> (host key …) · onward to the host with key …」、最下行「this answer covers this signature only」。それぞれ許可する。画面なし |
+| S9 (C4) | `ssh -A <エージェント転送を許すあなたのホスト>` (その呼び出しは許可)、そのホストで `ssh -T git@github.com` を 2 回 | ホストからの署名ごとに窓が出る: 呼び手「unknown (forwarded from a remote host)」、接続先「forwarded from <ホスト> (host key …) · onward to the host with key …」、最下行「this answer covers this signature only」。それぞれ許可する。画面なし |
 | S10 (C2) | 中継を止める (Ctrl+C)。1Password の **新しいものごとに承認を求める** を **リクエスト** にする。`& $exe --ssh-agent --mode show-only` を起こし、S1 のコマンドを `check S10: request` で 2 回打ち、画面をそれぞれ承認する | 1 回ごとに、op-reason の窓「SSH key: 1Password is asking」(ボタンなし、最下行「show-only mode: decide in 1Password's prompt …」) と 1Password の画面が一緒に出る: **画面 2 回**。終わったら 1Password を **アプリケーションおよびターミナルセッション** に戻す |
 | S11 | show-only の中継のまま、S1 のコマンドを `check S11: default` で 2 回打つ (画面が出たら承認する) | 2 回目の署名は 0.5 秒もかからずに通り、toast「SSH key: 1Password did not ask」が 1 回だけ出る。`& $exe --log` に「SSH: 1Password did not ask (show-only)」 |
 | S12 | 中継を止めて `& $exe --ssh-agent` を起こし直す。1Password をロックする。S1 のコマンドを `check S12: locked` で打ち、**この呼び出しを許可** を押し、1Password がロックの解除を求めたら解除する (中継の承認を求めたら承認する) | 1Password がロックの解除を求めている間、op-reason の窓は「SSH key: 1Password is asking」のまま残り、1Password が答えると閉じる。解除のあとに中継の承認も求められたかを書き留める |
-| S13 (任意) | 端末のプログラム自身の ssh の接続を中継に向け (`~/.ssh/config` のそのホストに `IdentityAgent`)、つないでから、つなぎ直させる | 最初の接続は窓が出る (呼び手「Program: <その exe>」)。つなぎ直しは、そのプログラムが終わるまで窓なしで通る。窓を待つ間にプログラムが何を出すかを書き留める |
+| S13 (任意) | 端末のプログラム自身の ssh の接続を中継に向け (`~/.ssh/config` のそのホストに `IdentityAgent \\\\.\pipe\op-reason-ssh-agent`)、つないでから、つなぎ直させる | 最初の接続は窓が出る (呼び手「Program: <その exe>」)。つなぎ直しは、そのプログラムが終わるまで窓なしで通る。窓を待つ間にプログラムが何を出すかを書き留める |
 | S14 (C3) | WSL の使い捨ての repository で、1Password で commit に署名する設定 (`gpg.format ssh`、`gpg.ssh.program` を `op-ssh-sign-wsl.exe`) にして `git commit --allow-empty -m 'check S14'` | op-reason の窓が出るかを書き留める (用途「a signature (SSHSIG, namespace git)」)。1Password の画面だけが出るなら、署名は agent のパイプを使わず、中継の外にある |
 | S15 | 中継を止める。PowerShell で `cmd /c start "" /b $exe --ssh-agent` (cmd はすぐ終わり、中継は親なしで残る)。数秒のうちの toast を書き留め、S1 のコマンドを `check S15: no parent` で打って許可する | toast「op-reason's SSH relay has no parent process」か「… lost its parent process」。1Password が画面を出すかを書き留める。60 秒答えなければ ssh は失敗し、toast「SSH key: 1Password did not answer …」(原因つき) が出る。この中継は `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` で止める |
 | S16 | `& $exe --log --since 2h`、続けて `& $exe --log --json --since 2h` | `op` の呼び出しの間に、署名 1 つにつき 1 行 (「SSH allowed」「SSH passed」「SSH denied」「SSH timed out」「SSH signed」「SSH no answer from 1Password」)。呼び手と理由つき (passed の行には、その呼び出しの呼び手と理由)。中継そのものの行 (起動・親・1Password が確認しなかった) も出る。JSON には署名した中身も署名そのものも無い |
+| S17 (任意) | ディストリビューション自身の起動プログラム (スタートメニューの Ubuntu など) で WSL を開き、用意のとおりに `SSH_AUTH_SOCK` と `WSLENV` を置いて、S3 のコマンドを `check S17: launcher` で打つ | 窓に WSL の行があるかを書き留める。無ければ、窓が出ている間に `ssh.exe` の親を書き留める: `Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" \| ForEach-Object { (Get-Process -Id $_.ParentProcessId).Path }` |
 
 終わったら元に戻します: 中継を止め、1Password の設定を **アプリケーションおよびターミナルセッション** にし、1Password を 1 回
 ロックします。

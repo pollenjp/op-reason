@@ -301,14 +301,17 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 
 | モード | どこで決めるか | 1Password の設定 |
 | --- | --- | --- |
-| `per-call` (既定) | op-reason の窓で、呼び出しごとに 1 回: **この呼び出しを許可**・**拒否**、自分で打ったコマンドなら **このターミナルを 60 分許可** も。1Password は、ロックするまでに中継を 1 回承認するだけ | 「アプリケーションおよびターミナルセッション」か「アプリケーション」 |
+| `per-call` (既定) | op-reason の窓で、呼び出しごとに 1 回: **この呼び出しを許可**・**拒否**、端末で打った `ssh`・`git`・`scp`・`sftp`・`rsync`・`ansible` なら **このターミナルを 60 分許可** も。1Password は、ロックするまでに中継を 1 回承認するだけ | 「アプリケーションおよびターミナルセッション」か「アプリケーション」 |
 | `show-only` | 署名のたびに 1Password の画面で。op-reason の窓は、その横に誰が何のためにを出す | 「リクエスト」 |
 
 **呼び出し** は、起点の process・鍵・理由の組です。起点は、Claude Code の tool の呼び出し・端末で打ったコマンド (`git push`・
 `ansible-playbook`・`ssh`)・自分で ssh を起こすプログラムのどれかで、WSL では `op-reason-ssh` が Linux の側で見つけます。
 許可した呼び出しの後の署名は窓なしで通り (ansible の fork は 1 つの答えを待ちます)、拒否した呼び出しの後の署名はすぐに
-断ります。答えは、起点の process が終わるか、60 分たつか (`--time-limit`)、中継が止まるまで効き、メモリーにだけ置きます。
-リモートのホストから転送で戻ってきた依頼 (`ssh -A`) は、1 つずつが別の呼び出しです。
+断ります。答えは、起点の process が終わるか (WSL の起点は時間切れだけ)、60 分たつか (`--time-limit`)、中継が止まるまで効き、
+メモリーにだけ置きます。ターミナルの答えが効くのは、その shell で後から打った ssh の仲間のコマンドで、動き続けるプログラム
+(端末のプログラム・ほかの AI エージェントのコマンドラインの道具) には効きません。リモートのホストから転送で戻ってきた依頼
+(`ssh -A`) は、1 つずつが別の呼び出しです。中継はそれを `session-bind@openssh.com` で見分けます。OpenSSH が送るのは 8.9 から
+なので、それより古い `ssh.exe` では署名のたびに聞きます。
 
 窓には、誰が (Claude Code・人・プログラム。WSL からならあわせて herdr の workspace と pane・ディストリビューション・
 repository・branch)、起点の process、理由 (無ければ「理由なし」)、ssh のコマンド、行き先とそのホストの鍵、署名の用途
@@ -338,15 +341,15 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 
 ### ssh を中継へ向ける
 
-- **Windows**: Windows の OpenSSH なら `~/.ssh/config` に `IdentityAgent \\.\pipe\op-reason-ssh-agent` (か、その名前を
-  `SSH_AUTH_SOCK` に)。理由は `OPREASON_SSH_REASON` で渡します:
-  `$env:OPREASON_SSH_REASON = "ログインの修正を push する"; git push`。
+- **Windows**: Windows の OpenSSH なら `SSH_AUTH_SOCK` に `\\.\pipe\op-reason-ssh-agent` を置くか、`~/.ssh/config` に
+  `IdentityAgent \\\\.\pipe\op-reason-ssh-agent` (OpenSSH は設定と `-o` の `\\` を `\` 1 つと読むので、先頭の 2 つを重ねます)。
+  理由は `OPREASON_SSH_REASON` で渡します: `$env:OPREASON_SSH_REASON = "ログインの修正を push する"; git push`。
 - **WSL**: `ssh.exe` の代わりに `op-reason-ssh` (その名前の WSL の実行ファイル) を打ちます。たとえば
   `GIT_SSH_COMMAND=op-reason-ssh`、ansible なら `ansible_ssh_executable=op-reason-ssh`。理由は `OPREASON_SSH_REASON` です。
   `op-reason-ssh` は Linux の側で呼び出しの起点を見つけ、`op` と同じように呼び手 (Claude Code・herdr・repository) を集め、
   ディストリビューションと理由とあわせて `OPREASON_SSH_CALL` に入れて (`WSLENV` を通して) 中継に渡し、引数・stdin・
-  stdout・stderr をそのままに `ssh.exe` を起こします。集められなくても `ssh.exe` は起こします (そのとき中継は接続ごとに
-  聞きます)。
+  stdout・stderr をそのままに `ssh.exe` を起こします (`ssh.exe` は Windows の `~/.ssh/config` を読むので、上の `IdentityAgent`
+  の行は WSL にも効きます)。集められなくても `ssh.exe` は起こします (そのとき中継は署名ごとに聞きます)。
 
 ### 記録
 
@@ -365,6 +368,11 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   送る。`op` と同じく、op-reason が見せるのは事実で、証明ではありません。
 - 1Password のパイプに直につなぐ client: 1Password にとっては新しいアプリなので、あなたの設定のとおりに確認します。
   **op-reason の窓が出ていない 1Password の SSH の確認が、その印です。**
+- ほかの AI エージェントのコマンドラインの道具は、人 (端末で打った) かプログラムとして見えます。見分けるのは Claude Code の
+  tool の呼び出しだけです。その依頼もクリックを待ち、ターミナルの答えは効きません。
+- WSL からの呼び出しは、`ssh.exe` の親 (`wsl.exe`・`wslhost.exe`・`C:\Windows\System32\bash.exe`) で見分けます。
+  ディストリビューション自身の起動プログラム (`ubuntu.exe` など) で始めた WSL では `ssh.exe` の親が別になることがあり、
+  そのとき中継は Windows のプログラムとして扱います (手で確かめること: [docs/manual-verification.ja.md](docs/manual-verification.ja.md))。
 - Smart App Control が `op-reason.exe` を止める所では、中継はありません (PowerShell の代わりもありません)。Git Bash の
   `ssh` (MSYS2) は Windows のパイプを使いません。`op-ssh-sign` による git の commit の署名は、1Password のアプリに直に
   話すかもしれません。
