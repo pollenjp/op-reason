@@ -1,9 +1,11 @@
 //! The toasts of the SSH relay (design `2026-11-18-pass-toasts-design.md` §4): signatures that pass without a window
 //! show as cards at the top left of the screen of the foreground window. One layered window holds every card
 //! ([`crate::pass_toast::Stack`] decides them) and is drawn with Direct2D into a bitmap with an alpha channel
-//! (`UpdateLayeredWindow`). It never takes the focus, lets clicks and the pointer through (`WS_EX_TRANSPARENT`), is
+//! (`UpdateLayeredWindow`). Each card is drawn into a Direct2D layer that is put on the bitmap at the card's opacity
+//! (70% once shown), so that the text behind shows through the whole card alike; `+N` under the third card counts the
+//! cards pushed out. The window never takes the focus, lets clicks and the pointer through (`WS_EX_TRANSPARENT`), is
 //! always on top, stays out of the taskbar and Alt+Tab, and is hidden while no card is shown. Its window text lists the
-//! cards' first lines, newest first.
+//! cards' first lines, newest first, then `+N`.
 //!
 //! A UI thread of its own owns the window; the signing threads hand it their toasts through a channel and wake it with
 //! an event, so that none of them ever waits for it. A window that cannot be made only ends that thread: the relay goes
@@ -24,10 +26,11 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_LAYER_OPTIONS_NONE,
+    D2D1_LAYER_PARAMETERS, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
     D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1Layer, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
@@ -53,11 +56,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 use super::screen::{self, Screen};
 use super::window;
-use crate::pass_toast::{CARD_H, CARD_W, CardView, EDGE, MAX_CARDS, Stack, slot_y};
+use crate::pass_toast::{CARD_H, CARD_W, CardView, EDGE, MORE_H, OPACITY, Stack, more_y};
 use crate::relay_ui::PassTexts;
 
 const CLASS_NAME: PCWSTR = w!("op-reason-pass-toast");
@@ -69,9 +72,9 @@ const EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(
         | WS_EX_TOPMOST.0,
 );
 
-// The bitmap: every place of the stack, with room for the shadow and the glow (DIPs).
+// The bitmap: every place of the stack and the count under it, with room for the shadow and the glow (DIPs).
 const STACK_W: f32 = EDGE + CARD_W + EDGE;
-const STACK_H: f32 = slot_y(MAX_CARDS - 1) + CARD_H + EDGE;
+const STACK_H: f32 = more_y() + MORE_H + EDGE;
 
 // A card (DIPs from its top left): a check at the left, three lines of uniform height, the line of the time left.
 const RADIUS: f32 = 6.0;
@@ -88,6 +91,14 @@ const CHECK: (f32, f32, f32) = (18.0, 17.5, 8.0); // center and radius
 const BAR_TOP: f32 = CARD_H - 5.0;
 /// The widest share of line 2 that the destination may take; the command gets the rest.
 const DEST_SHARE: f32 = 0.6;
+/// How far a card's layer reaches beyond the card: its shadow and its glow.
+const CARD_BLEED: f32 = 4.0;
+// The tag `+N` (at the cards' left edge, `more_y()` from the top, `MORE_H` high): its room left and right of the text,
+// and its corners.
+const MORE_PAD: f32 = 6.0;
+const MORE_RADIUS: f32 = 4.0;
+// the tag's text is drawn at its top: its line is as high as the tag
+const _: () = assert!(SMALL_LINE.0 == MORE_H);
 
 const fn rgb(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -330,9 +341,11 @@ impl Lines {
     }
 }
 
-/// The memory bitmap the cards are drawn into, the Direct2D target bound to it and its brushes.
+/// The memory bitmap the cards are drawn into, the Direct2D target bound to it, its brushes and its layer.
 struct Surface {
     paint: Paint,
+    /// Each card is drawn into it in turn, and put on the bitmap at the card's opacity.
+    layer: ID2D1Layer,
     /// Dropped before the device context it is bound to.
     rt: ID2D1DCRenderTarget,
     gdi: Gdi,
@@ -414,6 +427,7 @@ impl Surface {
             )?;
             Ok(Surface {
                 paint: Paint::new(&rt)?,
+                layer: rt.CreateLayer(None)?,
                 rt,
                 gdi,
                 size: (w, h),
@@ -423,7 +437,7 @@ impl Surface {
     }
 }
 
-/// The brushes of the cards; each card sets their opacity to its own before it is drawn.
+/// The brushes of the cards, at their own alphas (a card's opacity is its layer's).
 struct Paint {
     fill: ID2D1SolidColorBrush,
     border: ID2D1SolidColorBrush,
@@ -456,26 +470,34 @@ impl Paint {
         })
     }
 
-    /// A card's opacity, and its glow.
-    fn set(&self, opacity: f32, glow: f32) {
-        let o = opacity.clamp(0.0, 1.0);
-        // SAFETY: brushes of a live target.
-        unsafe {
-            for b in [
-                &self.fill,
-                &self.border,
-                &self.shadow,
-                &self.green,
-                &self.pale,
-                &self.white,
-                &self.black,
-                &self.dim,
-            ] {
-                b.SetOpacity(o);
-            }
-            self.glow.SetOpacity(o * glow.clamp(0.0, 1.0));
-        }
+    /// How much the next card glows: its ring's opacity.
+    fn set_glow(&self, glow: f32) {
+        // SAFETY: a brush of a live target.
+        unsafe { self.glow.SetOpacity(glow.clamp(0.0, 1.0)) }
     }
+}
+
+/// Starts drawing into `layer`, which goes on the target at `opacity` (within `bounds`) when it is popped.
+///
+/// # Safety
+///
+/// Between `BeginDraw` and `EndDraw` of `rt`; `layer` is `rt`'s and not pushed already.
+unsafe fn push_layer(
+    rt: &ID2D1DCRenderTarget,
+    layer: &ID2D1Layer,
+    bounds: D2D_RECT_F,
+    opacity: f32,
+) {
+    let params = D2D1_LAYER_PARAMETERS {
+        contentBounds: bounds,
+        maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        maskTransform: Matrix3x2::identity(),
+        opacity: opacity.clamp(0.0, 1.0),
+        layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        ..Default::default()
+    };
+    // SAFETY: (caller) inside BeginDraw and EndDraw; the parameters live across the call.
+    unsafe { rt.PushLayer(&params, layer) };
 }
 
 fn rounded(left: f32, top: f32, right: f32, bottom: f32, r: f32) -> D2D1_ROUNDED_RECT {
@@ -501,6 +523,8 @@ struct Ui {
     screen: Option<Screen>,
     stack: Stack<Mark>,
     lines: HashMap<u64, Lines>,
+    /// The count of the cards pushed out and its text, while there are any.
+    more: Option<(usize, Text)>,
     start: Instant,
     visible: bool,
     /// Put the window on top again at the next draw (a toast came).
@@ -584,6 +608,7 @@ impl Ui {
                 screen: None,
                 stack: Stack::new(animation_on(), forget_ms),
                 lines: HashMap::new(),
+                more: None,
                 start: Instant::now(),
                 visible: false,
                 raise: false,
@@ -619,6 +644,7 @@ impl Ui {
                 self.visible = false;
             }
             self.lines.clear();
+            self.more = None;
             self.set_title(String::new());
             return;
         }
@@ -646,7 +672,11 @@ impl Ui {
                 self.raise = false;
             }
         }
-        self.set_title(self.stack.heads().join("\n"));
+        let mut title = self.stack.heads();
+        if let Some((n, _)) = &self.more {
+            title.push(format!("+{n}"));
+        }
+        self.set_title(title.join("\n"));
     }
 
     fn set_title(&mut self, title: String) {
@@ -687,6 +717,13 @@ impl Ui {
                     .insert(c.id, Lines::new(&self.fonts, c.texts, c.count)?);
             }
         }
+        let more = self.stack.more();
+        if more == 0 {
+            self.more = None;
+        } else if self.more.as_ref().is_none_or(|(n, _)| *n != more) {
+            let t = text(&self.fonts, &self.fonts.chip, &format!("+{more}"), TEXT_W)?;
+            self.more = Some((more, t));
+        }
         let Some(surface) = self.surface.as_ref() else {
             return Ok(());
         };
@@ -703,9 +740,28 @@ impl Ui {
             // the leaving cards first, then from the bottom up: the top card is drawn last
             for c in frame.iter().rev() {
                 if let Some(lines) = self.lines.get(&c.id) {
-                    surface.paint.set(c.opacity, c.glow);
+                    surface.paint.set_glow(c.glow);
+                    let bounds = D2D_RECT_F {
+                        left: EDGE - CARD_BLEED,
+                        top: c.y - CARD_BLEED,
+                        right: EDGE + CARD_W + CARD_BLEED,
+                        bottom: c.y + CARD_H + CARD_BLEED,
+                    };
+                    push_layer(rt, &surface.layer, bounds, c.opacity);
                     draw_card(rt, c, lines, &surface.paint);
+                    rt.PopLayer();
                 }
+            }
+            if let Some((_, t)) = &self.more {
+                let bounds = D2D_RECT_F {
+                    left: EDGE - CARD_BLEED,
+                    top: more_y() - CARD_BLEED,
+                    right: EDGE + t.width + 2.0 * MORE_PAD + CARD_BLEED,
+                    bottom: more_y() + MORE_H + CARD_BLEED,
+                };
+                push_layer(rt, &surface.layer, bounds, OPACITY);
+                draw_more(rt, t, &surface.paint);
+                rt.PopLayer();
             }
             rt.EndDraw(None, None)?;
             UpdateLayeredWindow(
@@ -735,8 +791,54 @@ impl Ui {
     }
 }
 
-/// One card at its place: shadow, glow, light yellow face, gray border, the green check, three lines, the line of
-/// the time left.
+/// The count of the cards pushed out under the third place: `+N` in dark gray on a small light yellow tag with a gray
+/// border (unlike the green ×N inside line 1).
+///
+/// # Safety
+///
+/// Between `BeginDraw` and `EndDraw` of `rt`; the brushes are `rt`'s.
+unsafe fn draw_more(rt: &ID2D1DCRenderTarget, t: &Text, p: &Paint) {
+    let (left, top) = (EDGE, more_y());
+    let (right, bottom) = (left + t.width + 2.0 * MORE_PAD, top + MORE_H);
+    // SAFETY: (caller) inside BeginDraw and EndDraw, with brushes of this target.
+    unsafe {
+        rt.FillRoundedRectangle(
+            &rounded(
+                left - 1.0,
+                top + 1.0,
+                right + 1.0,
+                bottom + 2.0,
+                MORE_RADIUS + 1.0,
+            ),
+            &p.shadow,
+        );
+        rt.FillRoundedRectangle(&rounded(left, top, right, bottom, MORE_RADIUS), &p.fill);
+        rt.DrawRoundedRectangle(
+            &rounded(
+                left + 0.5,
+                top + 0.5,
+                right - 0.5,
+                bottom - 0.5,
+                MORE_RADIUS,
+            ),
+            &p.border,
+            1.0,
+            None,
+        );
+        rt.DrawTextLayout(
+            Vector2 {
+                X: left + MORE_PAD,
+                Y: top,
+            },
+            &t.layout,
+            &p.dim,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
+    }
+}
+
+/// One card at its place, drawn opaque into its layer: shadow, glow, light yellow face, gray border, the green check,
+/// three lines, the line of the time left.
 ///
 /// # Safety
 ///

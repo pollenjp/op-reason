@@ -3,7 +3,8 @@
 - Date: 2026-11-18
 - Status: approved (the user chose the top left and one card per call on a page that played three motions side by
   side, and approved the design of the toast, the screen of the windows (A) and the count of notifications (B) as a
-  whole; this document records that design and the implementer's decisions)
+  whole; this document records that design and the implementer's decisions). §11 records the two changes the user
+  asked for after the first checks with the real app (2026-11-19).
 - Builds on: `2026-11-17-ssh-relay-design.md` (§5.4 remembering, §5.5 the windows one at a time, §6 the window) and
   `2026-11-15-windows-exe-design.md` (the window and the toast of `op-reason.exe`).
 
@@ -97,7 +98,9 @@ The texts are in `relay_ui`'s table with the window's.
 
 - The signatures of one call (the mark: root, key, reason) share one card. Each one adds one to ×N, puts its line 2 in
   and starts the four seconds again; the card glows once (the "bump").
-- Other calls get a card each, three at most. A fourth card makes the oldest one go at once.
+- Other calls get a card each, three at most. A fourth card makes the oldest one (the card whose last signature is the
+  oldest) go at once; `+N` under the third card counts the cards pushed out until their four seconds have passed (§11).
+- A card is drawn at 70% opacity, so that the text behind it shows through (§11).
 - A card stays four seconds after its last signature, then fades out in 0.8 seconds; the cards below close up.
 - ×N counts the signatures that the call passed without a window since its window. When its card has gone and the
   call signs again, the count goes on (decided before this document).
@@ -169,14 +172,18 @@ The texts are in `relay_ui`'s table with the window's.
 - Linux (`cargo test` in `crates/op-reason-win`): the toast's texts (both languages, both answers, no reason); the cards
   (one per call, ×N, line 2 of the last signature, the four seconds started again, a fading card that signs again comes
   back, the fourth pushing out the oldest, fading and closing up, the count going on after the card has gone and
-  starting again for a new answer, no motion with animation effects off, when to draw next).
+  starting again for a new answer, no motion with animation effects off, when to draw next; after §11: the opacity, 70%
+  when shown, from 70% while fading and lifted by a bump; `+N`, counted until each pushed-out card's four seconds have
+  passed, the card whose last signature is the oldest pushed out, a pushed-out call that signs again coming back).
 - Windows CI (`tests/relay.rs`, real clicks): after Allow, the same call signs three times: one toast window, visible,
   "×3" among its texts, layered, click-through (`WindowFromPoint` does not find it), never active, at the top left of
-  the work area of the foreground window's screen; gone after about five seconds.
+  the work area of the foreground window's screen; gone after about five seconds. Four other calls that pass one after
+  the other: three cards and `+1`, the last line of the window's text.
 - Windows CI (B): while a window is open its notification is in the notification center (`ToastNotificationHistory`
   read with the same AppUserModelID), and after the window has closed it is not; after a per-call time-out it stays.
   Where the runner keeps no notification history, the test says so and checks nothing.
-- The CI screenshots add the toasts (a call of three signatures and another call) and the whole screen with them.
+- The CI screenshots add the toasts (a call of three signatures and another call, after three calls that they push out,
+  so that `+2` shows) and the whole screen with them.
 - `make_readme_svgs.py --check` fails when the texts or the values it copies from the Rust sources (the toast's texts,
   its sizes and times) differ, and when the HTML page no longer has them.
 
@@ -214,3 +221,35 @@ The texts are in `relay_ui`'s table with the window's.
 - **Documents**: the animation is `readme-6-relay-screens.{en,ja}.svg`; the HTML page is `docs/html/relay-screens.html`,
   one file with both languages (English, or Japanese with `#ja`).
 - **Checks with the real app**: S19–S24 in `docs/manual-verification.md`.
+
+## 11. After the first checks with the real app
+
+The user ran S19 and S20 with the real 1Password app (op-reason's window, the toasts and 1Password's prompt all came
+on the screen of the foreground window, which was not the primary one) and asked for two changes (2026-11-19):
+
+- **70% opacity.** The text behind a toast could not be read. Every card, its face, text and lines, is drawn at 70%
+  opacity from the moment it appears, so that the text behind shows through, and fades from 70% to nothing. Without
+  motion it appears at 70% and goes at once.
+- **`+N`.** Ten calls at once showed only three cards. The cards pushed out are counted until four seconds after their
+  last signature, as if they were still shown, and `+N` under the third card says how many are left: N goes up when a
+  card is pushed out and down when a pushed-out card's four seconds have passed, and the tag goes at 0. It counts cards
+  (a call of ×5 is one).
+
+Implementer's decisions:
+
+- **Each card is drawn into a Direct2D layer** whose opacity is the card's (0.7 while shown, down to 0 as it fades):
+  the card is one picture at 70%, not a face, text and lines each at 70% on top of each other (where the face would
+  show through the text). The `+N` tag is drawn the same way, at 70%.
+- **A bump lifts the card to full opacity**: in the 420 ms of a bump the card goes up to 100% in the first quarter and
+  back to 70% in the rest, with the green ring as before. On a 70% card the ring alone is easy to miss. Without motion
+  there is no bump, as before.
+- **The card pushed out is the one whose last signature is the oldest**, no longer the bottom one, which may have
+  signed again a moment ago. So the cards shown always signed after those pushed out: `+N` is back at 0 before a card
+  shown starts to fade, and there is always a third card above it.
+- **A pushed-out call that signs again comes back** as a new card at the top (pushing another card out) and is no
+  longer counted in `+N`; its ×N goes on.
+- **The tag**: 4 DIPs under the third place, at the cards' left edge, 16 DIPs high, light yellow with a gray border and
+  `+N` in dark gray bold 11 DIPs (unlike ×N, green inside line 1). It appears, changes and goes at once. The toast
+  window is 20 DIPs taller for it, and its line ends the window's text (`+2`).
+- **The animation and the HTML page** add a fifth call to the scene of the fourth card, so that `+N` goes +1, +2, +1
+  and away.
