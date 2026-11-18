@@ -11,11 +11,13 @@
 //! to the 1Password app ([`account`]).
 //!
 //! A third face, `op-reason.exe --ssh-agent`, is the SSH relay (design `2026-11-17-ssh-relay-design.md`): its options
-//! ([`relay_opts`]) and texts ([`relay_ui`]) are portable too.
+//! ([`relay_opts`]), texts ([`relay_ui`]) and the cards of its toasts ([`pass_toast`]; design
+//! `2026-11-18-pass-toasts-design.md`) are portable too.
 
 pub mod account;
 pub mod cmdline;
 pub mod messages;
+pub mod pass_toast;
 pub mod payload;
 pub mod relay_opts;
 pub mod relay_ui;
