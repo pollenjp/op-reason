@@ -53,7 +53,9 @@ Goal:
 2. **Two modes**, chosen when the relay starts:
    - `per-call` (default): the relay decides. The first signature of a call (§5) opens the window with who, what and
      why, and Allow / Deny buttons. Once allowed, the call's later signatures pass without the window. 1Password stays
-     at "application and terminal session" or "application" and approves the relay once until it locks.
+     at "application and terminal session" (recommended; "application" works too, but then 1Password no longer asks
+     about a client that talks to it directly from the terminal program the relay runs in, §10) and approves the relay
+     once until it locks.
    - `show-only`: for people whose 1Password asks for every request. The relay decides nothing: for every signature
      it shows the window, without buttons, while 1Password's prompt is open, as op-reason's window does for `op`.
 3. **Who, what and why** in the window and the log (§6).
@@ -287,8 +289,13 @@ way: `git-upload-pack '…'` is worth seeing.
 - **What it does not stop:** a program of the same user that wants to get around it. It can fake `OPREASON_SSH_CALL`
   to pass as an allowed WSL call (a WSL root is taken on trust), start under an allowed Windows root, inject into the
   relay or send clicks. As for `op`, op-reason shows facts, not proofs.
-- **A client that talks to 1Password's pipe directly** is a new application for 1Password, which asks with the user's
-  setting: a 1Password prompt without op-reason's window is the sign. The README says so.
+- **A client that talks to 1Password's pipe directly** is asked about only when 1Password has not approved its
+  application since it locked (at "application and terminal session", its pair of application and terminal session),
+  and the application 1Password sees is the terminal program the client runs in, not the client (§15, S18). So at
+  "application", once the relay is approved, a client that connects directly from the terminal program the relay runs
+  in passes without a prompt; at "application and terminal session", a client in another terminal session is asked: a
+  1Password prompt without op-reason's window is the sign. The README says so and recommends "application and terminal
+  session" for per-call mode (the author's choice).
 - **The relay holds an approval** of 1Password until it locks (per-call mode). Whoever passes its decision gets
   signatures; hence the root in the mark, the click-only buttons and the pipe for the user only.
 - **No secrets pass:** the agent protocol carries public keys and signatures, and the relay keeps neither the data it
@@ -399,16 +406,24 @@ The first rows answer the builder check (decided before the implementation); the
 - Checked on CI (GitHub's Windows runner with the fake agent, client and `wsl.exe` of `crates/op-reason-win/fake-ssh`;
   no 1Password): the 19 end-to-end tests of `crates/op-reason-win/tests/relay.rs`, real clicks on Allow and Deny
   included, and the screenshots of the window in both modes on the pull request.
-- Checked with a build of this change on the author's Windows (2026-11-18; the checks S1–S17 of
+- Checked with a build of this change on the author's Windows (2026-11-18; the checks S1–S18 of
   `docs/manual-verification.md`, which lists the results one by one; op-reason 0.3.0 from the pull request, the
   1Password CLI 2.41.1, the 1Password app 8.12.46.29, Windows OpenSSH 10.4p1, Windows build 26300; S6, S13 and S17
-  skipped):
+  skipped, S18 added and run after the others):
   - C1 with the relay itself: after one approval the later signatures passed without a prompt, from Windows (also
     through `IdentityAgent` with the leading pair doubled), from WSL, the other connections of a loop (0.1 s each) and
     the login to a host that allows agent forwarding. 1Password's prompt named the terminal program the relay was
     started in, not `op-reason.exe` (S1; also S12 and S14): most likely 1Password walks up from the relay to an
-    application it knows. The design does not rest on that name: the decision is made in op-reason's window, and the
-    approval covers the relay as C1 expects.
+    application it knows. The decision is still made in op-reason's window, and the approval covers the relay as C1
+    expects; what 1Password approves, though, is that terminal program (at "application and terminal session", the
+    relay's terminal session in it), which matters for clients that talk to 1Password directly (S18, below).
+  - A client that talks to 1Password directly, in another terminal of the terminal program the relay ran in, once the
+    relay had been approved (S18, added after the first run): at "application and terminal session" it got
+    1Password's prompt without op-reason's window; at "application" it passed without a prompt, and the relay recorded
+    nothing of it. 1Password named the terminal program for it too: it takes the terminal program a client runs in for
+    the application, not the client (`ssh.exe`) or the relay. So at "application" the approval of the relay covers
+    every client of that terminal program; the README recommends "application and terminal session" for per-call mode
+    (§3, §10).
   - C2: show-only with "request" showed op-reason's window and 1Password's prompt together, for each signature (S10).
   - C3: `op-ssh-sign-wsl.exe` does not use `SSH_AUTH_SOCK`; it talks to the 1Password app directly, so commit signing
     from WSL stays outside the relay, as the README says (S14).

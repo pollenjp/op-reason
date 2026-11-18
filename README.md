@@ -298,17 +298,18 @@ protocol on its own pipe, `\\.\pipe\op-reason-ssh-agent`, and passes every reque
 (`\\.\pipe\openssh-ssh-agent`). Only signatures wait for a decision; listing the keys and everything else pass at once.
 Design: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
 
-Why: 1Password's SSH prompt names the application (from WSL, the terminal) and the key, not the caller, the
-destination or the reason. With its setting "Ask approval for each new" at "application and terminal session" or
-"application", one approval lets every later signature of that application through until 1Password locks: after you
-approved once, an agent can use the key without a prompt. At "request" it asks for every signature, which ansible on
-WSL (new connections for every task and host) turns into dozens of prompts per run.
+Why: 1Password's SSH prompt names the application and the key, not the caller, the destination or the reason; for ssh
+run in a terminal, the application is the terminal program, from Windows and WSL alike. With its setting "Ask approval
+for each new" at "application and terminal session", one approval lets every later signature from that terminal
+session through until 1Password locks, and at "application" every later signature from that terminal program: after
+you approved once, an agent in the same terminal can use the key without a prompt. At "request" it asks for every
+signature, which ansible on WSL (new connections for every task and host) turns into dozens of prompts per run.
 
 ### Two modes
 
 | Mode | Where you decide | 1Password's setting |
 | --- | --- | --- |
-| `per-call` (default) | op-reason's window, once per call: **Allow this call**, **Deny**, and for `ssh`, `git`, `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, **Allow this terminal for 60 minutes**. 1Password approves the relay once, until it locks | "application and terminal session" or "application" |
+| `per-call` (default) | op-reason's window, once per call: **Allow this call**, **Deny**, and for `ssh`, `git`, `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, **Allow this terminal for 60 minutes**. 1Password approves the relay once, until it locks | "application and terminal session" (recommended); "application" works too, but then 1Password no longer asks about clients that connect to it directly from the terminal program the relay runs in ([What it does not stop](#what-it-does-not-stop)) |
 | `show-only` | 1Password's prompt, for every signature; op-reason's window shows who and why next to it | "request" |
 
 A **call** is its root process, the key and the reason. The root is Claude Code's tool call, the command you typed in a
@@ -379,8 +380,12 @@ Time      Result       Secs  Caller           Reason              Command
 
 - A program of your own account that wants to get around it: it can fake `OPREASON_SSH_CALL`, run under an allowed
   root, or send clicks. As for `op`, op-reason shows facts, not proofs.
-- A client that talks to 1Password's pipe directly: for 1Password that is a new application, which it asks about with
-  your setting. **A 1Password SSH prompt without op-reason's window is the sign.**
+- A client that talks to 1Password's pipe directly. 1Password asks only when it has not approved the request's
+  application since it locked (at "application and terminal session", the request's pair of application and terminal
+  session), and the application it sees is not the client but the terminal program the client runs in. So at
+  "application", once the relay is approved, a client that connects directly from the terminal program the relay runs
+  in passes without a prompt; at "application and terminal session", a client in another terminal session is asked.
+  **A 1Password SSH prompt without op-reason's window is the sign.**
 - Other AI agents' command-line tools are seen as a person (typed in a terminal) or a program: only Claude Code's tool
   calls are told apart. Their requests still wait for a click, and the terminal answer does not cover them.
 - WSL calls are told by the parent of `ssh.exe`: `wsl.exe`, `wslhost.exe` or `C:\Windows\System32\bash.exe`. A WSL

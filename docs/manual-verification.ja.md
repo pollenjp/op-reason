@@ -5,7 +5,7 @@ English: [manual-verification.md](manual-verification.md)
 CI は偽の `op-reason.exe`・`powershell.exe`・`op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で
 動かず、CI の Windows の runner では WSL2 も動きません)。ここの確認には、人と、1Password のアプリと 1Password CLI の入った
 Windows と、WSL が要ります。WSL の確認 (1〜14 と R) で 30 分ほどかかり、承認の画面が 15 回ほど出ます。
-参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 40 分ほど足します。
+参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 45 分ほど足します。
 
 ## 確かめる間の決まり
 
@@ -148,7 +148,7 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 
 1Password の SSH agent の前に立つ `op-reason.exe --ssh-agent` を確かめます
 ([2026-11-17-ssh-relay-design.md](superpowers/specs/2026-11-17-ssh-relay-design.md))。CI は偽の agent で中継を流し、
-ボタンも押しますが、1Password の画面は出せません。ここは 40 分ほどかかり、1Password の画面が 5〜8 回出ます。GitHub へ
+ボタンも押しますが、1Password の画面は出せません。ここは 45 分ほどかかり、1Password の画面が 8〜11 回出ます。GitHub へ
 `ssh -T git@github.com` でつなぎます (鍵で認証して `Hi <ユーザー>!` を出して閉じるだけで、GitHub では何も変わりません)。
 期待に「書き留める」とある所は、まだ誰も見ていません。見たことを書いてください。最初に流した結果は表の下にあります。
 
@@ -165,7 +165,7 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 3. 2 つ目の PowerShell の窓で `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`。ほかにその名前で待ち受けているものが
    無いこと (前に試した中継は止める)。
 4. 1Password: **設定 → 開発者 → SSH エージェントを使用する** がオンで、GitHub が知っている鍵があり、**新しいものごとに承認を
-   求める** が **アプリケーションおよびターミナルセッション** であること (S10 の後で必ず戻す)。
+   求める** が **アプリケーションおよびターミナルセッション** であること (S10 と S18 の後で必ず戻す)。
 5. **中継を起こす**: 開いたままにする PowerShell の窓で (親が生きている必要があります) `& $exe --ssh-agent`。
    `the SSH relay listens on \\.\pipe\op-reason-ssh-agent (per-call) and passes requests on to …` と出て止まります。
    Ctrl+C で止まります。確かめは、2 つ目の PowerShell の窓と WSL で打ちます。
@@ -189,6 +189,7 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 | S15 | 中継を止める。PowerShell で `cmd /c start "" /b $exe --ssh-agent` (cmd はすぐ終わり、中継は親なしで残る)。数秒のうちの toast を書き留め、S1 のコマンドを `check S15: no parent` で打って許可する | toast「op-reason's SSH relay has no parent process」か「… lost its parent process」。1Password は画面を出さない: 60 秒ほどで中継が `no-answer` を記録し、ssh は失敗し、toast「SSH key: 1Password did not answer …」が原因つきで出る。この中継は `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` で止める |
 | S16 | `& $exe --log --since 2h`、続けて `& $exe --log --json --since 2h` | `op` の呼び出しの間に、署名 1 つにつき 1 行 (「SSH allowed」「SSH passed」「SSH denied」「SSH timed out」「SSH signed」「SSH no answer from 1Password」)。呼び手と理由つき (passed の行には、その呼び出しの呼び手と理由)。中継そのものの行 (起動・親・1Password が確認しなかった) も出る。JSON には署名した中身も署名そのものも無い |
 | S17 (任意) | ディストリビューション自身の起動プログラム (スタートメニューの Ubuntu など) で WSL を開き、用意のとおりに `SSH_AUTH_SOCK` と `WSLENV` を置いて、S3 のコマンドを `check S17: launcher` で打つ | 窓に WSL の行があるかを書き留める。無ければ、窓が出ている間に `ssh.exe` の親を書き留める: `Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" \| ForEach-Object { (Get-Process -Id $_.ParentProcessId).Path }` |
+| S18 | 1Password に直につなぐ client。用意の 5 のとおりに中継を起こし直す (中継・2 つ目の PowerShell・この確かめで開く 3 つ目の端末は、どれも 1 つの端末のプログラムの中の端末にする)。1Password をロックする。2 つ目の PowerShell で S1 のコマンドを `check S18: through the relay` で打ち、**この呼び出しを許可** を押して 1Password に答える。続けて 3 つ目の端末で、1Password のパイプに直に `ssh -o 'IdentityAgent=\\\\.\pipe\openssh-ssh-agent' -T git@github.com` を打ち、出た画面は拒否する。次に 1Password の **新しいものごとに承認を求める** を **アプリケーション** にし、1Password をロックして、同じ端末で 2 つのコマンドをもう一度打つ (S11 のように、切り替えた直後の依頼に答えが来なければ、時間切れを待って打ち直す)。最後に `& $exe --log --since 30m` | **アプリケーションおよびターミナルセッション** では、直につなぐ client に、op-reason の窓なしで 1Password の画面が出る (名前は端末のプログラム)。拒否すると ssh は `agent refused operation`。**アプリケーション** では、中継を承認したあと、直につなぐ client は画面なしで通る (`Hi <ユーザー>!`)。記録には中継を通した呼び出し 2 つが出て、直につないだ client の行は無い。終わったら 1Password を **アプリケーションおよびターミナルセッション** に戻す |
 
 終わったら元に戻します: 中継を止め、1Password の設定を **アプリケーションおよびターミナルセッション** にし、1Password を 1 回
 ロックします。
@@ -197,9 +198,9 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 
 この PR の op-reason 0.3.0 (Windows は PR の Windows exe の workflow の zip、WSL は branch の release の build)、1Password CLI
 2.41.1、1Password のアプリ 8.12.46.29 (Microsoft Store 版)、Windows の OpenSSH 10.4p1、Windows 11 build 26300。1Password は
-**アプリケーションおよびターミナルセッション** (S10 だけ **リクエスト**)。中継と確かめの shell は、端末のプログラムの中の
-PowerShell 7 と、WSL のディストリビューションの bash で起こし、中継の PowerShell は開いたままにした。上の手順と期待は、実際と
-違ったところを直してある。
+**アプリケーションおよびターミナルセッション** (S10 は **リクエスト**、S18 の後半は **アプリケーション**。S18 はほかの後で
+足して流した)。中継と確かめの shell は、端末のプログラムの中の PowerShell 7 と、WSL のディストリビューションの bash で起こし、
+中継の PowerShell は開いたままにした。上の手順と期待は、実際と違ったところを直してある。
 
 | # | 結果 | 起きたこと |
 | --- | --- | --- |
@@ -220,6 +221,7 @@ PowerShell 7 と、WSL のディストリビューションの bash で起こし
 | S15 | 見込みどおり | `cmd /c start "" /b` で起こすと、中継に親の process が無いという記録と toast が出た。許可しても 1Password は画面を出さず、59.7 秒で中継が `no-answer` を記録して ssh は失敗し、toast「SSH の鍵: 1Password が答えませんでした」に原因が付いた |
 | S16 | 見込みどおり | 署名 1 つに 1 行で、見た結果が全部出た: 許可・許可 (ターミナル)・許可 (転送)・通過・拒否・時間切れ・署名・1Password が答えない。通過の行にも、その呼び出しの理由が出る。中継そのものの行も出る。JSON の `ssh-*` の記録 42 件に、署名した中身も署名そのものも無い |
 | S17 | 飛ばした | 任意 |
+| S18 | 「アプリケーション」では確認なし | 最初の実行の後で足し、同じ端末のプログラムの 3 つの端末 (中継・中継を通す呼び出し・直につなぐ client) で流した。「アプリケーションおよびターミナルセッション」では、ロックから中継を許可・承認したあとも、直につなぐ client に op-reason の窓なしで 1Password の画面が出て、拒否した (`agent refused operation`)。「アプリケーション」では、同じ手順のあと、画面なしで 2 秒で通り、中継の記録にその行は無かった。1Password の画面の名前は、中継の依頼も直の依頼も端末のプログラムだった。README は、そういう client を 1Password にとって新しいアプリと書いていた (いつ確認が出るかを書き直した) |
 
 最後に中継を止め、1Password の設定を確かめて、1Password を 1 回ロックした。
 
