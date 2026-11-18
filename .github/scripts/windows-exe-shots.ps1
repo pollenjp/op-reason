@@ -20,7 +20,9 @@
 # per-call for Claude Code in Japanese and for a person's command in English (with the button that allows the
 # terminal), and show-only in English (docs/superpowers/specs/2026-11-17-ssh-relay-design.md). Then its toasts in
 # Japanese: two calls allowed with a click each, then three signatures of the first and one of the second pass without
-# a window; the toast window and the whole screen are saved with CAPTUREBLT, which layered windows need
+# a window; their client is a copy of fake-ssh named ssh.exe with an ssh command line (the second one long, with a long
+# destination), so that the toasts show the command and the destination as for a real ssh; the toast window and the
+# whole screen are saved with CAPTUREBLT, which layered windows need
 # (docs/superpowers/specs/2026-11-18-pass-toasts-design.md).
 #
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
@@ -412,8 +414,12 @@ if ($FakeSsh) {
     [void][OpReasonShots]::SetCursorPos(400, 600)
   }
 
-  # The toasts: the calls of $Calls are allowed one by one, then each signs $Signs[i] times without a window.
-  function Show-Toasts([string] $Name, [string] $Lang, [string] $Title, $Calls, [int[]] $Signs) {
+  # The toasts: the calls of $Calls are allowed one by one, then each signs $Signs[i] times without a window. The client
+  # of call i is ssh.exe (a copy of fake-ssh) with the ssh arguments $SshArgs[i].
+  $sshDir = Join-Path $work 'openssh'
+  New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+  Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $sshDir 'ssh.exe')
+  function Show-Toasts([string] $Name, [string] $Lang, [string] $Title, $Calls, [int[]] $Signs, $SshArgs) {
     $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
       @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -422,9 +428,10 @@ if ($FakeSsh) {
       & $Exe --ssh-agent --status --pipe $pipe *> $null
     } while ($LASTEXITCODE -ne 0 -and $sw.ElapsedMilliseconds -lt 10000)
     $jsons = @($Calls | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii })
-    foreach ($json in $jsons) {
-      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') @('spawn', $FakeSsh, 'client', $pipe, 'list', 'bind', 'sign') `
-        @{ OPREASON_SSH_CALL = $json }
+    $ssh = Join-Path $sshDir 'ssh.exe'
+    for ($i = 0; $i -lt $jsons.Count; $i++) {
+      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
+        @{ OPREASON_SSH_CALL = $jsons[$i]; FAKE_SSH_PIPE = $pipe; FAKE_SSH_STEPS = 'list bind sign' }
       $h = Wait-Window $Title
       if ($h -eq [IntPtr]::Zero) { Write-Warning "no window to allow for scene $Name" } else {
         [Threading.Thread]::Sleep(700)
@@ -433,8 +440,9 @@ if ($FakeSsh) {
       if (-not $client.WaitForExit(15000)) { $client.Kill() }
     }
     for ($i = 0; $i -lt $jsons.Count; $i++) {
-      $steps = @('bind') + @(1..$Signs[$i] | ForEach-Object { 'sign' })
-      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $FakeSsh, 'client', $pipe) + $steps) @{ OPREASON_SSH_CALL = $jsons[$i] }
+      $steps = (@('bind') + @(1..$Signs[$i] | ForEach-Object { 'sign' })) -join ' '
+      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
+        @{ OPREASON_SSH_CALL = $jsons[$i]; FAKE_SSH_PIPE = $pipe; FAKE_SSH_STEPS = $steps }
       if (-not $client.WaitForExit(15000)) { $client.Kill() }
     }
     $t = Wait-ClassWindow 'op-reason-pass-toast' 5000
@@ -450,7 +458,11 @@ if ($FakeSsh) {
 
   Show-Toasts '16-relay-toasts-ja' 'ja' `
     (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') `
-    @($personCall, $claudeCall) @(3, 1)
+    @($personCall, $claudeCall) @(3, 1) @(
+      , @('-T', 'git@github.com')
+      , @('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60s', '-o', 'ServerAliveInterval=30',
+        'deploy@build-runner-07.staging.internal.example.com', "/bin/sh -c 'echo ~ && sleep 0'")
+    )
   # show-only: the fake agent answers after six seconds, as while 1Password asks
   Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '6000' -NoNewline
   $ansibleCall = [ordered]@{
