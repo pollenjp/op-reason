@@ -1,5 +1,5 @@
 //! The approval window, drawn with Direct2D and DirectWrite. Same look and behavior as the A' launcher's WPF window:
-//! top right of the primary work area, always on top, never takes the focus, not in the taskbar, light yellow,
+//! top right of the work area, always on top, never takes the focus, not in the taskbar, light yellow,
 //! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
 //! red. It asks nothing; the decision is made in the 1Password prompt.
 //!
@@ -10,6 +10,9 @@
 //! window (design `2026-11-17-ssh-relay-design.md` §6), a row of buttons under the footer: a press and a release on a
 //! button is the answer, which the owner reads with [`Window::answer`]. None of them activates the window, and the
 //! window has no default button: a key typed elsewhere never reaches it.
+//!
+//! It opens on the screen of the foreground window, with that screen's DPI, and stays there ([`super::screen`]; design
+//! `2026-11-18-pass-toasts-design.md` §5).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -40,23 +43,21 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint, PAINTSTRUCT,
-    ScreenToClient,
+    BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, ScreenToClient,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
-    MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
-    LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SPI_GETWORKAREA,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
+    LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
     WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE,
     WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     WS_SYSMENU,
@@ -531,7 +532,8 @@ fn register_class() -> Result<()> {
     Ok(())
 }
 
-fn locale() -> Vec<u16> {
+/// The user's locale name, NUL-terminated (the text formats' locale).
+pub(super) fn locale() -> Vec<u16> {
     let mut buf = [0u16; 85];
     // SAFETY: the buffer is LOCALE_NAME_MAX_LENGTH long.
     let n = unsafe { GetUserDefaultLocaleName(&mut buf) };
@@ -541,7 +543,8 @@ fn locale() -> Vec<u16> {
     buf[..n as usize].to_vec()
 }
 
-fn format(
+/// A Segoe UI text format that wraps words.
+pub(super) fn format(
     dw: &IDWriteFactory,
     weight: DWRITE_FONT_WEIGHT,
     size: f32,
@@ -837,12 +840,8 @@ impl Window {
                 dw,
             };
 
-            let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let (mut dx, mut dy) = (96u32, 96u32);
-            if GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).is_err() {
-                dx = 96;
-            }
-            let dpi = dx;
+            let screen = super::screen::of_foreground();
+            let dpi = screen.dpi;
 
             // The text width: the outer width minus the side frames and the padding.
             let mut frame = RECT::default();
@@ -885,13 +884,7 @@ impl Window {
                     return Err(e);
                 }
             };
-            let mut area = RECT::default();
-            let _ = SystemParametersInfoW(
-                SPI_GETWORKAREA,
-                0,
-                Some(&mut area as *mut RECT as *mut c_void),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            );
+            let area = screen.work;
             let margin = scale(SCREEN_MARGIN, dpi);
             let x = area.right - w - margin;
             let y = area.top + margin;

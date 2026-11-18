@@ -11,6 +11,7 @@ pub mod opexe;
 pub mod procs;
 pub mod relay;
 pub mod run;
+pub mod screen;
 pub mod shell;
 pub mod toast;
 pub mod window;
