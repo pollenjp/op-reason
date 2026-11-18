@@ -197,6 +197,12 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .t-l3 { top: 43px; height: 16px; font-size: 11px; line-height: 16px; color: var(--op-dim); overflow: hidden; text-overflow: ellipsis; }
 .t-bar { position: absolute; left: 36px; top: 65px; width: 252px; height: 2px; background: var(--op-green); transform-origin: 0 50%; }
 .t-glow { position: absolute; inset: -3.75px; border: 2.5px solid rgba(21, 128, 61, 0.9); border-radius: 9.75px; opacity: 0; pointer-events: none; }
+/* +N under the third place: the cards pushed out, at 70% like the cards */
+.more {
+  position: absolute; left: 12px; top: 242px; height: 16px; padding: 0 6px; border-radius: 4px;
+  background: var(--op-yellow); color: var(--op-dim); font-family: var(--font-win); font-size: 11px; font-weight: 700; line-height: 16px;
+  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 1px 0 1px rgba(0, 0, 0, 0.16); opacity: 0;
+}
 
 .cursor { position: absolute; left: 0; top: 0; z-index: 7; opacity: 0; pointer-events: none; }
 .cursor path { fill: #fff; stroke: #000; stroke-width: 1.1; stroke-linejoin: round; }
@@ -270,11 +276,13 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 }
 
 .anatomy { margin: 2px 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
-.anatomy .card { position: relative; flex: none; box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 2px 0 1px rgba(0, 0, 0, 0.16); }
+.anatomy .card { position: relative; flex: none; opacity: 0.7; box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 2px 0 1px rgba(0, 0, 0, 0.16); }
+.anat-cards { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.anat-cards .more { position: static; display: inline-block; opacity: 0.7; }
 .anatomy figcaption { flex: 1 1 260px; font-size: 0.86rem; color: var(--muted); max-width: 52ch; }
 /* The card keeps its real size (300 x 70) unless the column is narrower than that. */
-@media (max-width: 369px) { .anatomy .card { zoom: 0.75; } }
-@media (max-width: 299px) { .anatomy .card { zoom: 0.6; } }
+@media (max-width: 369px) { .anat-cards { zoom: 0.75; } }
+@media (max-width: 299px) { .anat-cards { zoom: 0.6; } }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
@@ -411,20 +419,20 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   <section class="panel">
     <h2><span data-l="en">Toasts, windows and notifications</span><span data-l="ja" lang="ja">トースト・窓・通知</span></h2>
     <figure class="anatomy" data-l="en">
-      <div class="card"><svg class="t-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8"/><path d="M4 8.3 6.8 11.1 12.2 5"/></svg><div class="t-l1"><span class="t-w">Passed</span><span class="t-c"> · Claude Code</span><span class="t-n">×3</span></div><div class="t-l2"><span class="t-cmd">ssh.exe deploy@web-02 "systemctl status app"</span><span class="t-dst"> → deploy@web-02</span></div><div class="t-l3">allowed for this call · check that the service runs</div><i class="t-bar" style="transform: scaleX(0.62)"></i></div>
-      <figcaption>A card of a call that signed three times: line 1 who, line 2 the command and its destination (the command is cut, the destination stays whole), line 3 why it passed and the reason; the green line is what is left of its four seconds.</figcaption>
+      <div class="anat-cards"><div class="card"><svg class="t-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8"/><path d="M4 8.3 6.8 11.1 12.2 5"/></svg><div class="t-l1"><span class="t-w">Passed</span><span class="t-c"> · Claude Code</span><span class="t-n">×3</span></div><div class="t-l2"><span class="t-cmd">ssh.exe deploy@web-02 "systemctl status app"</span><span class="t-dst"> → deploy@web-02</span></div><div class="t-l3">allowed for this call · check that the service runs</div><i class="t-bar" style="transform: scaleX(0.62)"></i></div><span class="more">+2</span></div>
+      <figcaption>A card of a call that signed three times, at 70% opacity as on the screen: line 1 who, line 2 the command and its destination (the command is cut, the destination stays whole), line 3 why it passed and the reason; the green line is what is left of its four seconds. Under the third card, +2 counts the cards pushed out, until four seconds after their last signature.</figcaption>
     </figure>
     <figure class="anatomy" data-l="ja" lang="ja">
-      <div class="card"><svg class="t-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8"/><path d="M4 8.3 6.8 11.1 12.2 5"/></svg><div class="t-l1"><span class="t-w">通過</span><span class="t-c"> · Claude Code</span><span class="t-n">×3</span></div><div class="t-l2"><span class="t-cmd">ssh.exe deploy@web-02 "systemctl status app"</span><span class="t-dst"> → deploy@web-02</span></div><div class="t-l3">この呼び出しの許可 · サービスが動いているかを見る</div><i class="t-bar" style="transform: scaleX(0.62)"></i></div>
-      <figcaption>3 回署名した呼び出しのカード。1 行目は誰が、2 行目はコマンドと接続先 (切るのはコマンドで、接続先は切らない)、3 行目は通った訳と理由。緑の線は 4 秒の残りです。</figcaption>
+      <div class="anat-cards"><div class="card"><svg class="t-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8"/><path d="M4 8.3 6.8 11.1 12.2 5"/></svg><div class="t-l1"><span class="t-w">通過</span><span class="t-c"> · Claude Code</span><span class="t-n">×3</span></div><div class="t-l2"><span class="t-cmd">ssh.exe deploy@web-02 "systemctl status app"</span><span class="t-dst"> → deploy@web-02</span></div><div class="t-l3">この呼び出しの許可 · サービスが動いているかを見る</div><i class="t-bar" style="transform: scaleX(0.62)"></i></div><span class="more">+2</span></div>
+      <figcaption>3 回署名した呼び出しのカード (画面と同じ濃さ 70%)。1 行目は誰が、2 行目はコマンドと接続先 (切るのはコマンドで、接続先は切らない)、3 行目は通った訳と理由。緑の線は 4 秒の残りです。3 枚目の下の +2 は消したカードの数で、その最後の署名から 4 秒まで数えます。</figcaption>
     </figure>
     <ul data-l="en">
-      <li><b>Toasts.</b> A signature that an earlier answer lets through (Allow this call, Allow this terminal) shows a card for four seconds, then fades: <code>Passed · &lt;caller&gt;</code>, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top, three at most (a fourth pushes the oldest out at once). Toasts never take the focus, let clicks through, make no sound and stay out of the notification center. With Windows' animation effects off they neither slide nor fade.</li>
+      <li><b>Toasts.</b> A signature that an earlier answer lets through (Allow this call, Allow this terminal) shows a card for four seconds, then fades: <code>Passed · &lt;caller&gt;</code>, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top, three at most (a fourth pushes the oldest out at once, and <code>+N</code> under the third card counts the cards pushed out until four seconds after their last signature). A card is drawn at 70% opacity, so that the text behind it shows through. Toasts never take the focus, let clicks through, make no sound and stay out of the notification center. With Windows' animation effects off they neither slide nor fade.</li>
       <li><b>Windows</b> open on the screen you work on (that of the foreground window; the primary screen when there is none) and stay there. The windows of <code>op</code> calls do too, when <code>op-reason.exe</code> runs them; the PowerShell launcher's window stays at the top right of the primary screen, and its notifications stay.</li>
       <li><b>Notifications</b> go with their window, so they do not pile up in the notification center; a per-call window that timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password did not ask, 1Password did not answer, the relay has no parent process) stay.</li>
     </ul>
     <ul data-l="ja" lang="ja">
-      <li><b>トースト</b>: 前の答え (この呼び出しを許可・このターミナルを 60 分許可) で通った署名は、カードを 4 秒出して薄れて消えます。中身は <code>通過 · &lt;呼び手&gt;</code>、ssh のコマンドと接続先、通った訳 (この呼び出しの許可・ターミナルの許可) と理由です。同じ呼び出しの署名は 1 枚にまとめ、数 (×N) と最後の接続先を出して 4 秒を数え直します。ほかの呼び出しは 1 枚ずつ一番上に入り、同時に 3 枚まで (4 枚目が来たら一番古いものをすぐ消す)。トーストはフォーカスを取らず、クリックを下の窓へ通し、音を鳴らさず、通知センターにも入りません。Windows のアニメーション効果を切っていれば、ずれたり薄れたりせずに出て消えます。</li>
+      <li><b>トースト</b>: 前の答え (この呼び出しを許可・このターミナルを 60 分許可) で通った署名は、カードを 4 秒出して薄れて消えます。中身は <code>通過 · &lt;呼び手&gt;</code>、ssh のコマンドと接続先、通った訳 (この呼び出しの許可・ターミナルの許可) と理由です。同じ呼び出しの署名は 1 枚にまとめ、数 (×N) と最後の接続先を出して 4 秒を数え直します。ほかの呼び出しは 1 枚ずつ一番上に入り、同時に 3 枚まで (4 枚目が来たら一番古いものをすぐ消し、消したカードはその最後の署名から 4 秒まで 3 枚目の下の <code>+N</code> が数える)。カードは後ろの字が透ける濃さ 70% で出します。トーストはフォーカスを取らず、クリックを下の窓へ通し、音を鳴らさず、通知センターにも入りません。Windows のアニメーション効果を切っていれば、ずれたり薄れたりせずに出て消えます。</li>
       <li><b>窓</b>は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。<code>op</code> の呼び出しの窓も、<code>op-reason.exe</code> が出すものは同じです。PowerShell の launcher の窓は主画面の右上のままで、その通知も残ります。</li>
       <li><b>通知</b>は窓と一緒に消えるので、通知センターに溜まりません。per-call の窓が時間切れで閉じたときは、答えなかった依頼の印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は残ります。</li>
     </ul>
@@ -452,6 +460,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 (() => {
   'use strict';
   const SHOW = 4000, FADE = 800, ENTER = 240, APPEAR = 220, EVICT = 140, BUMP = 420, MAX = 3, GAP = 8, EDGE = 12;
+  // A card shown is at 70% (a glow lifts it to 100%); the tag +N: how far under the third place, how high, its room.
+  const OPACITY = 0.7, MORE_GAP = 4, MORE_H = 16, MORE_PAD = 6;
   // A card's size, how far above its place a new card starts, how long a card pushed out stays once transparent.
   const CARD_W = 300, CARD_H = 70, DROP = 12, LINGER = 40;
   const SW = 960, SH = 460, TOTAL = 33000;
@@ -483,6 +493,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     c2: { who: HUMAN, cmd: `ssh.exe git@github.com "git-upload-pack 'me/infra.git'"`, dest: 'git@github.com', why: 'terminal' },
     c3: { who: 'git.exe', cmd: `ssh.exe -o SendEnv=GIT_PROTOCOL git@github.com "git-upload-pack 'me/app.git'"`, dest: 'git@github.com', why: 'call' },
     c4: { who: HUMAN, cmd: 'ssh.exe -x -oRemoteCommand=none deploy@web-01 sftp', dest: 'deploy@web-01', why: 'terminal' },
+    c5: {
+      who: 'Claude Code', cmd: 'ssh.exe deploy@web-03 "journalctl -u app -n 50"', dest: 'deploy@web-03',
+      why: 'call', reason: { en: "read the app's logs", ja: 'アプリのログを読む' }
+    },
     deploy: {
       who: 'Claude Code', cmd: 'ssh.exe deploy@web-02 "systemctl status app"', dest: 'deploy@web-02',
       why: 'call', reason: { en: 'check that the service runs', ja: 'サービスが動いているかを見る' }
@@ -493,8 +507,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   const SCENES = [
     { s: 0, e: 5600, k: 2600 },
     { s: 5600, e: 13000, k: 9000 },
-    { s: 13000, e: 16600, k: 15400 },
-    { s: 16600, e: 18400, k: 17400 },
+    { s: 13000, e: 15800, k: 15400 },
+    { s: 15800, e: 18400, k: 16700 },
     { s: 18400, e: 22400, k: 19200 },
     { s: 22400, e: 33000, k: 24400 }
   ];
@@ -508,13 +522,13 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
       pause: 'Pause',
       scenes: [
         { t: 'A signature that passes without a window: a toast at the top left',
-          b: 'A signature that an earlier answer lets through (here an ssh typed in a terminal that was allowed for 60 minutes) shows a card at the top left of the screen. The green line is its four seconds; then the card fades out in 0.8 seconds.' },
+          b: 'A signature that an earlier answer lets through (here an ssh typed in a terminal that was allowed for 60 minutes) shows a card at the top left of the screen, at 70% opacity so that the text behind it shows through. The green line is its four seconds; then the card fades out in 0.8 seconds.' },
         { t: 'One card per call: ×N and its last destination, four seconds again',
-          b: 'One run of ansible signs once per host. The signatures of one call share one card: each adds one to ×N, puts its destination on line 2, makes the card glow once and starts its four seconds again.' },
+          b: 'One run of ansible signs once per host. The signatures of one call share one card: each adds one to ×N, puts its destination on line 2, makes the card glow once (its ring lights up and it turns opaque for a moment) and starts its four seconds again.' },
         { t: "Another call's card goes on top; the others move down",
           b: 'Each other call gets a card of its own. The newest goes in at the top, in the corner, and the cards already shown move down.' },
-        { t: 'A fourth card pushes the oldest out at once',
-          b: 'At most three cards are shown. A fourth pushes the oldest one, at the bottom, out at once, without waiting for it to fade.' },
+        { t: 'A fourth card pushes the oldest out at once; +N counts the cards pushed out',
+          b: 'At most three cards are shown. A fourth pushes out at once, without waiting for it to fade, the card whose last signature is the oldest. +N under the third card counts the cards pushed out until four seconds after their last signature: a fifth call makes it +2, then it goes down as their four seconds pass.' },
         { t: 'Four seconds after its last signature, a card fades out',
           b: "A card stays four seconds after its call's last signature, then fades out in 0.8 seconds; any cards below it move up." },
         { t: 'A call that asks: the window at the top right, its notification at the bottom right, gone together',
@@ -530,13 +544,13 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
       pause: '一時停止',
       scenes: [
         { t: '窓を出さずに通った署名: 左上にトースト',
-          b: '前の答えで通った署名 (ここでは 60 分許可したターミナルで打った ssh) は、画面の左上にカードを出します。下の緑の線が残りの 4 秒で、なくなると 0.8 秒で薄れて消えます。' },
+          b: '前の答えで通った署名 (ここでは 60 分許可したターミナルで打った ssh) は、画面の左上に、後ろの字が透ける濃さ 70% のカードを出します。下の緑の線が残りの 4 秒で、なくなると 0.8 秒で薄れて消えます。' },
         { t: '同じ呼び出しは 1 枚: ×N と最後の接続先、4 秒を数え直す',
-          b: 'ansible は 1 回の実行でホストごとに署名します。同じ呼び出しの署名は 1 枚にまとめ、署名のたびに ×N が 1 つ増え、2 行目が最後の接続先になり、カードが一度光って 4 秒を数え直します。' },
+          b: 'ansible は 1 回の実行でホストごとに署名します。同じ呼び出しの署名は 1 枚にまとめ、署名のたびに ×N が 1 つ増え、2 行目が最後の接続先になり、カードが一度光って (縁が光り、一瞬だけ不透明になる) 4 秒を数え直します。' },
         { t: '別の呼び出しは一番上に入り、ほかは下へずれる',
           b: 'ほかの呼び出しは 1 枚ずつカードを出します。一番新しいものが一番上 (角) に入り、出ていたカードは下へずれます。' },
-        { t: '4 枚目が来たら、一番古いカードをすぐ消す',
-          b: '同時に出すのは 3 枚まで。4 枚目が来たら、一番下の一番古いカードを、薄れるのを待たずにすぐ消します。' },
+        { t: '4 枚目が来たら一番古いカードをすぐ消し、+N で数える',
+          b: '同時に出すのは 3 枚まで。4 枚目が来たら、最後の署名が一番古いカードを、薄れるのを待たずにすぐ消します。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が数えます。5 つ目の呼び出しで +2 になり、4 秒が過ぎたものから減って消えます。' },
         { t: '最後の署名から 4 秒で薄れて消える',
           b: 'カードは、その呼び出しの最後の署名から 4 秒たつと、0.8 秒かけて薄れて消えます。下にカードがあれば上へ詰めます。' },
         { t: '聞く呼び出し: 窓は右上、通知は右下。窓と一緒に消える',
@@ -552,6 +566,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     newTop: { en: 'Another call: a new card on top', ja: '別の呼び出しは一番上に入る' },
     down: { en: 'The others move down', ja: 'ほかは下へずれる' },
     evict: { en: 'A fourth card: the oldest goes at once', ja: '4 枚目: 一番古いものをすぐ消す' },
+    more: { en: '+N counts the cards pushed out, until their four seconds pass', ja: '+N は消したカードの数 (4 秒たつまで)' },
     fade: { en: 'Four seconds after its last signature, a card fades out in 0.8 s', ja: '最後の署名から 4 秒で、0.8 秒かけて薄れる' },
     win: { en: "A call that asks: op-reason's window, top right", ja: '聞く呼び出し: op-reason の窓は右上' },
     ntf: { en: 'Its Windows notification: bottom right', ja: '窓に付く Windows の通知は右下' },
@@ -579,7 +594,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 
   let lang = 'en';
   let now = 0, queue = [], qseq = 0;
-  let cards = [], all = [], notes = [], counts = {};
+  let cards = [], all = [], notes = [], counts = {}, pushed = [];
   let win, ntf, area, cur, pressAt = -1e9;
   let playing = true, rate = 1, sceneIdx = -1, geom = null;
 
@@ -605,6 +620,15 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 
   // ---- the cards (pass_toast.rs: Stack) ----
   const slotY = i => EDGE + i * (CARD_H + GAP);
+  const moreY = slotY(MAX - 1) + CARD_H + MORE_GAP;
+  // The tag +N under the third place: the cards pushed out whose four seconds have not passed.
+  const moreEl = document.createElement('div');
+  moreEl.className = 'more';
+  moreEl.style.top = moreY + 'px';
+  moreEl.style.height = MORE_H + 'px';
+  moreEl.style.padding = '0 ' + MORE_PAD + 'px';
+  stackEl.appendChild(moreEl);
+  const more = () => pushed.filter(p => p.from <= now && now < p.until).length;
   function paint(c) {
     const p = PASS[lang], call = c.call;
     const why = p[call.why] + ' · ' + (call.reason ? call.reason[lang] : p.none);
@@ -655,7 +679,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     at(now + EVICT + LINGER, () => removeEl(c));
   }
   // A signature of `key` passed: the call's card counts it, takes its line 2, glows and starts its four seconds again;
-  // another call's card enters at the top, and a fourth pushes the oldest (the bottom one) out.
+  // another call's card enters at the top, and a fourth pushes out the card whose last signature is the oldest (of two,
+  // the lower one), counted in +N until its four seconds have passed. A call pushed out comes back as a new card.
   function sig(key, name, arg) {
     const call = CALLS[name];
     const cmd = typeof call.cmd === 'function' ? call.cmd(arg) : call.cmd;
@@ -674,6 +699,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
       arm(hit);
       return;
     }
+    for (const p of pushed) if (p.key === key && p.from <= now && now < p.until) p.until = now;
     const c = {
       key: key, call: call, cmd: cmd, dest: dest, count: counts[key], armed: now, bump: null, token: 0, state: 'live',
       y: anim(slotY(0) - DROP, slotY(0), ENTER, easeOut), op: anim(0, 1, APPEAR, lin)
@@ -685,7 +711,13 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     stackEl.appendChild(c.el);
     all.push(c);
     cards.unshift(c);
-    while (cards.length > MAX) evict(cards.pop());
+    while (cards.length > MAX) {
+      let bi = cards.length - 1;
+      for (let i = cards.length - 2; i >= 1; i--) if (cards[i].armed < cards[bi].armed) bi = i;
+      const old = cards.splice(bi, 1)[0];
+      if (old.state === 'live') pushed.push({ key: old.key, from: now, until: old.armed + SHOW });
+      evict(old);
+    }
     layout();
     arm(c);
   }
@@ -736,6 +768,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
       n.el.className = 'note side';
       s.left = (EDGE + CARD_W + 18) + 'px';
       s.top = (slotY(n.a.slot) + CARD_H / 2) + 'px';
+    } else if (n.a.at === 'more') {
+      // one line, a little low: clear of the third card above
+      n.el.className = 'note side';
+      s.left = (EDGE + 48) + 'px';
+      s.top = (moreY + MORE_H / 2 + 4) + 'px';
     } else if (n.a.at === 'win') {
       n.el.className = 'note to-r';
       s.right = (SW - g.wl + 18) + 'px';
@@ -783,9 +820,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     at(14800, () => sig('c3', 'c3'));
     note({ slot: 0 }, NOTE.newTop, 13400, 14700);
     note({ slot: 1 }, NOTE.down, 14900, 16400);
-    // 4: a fourth
-    note({ slot: 2 }, NOTE.evict, 16620, 18300);
-    at(16800, () => sig('c4', 'c4'));
+    // 4: a fourth and a fifth push out the oldest; +1, +2, +1, gone
+    note({ slot: 2 }, NOTE.evict, 15820, 16900);
+    at(16000, () => sig('c4', 'c4'));
+    at(16400, () => sig('c5', 'c5'));
+    note({ at: 'more', w: 460 }, NOTE.more, 16950, 18300);
     // 5: the fades
     note({ slot: 0 }, NOTE.fade, 18500, 21500);
     // 6: a call that asks; the pointer presses Allow
@@ -810,7 +849,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   function reset() {
     all.forEach(c => c.el.remove());
     notes.forEach(n => { if (n.el) n.el.remove(); });
-    cards = []; all = []; notes = []; counts = {}; queue = []; qseq = 0; now = 0; pressAt = -1e9;
+    cards = []; all = []; notes = []; counts = {}; pushed = []; queue = []; qseq = 0; now = 0; pressAt = -1e9;
     win = { op: still(0), y: still(-6) };
     ntf = { op: still(0), x: still(330) };
     area = { op: still(1) };
@@ -836,13 +875,18 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 
   function render() {
     for (const c of all) {
-      c.el.style.opacity = val(c.op).toFixed(3);
+      // the whole card at 70%, lifted to 100% by a glow, times its fade
+      const gl = c.bump == null ? 0 : glow(now - c.bump);
+      c.el.style.opacity = (val(c.op) * (OPACITY + (1 - OPACITY) * gl)).toFixed(3);
       c.el.style.transform = 'translateY(' + val(c.y).toFixed(2) + 'px)';
       const live = c.state === 'live';
       c.bar.style.visibility = live ? '' : 'hidden';
       c.bar.style.transform = 'scaleX(' + (live ? clamp01(1 - (now - c.armed) / SHOW) : 0).toFixed(4) + ')';
-      c.glowEl.style.opacity = (c.bump == null ? 0 : glow(now - c.bump)).toFixed(3);
+      c.glowEl.style.opacity = gl.toFixed(3);
     }
+    const n = more();
+    moreEl.textContent = n > 0 ? '+' + n : '';
+    moreEl.style.opacity = n > 0 ? String(OPACITY) : '0';
     opr.style.opacity = val(win.op).toFixed(3);
     opr.style.transform = 'translateY(' + val(win.y).toFixed(1) + 'px)';
     allowEl.classList.toggle('press', now >= pressAt && now - pressAt < 200);

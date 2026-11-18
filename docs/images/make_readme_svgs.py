@@ -248,10 +248,13 @@ SHOW_MS, FADE_MS, ENTER_MS, APPEAR_MS, EVICT_MS, BUMP_MS = 4000, 800, 240, 220, 
 MAX_CARDS = 3
 EDGE, GAP, CARD_W, CARD_H, DROP = 12.0, 8.0, 300.0, 70.0, 12.0
 EVICT_LINGER_MS = 40  # pass_toast.rs: a card pushed out is dropped this long after it has gone transparent
+OPACITY = 0.7  # a card shown (the text behind shows through); a glow lifts it to 1
+MORE_GAP, MORE_H = 4.0, 16.0  # the tag +N: this far under the third place, this high
 # A card as crates/op-reason-win/src/win/pass_window.rs draws it
 TOAST_TEXT_X, TOAST_TEXT_W = 36.0, CARD_W - 36.0 - 12.0
 TOAST_LINES = (9.0, 26.0, 43.0)  # the tops of lines 1, 2 and 3; their baselines are 13, 13 and 12 below
 TOAST_BG, TOAST_GREEN, TOAST_PALE, TOAST_DIM, TOAST_BORDER = "#ffffe0", "#15803d", "#dcfce7", "#555555", "#808080"
+TOAST_MORE_PAD, TOAST_MORE_RADIUS = 6.0, 4.0  # the tag +N: the room left and right of its text, its corners
 # The relay window's buttons (crates/op-reason-win/src/win/window.rs)
 BUTTON_H, BUTTON_TOP_GAP, BUTTON_PAD_X, BUTTON_MIN_W, BUTTON_RADIUS = 28.0, 10.0, 14.0, 96.0, 4.0
 BUTTON_FILL = "#fafafa"
@@ -329,6 +332,11 @@ def sources() -> dict:
         f"pub const CARD_H: f32 = {CARD_H:.1f};",
         f"pub const DROP: f32 = {DROP:.1f};",
         f"const EVICT_LINGER_MS: u64 = {EVICT_LINGER_MS};",
+        f"pub const OPACITY: f32 = {OPACITY};",
+        f"pub const MORE_GAP: f32 = {MORE_GAP:.1f};",
+        f"pub const MORE_H: f32 = {MORE_H:.1f};",
+        "slot_y(MAX_CARDS - 1) + CARD_H + MORE_GAP",
+        "c.opacity.value(now) * (OPACITY + (1.0 - OPACITY) * glow)",
     ]
     pass_window = [
         f"const TEXT_X: f32 = {TOAST_TEXT_X:.1f};",
@@ -345,6 +353,8 @@ def sources() -> dict:
         "const PALE_GREEN: D2D1_COLOR_F = rgb(0xDC, 0xFC, 0xE7);",
         "const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);",
         "const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);",
+        f"const MORE_PAD: f32 = {TOAST_MORE_PAD:.1f};",
+        f"const MORE_RADIUS: f32 = {TOAST_MORE_RADIUS:.1f};",
     ]
     window += [
         f"const BUTTON_H: f32 = {BUTTON_H:.1f};",
@@ -477,11 +487,13 @@ TEXTS = {
         "relay.title": "op-reason's SSH relay: the window, the toasts and the notifications",
         "relay.desc": (
             "Animation of a Windows desktop. A signature that passes without a window shows a small light yellow "
-            "card, a toast, at the top left: Passed · Human, the ssh command and its destination, allowed for this "
-            "terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: "
-            "one card counts them (×2 … ×8) and shows the last host. Three other calls each put a card on top and "
-            "push the others down; a fourth pushes the oldest out at once; four seconds after its last signature each "
-            "card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification "
+            "card, a toast, at the top left, at 70% opacity so that the text behind shows through: Passed · Human, the "
+            "ssh command and its destination, allowed for this terminal · no reason given; it fades after four "
+            "seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last "
+            "host and lights up at each. Three other calls each put a card on top and push the others down; a fourth "
+            "and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, "
+            "+2) until four seconds after their last signature; four seconds after its last signature each card "
+            "fades. Then a new call asks in op-reason's window at the top right, with its Windows notification "
             "at the bottom right, while another toast comes at the top left; a click on Allow this call closes the "
             "window and its notification together, and the call's later signatures come as one toast at the top "
             "left (×3)."
@@ -490,7 +502,7 @@ TEXTS = {
             "A signature that passes without a window: a toast at the top left",
             "One card per call: ×N and its last destination, four seconds again",
             "Another call's card goes on top; the others move down",
-            "A fourth card pushes the oldest out at once",
+            "A fourth card pushes the oldest out at once; +N counts the cards pushed out",
             "Four seconds after its last signature, a card fades out",
             "A call that asks: the window at the top right, its notification at the bottom right, gone together",
         ),
@@ -576,10 +588,12 @@ TEXTS = {
         "relay.title": "op-reason の SSH の中継: 窓・トースト・通知",
         "relay.desc": (
             "アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を"
-            "出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で薄れて消える。ansible の "
-            "1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後のホストを出す。ほかの 3 つの"
-            "呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、4 枚目は一番古いものをすぐ消す。どのカードも"
-            "最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason の窓で聞き、右下に Windows "
+            "後ろの字が透ける濃さ 70% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で"
+            "薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後の"
+            "ホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、"
+            "4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が"
+            "数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason "
+            "の窓で聞き、右下に Windows "
             "の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、"
             "その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。"
         ),
@@ -587,7 +601,7 @@ TEXTS = {
             "窓を出さずに通った署名: 左上にトースト",
             "同じ呼び出しは 1 枚: ×N と最後の接続先、4 秒を数え直す",
             "別の呼び出しは一番上に入り、ほかは下へずれる",
-            "4 枚目が来たら、一番古いカードをすぐ消す",
+            "4 枚目が来たら一番古いカードをすぐ消し、+N で数える",
             "最後の署名から 4 秒で薄れて消える",
             "聞く呼び出し: 窓は右上、通知は右下。窓と一緒に消える",
         ),
@@ -1553,11 +1567,22 @@ RELAY_CALLS = {  # the example calls of the scene: caller, command, destination,
     "c3": ("git.exe", 'ssh.exe -o SendEnv=GIT_PROTOCOL git@github.com "git-upload-pack \'me/app.git\'"', "git@github.com",
            "call", None),
     "c4": ("human", "ssh.exe -x -oRemoteCommand=none deploy@web-01 sftp", "deploy@web-01", "terminal", None),
+    "c5": ("claude", 'ssh.exe deploy@web-03 "journalctl -u app -n 50"', "deploy@web-03", "call", "logs"),
     "deploy": ("claude", 'ssh.exe deploy@web-02 "systemctl status app"', "deploy@web-02", "call", "service"),
 }
 RELAY_REASONS = {
-    "en": {"config": "roll out the config", "push": "push the login fix", "service": "check that the service runs"},
-    "ja": {"config": "設定を配る", "push": "ログインの修正を push する", "service": "サービスが動いているかを見る"},
+    "en": {
+        "config": "roll out the config",
+        "push": "push the login fix",
+        "service": "check that the service runs",
+        "logs": "read the app's logs",
+    },
+    "ja": {
+        "config": "設定を配る",
+        "push": "ログインの修正を push する",
+        "service": "サービスが動いているかを見る",
+        "logs": "アプリのログを読む",
+    },
 }
 HOST_KEY = "SHA256:x5QvN2…"
 
@@ -1614,6 +1639,11 @@ def toast_slot(i: int) -> float:
     return EDGE + i * (CARD_H + GAP)
 
 
+def toast_more_y() -> float:
+    """pass_toast.rs: more_y (the top of the tag +N, under the third place)."""
+    return toast_slot(MAX_CARDS - 1) + CARD_H + MORE_GAP
+
+
 class Seg:
     """A value moving from `frm` to `to` in `dur` ms from `t`, easing out or linear (pass_toast.rs: Anim)."""
 
@@ -1649,12 +1679,14 @@ class SimCard:
         self.gone: int | None = None
 
 
-def simulate_toasts(events: list, end: int) -> list:
-    """The cards of pass_toast.rs's Stack for `events` ((ms, call, answer, texts) in time order), with their motion."""
+def simulate_toasts(events: list, end: int) -> tuple:
+    """The cards of pass_toast.rs's Stack for `events` ((ms, call, answer, texts) in time order), with their motion,
+    and the cards pushed out: [call, from, until] each, counted in +N from `from` until `until`."""
     held: list = []  # holding a place, top first
     leaving: list = []
     made: list = []
     counts: dict = {}
+    pushed: list = []
 
     def due(c: SimCard) -> int:
         kind, since = c.state
@@ -1702,17 +1734,34 @@ def simulate_toasts(events: list, end: int) -> list:
                 hit.op.append(Seg(t, seg_value(hit.op, t), 1.0, APPEAR_MS, False))
             hit.state = ("live", 0)
             continue
+        # a call pushed out comes back as a new card
+        for q in pushed:
+            if q[0] == call and q[1] <= t < q[2]:
+                q[2] = t
         card = SimCard(len(made) + 1, call, t, texts, n)
         made.append(card)
         held.insert(0, card)
         while len(held) > MAX_CARDS:
-            old = held.pop()
+            # the card whose last signature is the oldest (of two, the lower one); never the new one at the top
+            old = held.pop(min(range(len(held) - 1, 0, -1), key=lambda k: held[k].armed))
+            if old.state[0] == "live":
+                pushed.append([old.call, t, old.armed + SHOW_MS])
             old.op.append(Seg(t, seg_value(old.op, t), 0.0, EVICT_MS, False))
             old.state = ("leaving", t)
             leaving.append(old)
         layout(t)
     advance(end)
-    return made
+    return made, pushed
+
+
+def more_steps(pushed: list) -> list:
+    """(ms, N): the count +N from that time on (pass_toast.rs: Stack::more)."""
+    steps: list = []
+    for t in sorted({q[1] for q in pushed} | {q[2] for q in pushed}):
+        n = sum(1 for q in pushed if q[1] <= t < q[2])
+        if not steps or steps[-1][1] != n:
+            steps.append((t, n))
+    return steps
 
 
 def seg_stops(segs: list, fmt) -> list:
@@ -1737,7 +1786,7 @@ def glow_value(ms: float) -> float:
 def toast_card(c: Canvas, card: SimCard) -> str:
     """A card of the simulation where pass_window.rs draws it, moving and fading as simulated: shadow, glow, light
     yellow face with a gray border, the green check, its texts over time and the line of its four seconds (in steps of
-    half a second)."""
+    half a second). The whole card is at 70% (an inner group, lifted to 100% by a glow) times its fade (the outer)."""
     m = c.m
     rest = round(m.rest * 1000)
     shown = card.y[0].t <= rest and (card.gone is None or card.gone > rest)
@@ -1748,18 +1797,20 @@ def toast_card(c: Canvas, card: SimCard) -> str:
     if card.gone is not None:
         ostops.append((card.gone / 1000, "opacity:0", STEP))
     if card.bumps:
-        gstops = [(0.0, "opacity:0", STEP)]
+        glows = [(0.0, 0.0, STEP)]
         for k, b in enumerate(card.bumps):
             nxt = card.bumps[k + 1] if k + 1 < len(card.bumps) else b + BUMP_MS
             peak, end = min(b + BUMP_MS / 4, nxt), min(b + BUMP_MS, nxt)
-            gstops += [
-                (b / 1000, "opacity:0", "linear"),
-                (peak / 1000, f"opacity:{num(glow_value(peak - b))}", "linear"),
-                (end / 1000, f"opacity:{num(glow_value(end - b) if end < b + BUMP_MS else 0)}", STEP),
+            glows += [
+                (b / 1000, 0.0, "linear"),
+                (peak / 1000, glow_value(peak - b), "linear"),
+                (end / 1000, glow_value(end - b) if end < b + BUMP_MS else 0.0, STEP),
             ]
-        glow_attr = m.keyframes(gstops)
+        glow_attr = m.keyframes([(t, f"opacity:{num(v)}", e) for t, v, e in glows])
+        lift_attr = m.keyframes([(t, f"opacity:{num(OPACITY + (1 - OPACITY) * v)}", e) for t, v, e in glows])
     else:
         glow_attr = ' style="opacity:0"'
+        lift_attr = f' style="opacity:{num(OPACITY)}"'
     ends = sorted([*card.arms[1:], *card.fades, *([card.gone] if card.gone is not None else [])])
     bar = [(0.0, "transform:scaleX(0)")]
     for a in card.arms:
@@ -1815,8 +1866,37 @@ def toast_card(c: Canvas, card: SimCard) -> str:
             f'lengthAdjust="spacing" xml:space="preserve">{esc(why)}</text>'
         )
         parts.append(g(m.at(t / 1000, None if until is None else until / 1000), lines))
-    inner = g(m.keyframes(ostops), *parts)
+    inner = g(m.keyframes(ostops), g(lift_attr, *parts))
     return f'<g transform="translate(0,{num(rest_y)})">{g(m.keyframes(ystops), inner)}</g>'
+
+
+def more_tag(c: Canvas, steps: list) -> str:
+    """The tag +N where pass_window.rs draws it (under the third place, at 70%), one per value of N while it holds."""
+    m = c.m
+    x, top = EDGE, toast_more_y()
+    out = []
+    for k, (t, n) in enumerate(steps):
+        if n == 0:
+            continue
+        until = steps[k + 1][0] if k + 1 < len(steps) else None
+        label = f"+{n}"
+        tw = est_width(label, 11, True)
+        w = tw + 2 * TOAST_MORE_PAD
+        r = TOAST_MORE_RADIUS
+        out.append(
+            g(
+                m.at(t / 1000, None if until is None else until / 1000),
+                f'<rect x="{num(x - 1)}" y="{num(top + 1)}" width="{num(w + 2)}" height="{num(MORE_H + 1)}" '
+                f'rx="{num(r + 1)}" fill="#000" fill-opacity=".16"/>',
+                f'<rect x="{num(x)}" y="{num(top)}" width="{num(w)}" height="{num(MORE_H)}" rx="{num(r)}" '
+                f'fill="{TOAST_BG}"/>',
+                f'<rect x="{num(x + 0.5)}" y="{num(top + 0.5)}" width="{num(w - 1)}" height="{num(MORE_H - 1)}" '
+                f'rx="{num(r)}" fill="none" stroke="{TOAST_BORDER}" stroke-opacity=".8"/>',
+                f'<text x="{num(x + TOAST_MORE_PAD)}" y="{num(top + 12)}" font-size="11" fill="{TOAST_DIM}" class="b" '
+                f'textLength="{num(tw)}" lengthAdjust="spacing">{esc(label)}</text>',
+            )
+        )
+    return g(f' style="opacity:{num(OPACITY)}"', *out) if out else ""
 
 
 def relay_window(c: Canvas, x: float, y: float, lang: str, values: tuple, press: float) -> tuple:
@@ -1922,7 +2002,8 @@ def scene_relay(lang: str) -> str:
     events = [(300, "pwsh", "a1", toast_texts(lang, "pwsh"))]
     events += [(6000 + 300 * i, "ansible", "a2", toast_texts(lang, "ansible", f"web-{i + 1:02d}")) for i in range(8)]
     events += [(t, k, f"a-{k}", toast_texts(lang, k)) for t, k in ((13200, "c1"), (14000, "c2"), (14800, "c3"))]
-    events += [(16800, "c4", "a-c4", toast_texts(lang, "c4"))]
+    # a fourth and a fifth: c1 and c2 are pushed out, +1 and +2, until their four seconds have passed
+    events += [(t, k, f"a-{k}", toast_texts(lang, k)) for t, k in ((16000, "c4"), (16400, "c5"))]
     # a new command typed in the first terminal: another call, on the same answer for the terminal
     events += [(23400, "pwsh2", "a1", toast_texts(lang, "pwsh"))]
     events += [(t, "deploy", "a-deploy", toast_texts(lang, "deploy")) for t in (26700, 27100, 27500)]
@@ -1958,8 +2039,10 @@ def scene_relay(lang: str) -> str:
     )
 
     # the toasts, drawn last so that they are on top
-    for card in simulate_toasts(events, round(d * 1000)):
+    cards, pushed = simulate_toasts(events, round(d * 1000))
+    for card in cards:
         c.add(toast_card(c, card))
+    c.add(more_tag(c, more_steps(pushed)))
 
     rest = (500, 410)
     c.add(
@@ -1969,7 +2052,7 @@ def scene_relay(lang: str) -> str:
             c,
             screen_h,
             44,
-            list(zip((0.0, 5.6, 13.0, 16.6, 18.4, 22.4), tx["relay.steps"], strict=True)),
+            list(zip((0.0, 5.6, 13.0, 15.8, 18.4, 22.4), tx["relay.steps"], strict=True)),
         ),
     )
     return c.render(tx["relay.title"], tx["relay.desc"])
@@ -1987,6 +2070,10 @@ def relay_html_needles() -> list:
         f"MAX = {MAX_CARDS}",
         f"GAP = {GAP:g}",
         f"EDGE = {EDGE:g}",
+        f"OPACITY = {OPACITY:g}",
+        f"MORE_GAP = {MORE_GAP:g}",
+        f"MORE_H = {MORE_H:g}",
+        f"MORE_PAD = {TOAST_MORE_PAD:g}",
     ]
     keys = ("title", "pass_word", "pass_call", "pass_terminal", "no_reason", "allow", "deny")
     return times + [RELAY[lang][k] for lang in LANGS for k in keys]
