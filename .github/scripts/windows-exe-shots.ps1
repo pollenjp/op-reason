@@ -54,6 +54,9 @@ public static class OpReasonShots {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
@@ -171,7 +174,12 @@ function Save-Rect([int] $Left, [int] $Top, [int] $Width, [int] $Height, [string
   $bmp = [Drawing.Bitmap]::new($Width, $Height)
   $g = [Drawing.Graphics]::FromImage($bmp)
   if ($Layered) {
-    $g.CopyFromScreen($Left, $Top, 0, 0, $bmp.Size, [Drawing.CopyPixelOperation]::SourceCopy -bor [Drawing.CopyPixelOperation]::CaptureBlt)
+    # SRCCOPY | CAPTUREBLT (CopyFromScreen takes no combination of the two)
+    $dst = $g.GetHdc()
+    $src = [OpReasonShots]::GetDC([IntPtr]::Zero)
+    [void][OpReasonShots]::BitBlt($dst, 0, 0, $Width, $Height, $src, $Left, $Top, 0x40CC0020)
+    [void][OpReasonShots]::ReleaseDC([IntPtr]::Zero, $src)
+    $g.ReleaseHdc($dst)
   } else {
     $g.CopyFromScreen($Left, $Top, 0, 0, $bmp.Size)
   }

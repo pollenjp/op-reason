@@ -1767,13 +1767,20 @@ fn a_desktop_call_removes_its_notification_with_its_window() {
     });
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
+    use std::io::Write;
     if !kept {
-        eprintln!(
-            "not checked: the notification center keeps no history here (history: {:?})",
+        let _ = writeln!(
+            std::io::stderr(),
+            "exe notification: not checked, the notification center keeps no history here (history: {:?})",
             notices(pid)
         );
         return;
     }
+    let _ = writeln!(
+        std::io::stderr(),
+        "exe notification: in the history while the window was open, after the call {:?}",
+        notices(pid)
+    );
     assert_eq!(notices(pid), Some(0), "removed when the window closed");
     assert!(
         lines_with(&sb.log(), "end")[0].contains(r#""toast":"shown""#),

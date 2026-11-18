@@ -1127,6 +1127,13 @@ fn notices(pid: u32) -> Option<usize> {
     Some(n)
 }
 
+/// Says in the test's output, also when it passes, what the notification center showed (the harness keeps the output of
+/// passing tests to itself; a direct write to stderr goes through).
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
 /// Removes the notifications that a test left in the notification center.
 fn clear_notices() {
     use windows::UI::Notifications::ToastNotificationManager;
@@ -1188,6 +1195,10 @@ fn a_signature_that_passes_without_a_window_shows_a_toast() {
     }
     let (r, below) = toasts::rect_and_below(h);
     let work = toasts::work_area();
+    report(&format!(
+        "toast: {title:?} at ({}, {})-({}, {}), work area ({}, {})-({}, {}), extended style {ex:#x}",
+        r.left, r.top, r.right, r.bottom, work.left, work.top, work.right, work.bottom
+    ));
     assert_eq!(
         (r.left, r.top),
         (work.left, work.top),
@@ -1229,13 +1240,17 @@ fn the_window_notification_goes_with_the_window() {
     answer(false);
     assert_eq!(text(&child.wait_with_output().unwrap()), "sign 5\n");
     if !kept {
-        eprintln!(
-            "not checked: the notification center keeps no history here (history: {:?})",
+        report(&format!(
+            "relay notification: not checked, the notification center keeps no history here (history: {:?})",
             notices(pid)
-        );
+        ));
         return;
     }
     let gone = wait_until(Duration::from_secs(5), || notices(pid) == Some(0));
+    report(&format!(
+        "relay notification: in the history while the window was open, after Deny {:?}",
+        notices(pid)
+    ));
     clear_notices();
     assert!(gone, "removed with its window: {:?}", notices(pid));
 }
@@ -1257,15 +1272,18 @@ fn a_timed_out_window_leaves_its_notification() {
     });
     assert_eq!(text(&child.wait_with_output().unwrap()), "sign 5\n");
     if !kept {
-        eprintln!(
-            "not checked: the notification center keeps no history here (history: {:?})",
+        report(&format!(
+            "relay time-out notification: not checked, the notification center keeps no history here (history: {:?})",
             notices(pid)
-        );
+        ));
         return;
     }
     assert!(wait_until(Duration::from_secs(3), || screen::window().is_none()));
     std::thread::sleep(Duration::from_secs(1));
     let left = notices(pid);
+    report(&format!(
+        "relay time-out notification: in the history while the window was open, after the time-out {left:?}"
+    ));
     clear_notices();
     assert_eq!(left, Some(1), "the sign of a request that went unanswered");
 }
