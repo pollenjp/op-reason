@@ -13,6 +13,10 @@
   (the texts of crates/op-reason-core/src/messages.rs and logview.rs), the saved choice of a language is the file of
   crates/op-reason-core/src/settings.rs. The 1Password approval prompt is a plain box: it copies neither the look
   nor the words of 1Password's screen.
+- The SSH relay's scene: its window with the texts of crates/op-reason-win/src/relay_ui.rs, the toasts of signatures
+  that passed without a window as crates/op-reason-win/src/win/pass_window.rs draws them, moving by the rules and
+  times of crates/op-reason-win/src/pass_toast.rs (simulated here), and a Windows notification. The HTML page
+  docs/html/relay-screens.html plays the same; --check also looks for the copied texts and times in it.
 - Names are examples only (repository, directory, process ids).
 
 To change a text or the layout, change this script and run it again; do not edit the SVGs. Standard library only.
@@ -194,6 +198,67 @@ WIDE = (
 )
 
 
+# The SSH relay (crates/op-reason-win/src/relay_ui.rs): its window and the toast of a signature that passed
+RELAY = {
+    "en": {
+        "title": "SSH key: allow this call?",
+        "time": "Time",
+        "caller": "Caller",
+        "reason": "Reason",
+        "command": "Command",
+        "destination": "Destination",
+        "purpose": "For",
+        "host_key": "host key {0}",
+        "userauth": "logging in as {0}",
+        "claude_pid": "Claude Code (pid {0})",
+        "footer": "per-call mode · an answer covers this call for {0} minutes",
+        "allow": "Allow this call",
+        "deny": "Deny",
+        "pass_word": "Passed",
+        "pass_call": "allowed for this call",
+        "pass_terminal": "allowed for this terminal",
+        "no_reason": "no reason given",
+    },
+    "ja": {
+        "title": "SSH の鍵: この呼び出しを許可しますか",
+        "time": "時刻",
+        "caller": "呼び手",
+        "reason": "理由",
+        "command": "コマンド",
+        "destination": "接続先",
+        "purpose": "用途",
+        "host_key": "ホストの鍵 {0}",
+        "userauth": "{0} としてログイン",
+        "claude_pid": "Claude Code (pid {0})",
+        "footer": "呼び出しごとに決めるモード · 答えはこの呼び出しに {0} 分効きます",
+        "allow": "この呼び出しを許可",
+        "deny": "拒否",
+        "pass_word": "通過",
+        "pass_call": "この呼び出しの許可",
+        "pass_terminal": "ターミナルの許可",
+        "no_reason": "理由なし",
+    },
+}
+NOTIFY = {  # crates/op-reason-win/src/ui.rs: the second line of a window's notification, and the short name of a person
+    "en": {"toast_reason": "Reason: {0}", "human": "Human"},
+    "ja": {"toast_reason": "理由: {0}", "human": "人"},
+}
+# The toasts (crates/op-reason-win/src/pass_toast.rs): milliseconds and DIPs
+SHOW_MS, FADE_MS, ENTER_MS, APPEAR_MS, EVICT_MS, BUMP_MS = 4000, 800, 240, 220, 140, 420
+MAX_CARDS = 3
+EDGE, GAP, CARD_W, CARD_H, DROP = 12.0, 8.0, 300.0, 70.0, 12.0
+EVICT_LINGER_MS = 40  # pass_toast.rs: a card pushed out is dropped this long after it has gone transparent
+# A card as crates/op-reason-win/src/win/pass_window.rs draws it
+TOAST_TEXT_X, TOAST_TEXT_W = 36.0, CARD_W - 36.0 - 12.0
+TOAST_LINES = (9.0, 26.0, 43.0)  # the tops of lines 1, 2 and 3; their baselines are 13, 13 and 12 below
+TOAST_BG, TOAST_GREEN, TOAST_PALE, TOAST_DIM, TOAST_BORDER = "#ffffe0", "#15803d", "#dcfce7", "#555555", "#808080"
+# The relay window's buttons (crates/op-reason-win/src/win/window.rs)
+BUTTON_H, BUTTON_TOP_GAP, BUTTON_PAD_X, BUTTON_MIN_W, BUTTON_RADIUS = 28.0, 10.0, 14.0, 96.0, 4.0
+BUTTON_FILL = "#fafafa"
+# The HTML page that plays the relay's scene, and what --check looks for in it
+RELAY_HTML = "docs/html/relay-screens.html"
+
+
 def sources() -> dict:
     """What --check expects to find in each Rust file: the copied texts, formats and sizes."""
     ui = ['"Claude Code (pid {pid})"', '"{repo} ({branch}) · {place}"']
@@ -248,8 +313,52 @@ def sources() -> dict:
         "pub const VERSION: u64 = 1;",
         'format!(r#"{{"v":{VERSION},"lang":{lang_json}}}"#)',
     ]
+    relay_ui = [f'"{v}"' for t in RELAY.values() for v in t.values()]
+    ui += [f'"{v}"' for t in NOTIFY.values() for v in t.values()]
+    pass_toast = [
+        f"pub const SHOW_MS: u64 = {SHOW_MS};",
+        f"pub const FADE_MS: u64 = {FADE_MS};",
+        f"pub const ENTER_MS: u64 = {ENTER_MS};",
+        f"pub const APPEAR_MS: u64 = {APPEAR_MS};",
+        f"pub const EVICT_MS: u64 = {EVICT_MS};",
+        f"pub const BUMP_MS: u64 = {BUMP_MS};",
+        f"pub const MAX_CARDS: usize = {MAX_CARDS};",
+        f"pub const EDGE: f32 = {EDGE:.1f};",
+        f"pub const GAP: f32 = {GAP:.1f};",
+        f"pub const CARD_W: f32 = {CARD_W:.1f};",
+        f"pub const CARD_H: f32 = {CARD_H:.1f};",
+        f"pub const DROP: f32 = {DROP:.1f};",
+        f"const EVICT_LINGER_MS: u64 = {EVICT_LINGER_MS};",
+    ]
+    pass_window = [
+        f"const TEXT_X: f32 = {TOAST_TEXT_X:.1f};",
+        "const TEXT_W: f32 = CARD_W - TEXT_X - 12.0;",
+        f"const LINE1_TOP: f32 = {TOAST_LINES[0]:.1f};",
+        f"const LINE2_TOP: f32 = {TOAST_LINES[1]:.1f};",
+        f"const LINE3_TOP: f32 = {TOAST_LINES[2]:.1f};",
+        "const BODY_LINE: (f32, f32) = (17.0, 13.0);",
+        "const SMALL_LINE: (f32, f32) = (16.0, 12.0);",
+        "const CHECK: (f32, f32, f32) = (18.0, 17.5, 8.0);",
+        "const RADIUS: f32 = 6.0;",
+        "const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);",
+        "const GREEN: D2D1_COLOR_F = rgb(0x15, 0x80, 0x3D);",
+        "const PALE_GREEN: D2D1_COLOR_F = rgb(0xDC, 0xFC, 0xE7);",
+        "const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);",
+        "const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);",
+    ]
+    window += [
+        f"const BUTTON_H: f32 = {BUTTON_H:.1f};",
+        f"const BUTTON_TOP_GAP: f32 = {BUTTON_TOP_GAP:.1f};",
+        f"const BUTTON_PAD_X: f32 = {BUTTON_PAD_X:.1f};",
+        f"const BUTTON_MIN_W: f32 = {BUTTON_MIN_W:.1f};",
+        f"const BUTTON_RADIUS: f32 = {BUTTON_RADIUS:.1f};",
+        "const BUTTON_FILL: D2D1_COLOR_F = rgb(0xFA, 0xFA, 0xFA);",
+    ]
     return {
         "crates/op-reason-win/src/ui.rs": ui,
+        "crates/op-reason-win/src/relay_ui.rs": relay_ui,
+        "crates/op-reason-win/src/pass_toast.rs": pass_toast,
+        "crates/op-reason-win/src/win/pass_window.rs": pass_window,
         "crates/op-reason-win/src/win/window.rs": window,
         "crates/op-reason-core/src/messages.rs": messages,
         "crates/op-reason-core/src/logview.rs": logview,
@@ -365,6 +474,27 @@ TEXTS = {
             "The window turns Japanese at once, and the 1Password prompt keeps the focus",
             "The next call is in Japanese too: the window, the notification, the messages and op-reason-log",
         ),
+        "relay.title": "op-reason's SSH relay: the window, the toasts and the notifications",
+        "relay.desc": (
+            "Animation of a Windows desktop. A signature that passes without a window shows a small light yellow "
+            "card, a toast, at the top left: Passed · Human, the ssh command and its destination, allowed for this "
+            "terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: "
+            "one card counts them (×2 … ×8) and shows the last host. Three other calls each put a card on top and "
+            "push the others down; a fourth pushes the oldest out at once; four seconds after its last signature each "
+            "card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification "
+            "at the bottom right, while another toast comes at the top left; a click on Allow this call closes the "
+            "window and its notification together, and the call's later signatures come as one toast at the top "
+            "left (×3)."
+        ),
+        "relay.steps": (
+            "A signature that passes without a window: a toast at the top left",
+            "One card per call: ×N and its last destination, four seconds again",
+            "Another call's card goes on top; the others move down",
+            "A fourth card pushes the oldest out at once",
+            "Four seconds after its last signature, a card fades out",
+            "A call that asks: the window at the top right, its notification at the bottom right, gone together",
+        ),
+        "relay.app": "Windows PowerShell",
     },
     "ja": {
         "call.title": "op-reason: 1 回の呼び出し",
@@ -443,6 +573,25 @@ TEXTS = {
             "窓はその場で日本語に変わり、フォーカスは承認の画面のまま",
             "次の呼び出しも日本語: 窓・通知・端末の文・op-reason-log",
         ),
+        "relay.title": "op-reason の SSH の中継: 窓・トースト・通知",
+        "relay.desc": (
+            "アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を"
+            "出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で薄れて消える。ansible の "
+            "1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後のホストを出す。ほかの 3 つの"
+            "呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、4 枚目は一番古いものをすぐ消す。どのカードも"
+            "最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason の窓で聞き、右下に Windows "
+            "の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、"
+            "その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。"
+        ),
+        "relay.steps": (
+            "窓を出さずに通った署名: 左上にトースト",
+            "同じ呼び出しは 1 枚: ×N と最後の接続先、4 秒を数え直す",
+            "別の呼び出しは一番上に入り、ほかは下へずれる",
+            "4 枚目が来たら、一番古いカードをすぐ消す",
+            "最後の署名から 4 秒で薄れて消える",
+            "聞く呼び出し: 窓は右上、通知は右下。窓と一緒に消える",
+        ),
+        "relay.app": "Windows PowerShell",
     },
 }
 
@@ -607,6 +756,7 @@ class Canvas:
         self.m = Motion(duration, rest)
         self.defs: list = []
         self.body: list = []
+        self.css: list = []  # rules of this scene only
 
     def add(self, *parts: str) -> None:
         self.body.extend(p for p in parts if p)
@@ -627,6 +777,7 @@ class Canvas:
                 ".b{font-weight:700}",
                 ".tb{transform-box:fill-box;transform-origin:50% 50%}",
                 ".blink{animation:blink 1s step-end infinite}@keyframes blink{50%{opacity:0}}",
+                *self.css,
                 *self.m.rules,
                 # reduced motion: every element keeps its own style, the frame at the rest time
                 "@media (prefers-reduced-motion:reduce){*{animation:none!important}}",
@@ -1390,12 +1541,464 @@ def scene_lang(lang: str) -> str:
     return c.render(tx["lang.title"], tx["lang.desc"])
 
 
+
+# ---- the SSH relay: its window, the toasts and the notifications ----
+
+EASE_OUT = "cubic-bezier(.33,1,.68,1)"  # pass_toast.rs eases moves out: 1 - (1 - x)^3
+RELAY_CALLS = {  # the example calls of the scene: caller, command, destination, answer ("call", "terminal"), reason
+    "pwsh": ("human", "ssh.exe -T git@github.com", "git@github.com", "terminal", None),
+    "ansible": ("human", "ssh.exe -o ControlMaster=auto {host} \"/bin/sh -c 'echo ~'\"", "{host}", "call", "config"),
+    "c1": ("claude", "ssh.exe git@github.com \"git-receive-pack 'me/r.git'\"", "git@github.com", "call", "push"),
+    "c2": ("human", "ssh.exe git@github.com \"git-upload-pack 'me/infra.git'\"", "git@github.com", "terminal", None),
+    "c3": ("git.exe", 'ssh.exe -o SendEnv=GIT_PROTOCOL git@github.com "git-upload-pack \'me/app.git\'"', "git@github.com",
+           "call", None),
+    "c4": ("human", "ssh.exe -x -oRemoteCommand=none deploy@web-01 sftp", "deploy@web-01", "terminal", None),
+    "deploy": ("claude", 'ssh.exe deploy@web-02 "systemctl status app"', "deploy@web-02", "call", "service"),
+}
+RELAY_REASONS = {
+    "en": {"config": "roll out the config", "push": "push the login fix", "service": "check that the service runs"},
+    "ja": {"config": "設定を配る", "push": "ログインの修正を push する", "service": "サービスが動いているかを見る"},
+}
+HOST_KEY = "SHA256:x5QvN2…"
+
+
+def est_width(s: str, size: float, bold: bool = False) -> float:
+    """About how wide a text is in Segoe UI (Yu Gothic UI for Japanese): a width per kind of character. The scene sets
+    each line's textLength to it, so that every viewer's font draws it in that room."""
+    w = 0.0
+    for ch in s:
+        u = ord(ch)
+        if any(a <= u <= b for a, b in WIDE):
+            w += 1.0
+        elif ch in " ·":
+            w += 0.27
+        elif ch in "ijlt.,:;'|!()[]/\\-":
+            w += 0.3
+        elif ch in "mwMW@":
+            w += 0.85
+        elif ch in "→×~":
+            w += 0.62
+        elif ch.isupper() or ch.isdigit():
+            w += 0.58
+        else:
+            w += 0.5
+    return w * size * (1.06 if bold else 1.0)
+
+
+def fit(s: str, size: float, width: float, bold: bool = False) -> str:
+    """`s` cut with an ellipsis to fit `width`, as DirectWrite trims the toast's lines."""
+    if est_width(s, size, bold) <= width:
+        return s
+    while s and est_width(s + "…", size, bold) > width:
+        s = s[:-1]
+    return s.rstrip() + "…"
+
+
+def toast_texts(lang: str, key: str, host: str = "") -> dict:
+    """The toast of a signature of an example call, as relay_ui::pass_texts builds it."""
+    t = RELAY[lang]
+    caller, command, dest, answer, reason = RELAY_CALLS[key]
+    names = {"human": NOTIFY[lang]["human"], "claude": "Claude Code"}
+    why = t["pass_terminal"] if answer == "terminal" else t["pass_call"]
+    return {
+        "word": t["pass_word"],
+        "caller": names.get(caller, caller),
+        "command": command.replace("{host}", host),
+        "dest": dest.replace("{host}", host),
+        "why": f"{why} · {RELAY_REASONS[lang][reason] if reason else t['no_reason']}",
+    }
+
+
+def toast_slot(i: int) -> float:
+    """pass_toast.rs: slot_y."""
+    return EDGE + i * (CARD_H + GAP)
+
+
+class Seg:
+    """A value moving from `frm` to `to` in `dur` ms from `t`, easing out or linear (pass_toast.rs: Anim)."""
+
+    def __init__(self, t: int, frm: float, to: float, dur: int, ease: bool) -> None:
+        self.t, self.frm, self.to, self.dur, self.ease = t, frm, to, dur, ease
+
+
+def seg_value(segs: list, t: int) -> float:
+    started = [x for x in segs if x.t <= t]
+    if not started:
+        return segs[0].frm
+    x = started[-1]
+    if x.dur == 0 or t >= x.t + x.dur:
+        return x.to
+    k = (t - x.t) / x.dur
+    return x.frm + (x.to - x.frm) * (1 - (1 - k) ** 3 if x.ease else k)
+
+
+class SimCard:
+    """A card of the simulation: its motion, its texts over time, its glows and the starts of its four seconds."""
+
+    def __init__(self, cid: int, call: str, t: int, texts: dict, count: int) -> None:
+        self.id, self.call = cid, call
+        top = toast_slot(0)
+        self.y = [Seg(t, top - DROP, top, ENTER_MS, True)]
+        self.op = [Seg(t, 0.0, 1.0, APPEAR_MS, False)]
+        self.variants = [(t, texts, count)]
+        self.bumps: list = []
+        self.arms = [t]
+        self.fades: list = []
+        self.armed = t
+        self.state = ("live", 0)
+        self.gone: int | None = None
+
+
+def simulate_toasts(events: list, end: int) -> list:
+    """The cards of pass_toast.rs's Stack for `events` ((ms, call, answer, texts) in time order), with their motion."""
+    held: list = []  # holding a place, top first
+    leaving: list = []
+    made: list = []
+    counts: dict = {}
+
+    def due(c: SimCard) -> int:
+        kind, since = c.state
+        if kind == "live":
+            return c.armed + SHOW_MS
+        if kind == "fading":
+            return since + FADE_MS
+        return since + EVICT_MS + EVICT_LINGER_MS
+
+    def layout(t: int) -> None:
+        for i, c in enumerate(held):
+            to = toast_slot(i)
+            if c.y[-1].to != to:
+                c.y.append(Seg(t, seg_value(c.y, t), to, ENTER_MS, True))
+
+    def advance(now: int) -> None:
+        while True:
+            due_now = [(due(c), 0, i) for i, c in enumerate(held)] + [(due(c), 1, i) for i, c in enumerate(leaving)]
+            due_now = [d for d in due_now if d[0] <= now]
+            if not due_now:
+                return
+            t, is_leaving, i = min(due_now, key=lambda d: d[0])
+            if is_leaving:
+                leaving.pop(i).gone = t
+                continue
+            c = held[i]
+            if c.state[0] == "live":
+                c.state = ("fading", t)
+                c.op.append(Seg(t, seg_value(c.op, t), 0.0, FADE_MS, False))
+                c.fades.append(t)
+            else:
+                held.pop(i).gone = t
+                layout(t)
+
+    for t, call, answer, texts in events:
+        advance(t)
+        n = counts[(call, answer)] = counts.get((call, answer), 0) + 1
+        hit = next((c for c in held if c.call == call), None)
+        if hit:
+            hit.variants.append((t, texts, n))
+            hit.bumps.append(t)
+            hit.arms.append(t)
+            hit.armed = t
+            if hit.state[0] == "fading":
+                hit.op.append(Seg(t, seg_value(hit.op, t), 1.0, APPEAR_MS, False))
+            hit.state = ("live", 0)
+            continue
+        card = SimCard(len(made) + 1, call, t, texts, n)
+        made.append(card)
+        held.insert(0, card)
+        while len(held) > MAX_CARDS:
+            old = held.pop()
+            old.op.append(Seg(t, seg_value(old.op, t), 0.0, EVICT_MS, False))
+            old.state = ("leaving", t)
+            leaving.append(old)
+        layout(t)
+    advance(end)
+    return made
+
+
+def seg_stops(segs: list, fmt) -> list:
+    """Keyframe stops (seconds) of a value made of segments; a segment that the next one starts in is cut short."""
+    stops = [(0.0, fmt(segs[0].frm), STEP)]
+    for k, x in enumerate(segs):
+        nxt = segs[k + 1].t if k + 1 < len(segs) else None
+        stops.append((x.t / 1000, fmt(x.frm), (EASE_OUT if x.ease else "linear") if x.dur else STEP))
+        if x.dur and (nxt is None or x.t + x.dur <= nxt):
+            stops.append(((x.t + x.dur) / 1000, fmt(x.to), STEP))
+    return stops
+
+
+def glow_value(ms: float) -> float:
+    """pass_toast.rs: glow."""
+    if ms < 0 or ms >= BUMP_MS:
+        return 0.0
+    p = ms / BUMP_MS
+    return p / 0.25 if p < 0.25 else 1 - (p - 0.25) / 0.75
+
+
+def toast_card(c: Canvas, card: SimCard) -> str:
+    """A card of the simulation where pass_window.rs draws it, moving and fading as simulated: shadow, glow, light
+    yellow face with a gray border, the green check, its texts over time and the line of its four seconds (in steps of
+    half a second)."""
+    m = c.m
+    rest = round(m.rest * 1000)
+    shown = card.y[0].t <= rest and (card.gone is None or card.gone > rest)
+    rest_y = seg_value(card.y, rest) if shown else toast_slot(0)
+    x = EDGE
+    ystops = seg_stops(card.y, lambda v: f"transform:translateY({num(v - rest_y)}px)")
+    ostops = seg_stops(card.op, lambda v: f"opacity:{num(v)}")
+    if card.gone is not None:
+        ostops.append((card.gone / 1000, "opacity:0", STEP))
+    if card.bumps:
+        gstops = [(0.0, "opacity:0", STEP)]
+        for k, b in enumerate(card.bumps):
+            nxt = card.bumps[k + 1] if k + 1 < len(card.bumps) else b + BUMP_MS
+            peak, end = min(b + BUMP_MS / 4, nxt), min(b + BUMP_MS, nxt)
+            gstops += [
+                (b / 1000, "opacity:0", "linear"),
+                (peak / 1000, f"opacity:{num(glow_value(peak - b))}", "linear"),
+                (end / 1000, f"opacity:{num(glow_value(end - b) if end < b + BUMP_MS else 0)}", STEP),
+            ]
+        glow_attr = m.keyframes(gstops)
+    else:
+        glow_attr = ' style="opacity:0"'
+    ends = sorted([*card.arms[1:], *card.fades, *([card.gone] if card.gone is not None else [])])
+    bar = [(0.0, "transform:scaleX(0)")]
+    for a in card.arms:
+        end = min((e for e in ends if e > a), default=a + SHOW_MS)
+        k = 0
+        while a + k * 500 < end and k * 500 < SHOW_MS:
+            bar.append(((a + k * 500) / 1000, f"transform:scaleX({num(1 - k * 500 / SHOW_MS)})"))
+            k += 1
+        bar.append((end / 1000, "transform:scaleX(0)"))
+    lx = x + TOAST_TEXT_X
+    parts = [
+        f'<rect x="{num(x - 1)}" y="1" width="{num(CARD_W + 2)}" height="{num(CARD_H + 2)}" rx="7" fill="#000" '
+        'fill-opacity=".16"/>',
+        f'<rect x="{num(x - 2.5)}" y="-2.5" width="{num(CARD_W + 5)}" height="{num(CARD_H + 5)}" rx="8.5" fill="none" '
+        f'stroke="{TOAST_GREEN}" stroke-width="2.5" stroke-opacity=".9"{glow_attr}/>',
+        f'<rect x="{num(x)}" y="0" width="{num(CARD_W)}" height="{num(CARD_H)}" rx="6" fill="{TOAST_BG}"/>',
+        f'<rect x="{num(x + 0.5)}" y=".5" width="{num(CARD_W - 1)}" height="{num(CARD_H - 1)}" rx="6" fill="none" '
+        f'stroke="{TOAST_BORDER}" stroke-opacity=".8"/>',
+        f'<circle cx="{num(x + 18)}" cy="17.5" r="8" fill="{TOAST_GREEN}"/>',
+        f'<path d="M{num(x + 14)},17.8L{num(x + 16.8)},20.6L{num(x + 22.2)},14.5" fill="none" stroke="#fff" '
+        'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+        f'<rect x="{num(lx)}" y="{num(CARD_H - 5)}" width="{num(TOAST_TEXT_W)}" height="2" fill="{TOAST_GREEN}" '
+        f'fill-opacity=".9"{m.track(bar, cls="tl")}/>',
+    ]
+    for k, (t, texts, n) in enumerate(card.variants):
+        until = card.variants[k + 1][0] if k + 1 < len(card.variants) else card.gone
+        head_w = est_width(f"{texts['word']} · {texts['caller']}", BODY_SIZE, True)
+        line1 = (
+            f'<text x="{num(lx)}" y="22" font-size="{num(BODY_SIZE)}" textLength="{num(head_w)}" lengthAdjust="spacing" '
+            f'xml:space="preserve"><tspan class="b" fill="{TOAST_GREEN}">{esc(texts["word"])}</tspan>'
+            f'<tspan class="b" fill="#000"> · {esc(texts["caller"])}</tspan></text>'
+        )
+        chip = ""
+        if n >= 2:
+            label = f"×{n}"
+            cx, cw = lx + head_w + 6, est_width(label, 11, True)
+            chip = (
+                f'<rect x="{num(cx)}" y="10" width="{num(cw + 10)}" height="15" rx="4" fill="{TOAST_PALE}"/>'
+                f'<text x="{num(cx + 5)}" y="22" font-size="11" fill="{TOAST_GREEN}" class="b" textLength="{num(cw)}" '
+                f'lengthAdjust="spacing">{esc(label)}</text>'
+            )
+        dest = f" → {texts['dest']}"
+        dest_w = est_width(dest, BODY_SIZE)
+        command = fit(texts["command"], BODY_SIZE, TOAST_TEXT_W - dest_w)
+        line2_w = est_width(command, BODY_SIZE) + dest_w
+        why = fit(texts["why"], 11, TOAST_TEXT_W)
+        lines = (
+            line1
+            + chip
+            + f'<text x="{num(lx)}" y="39" font-size="{num(BODY_SIZE)}" fill="#000" textLength="{num(line2_w)}" '
+            f'lengthAdjust="spacing" xml:space="preserve">{esc(command + dest)}</text>'
+            + f'<text x="{num(lx)}" y="55" font-size="11" fill="{TOAST_DIM}" textLength="{num(est_width(why, 11))}" '
+            f'lengthAdjust="spacing" xml:space="preserve">{esc(why)}</text>'
+        )
+        parts.append(g(m.at(t / 1000, None if until is None else until / 1000), lines))
+    inner = g(m.keyframes(ostops), *parts)
+    return f'<g transform="translate(0,{num(rest_y)})">{g(m.keyframes(ystops), inner)}</g>'
+
+
+def relay_window(c: Canvas, x: float, y: float, lang: str, values: tuple, press: float) -> tuple:
+    """The relay's window that asks (per-call), with its frame's top left at (x, y), as window.rs draws it with the
+    texts of relay_ui.rs: the title, six of its lines, the footer and the language switch, and its row of buttons
+    (Allow this call at the left, Deny at the right). Returns the parts, the height and the middle of Allow."""
+    t = RELAY[lang]
+    labels = (t["time"], t["caller"], t["reason"], t["command"], t["destination"], t["purpose"])
+    text_h, base = window_layout(len(labels), 1)
+    client_h = text_h + BUTTON_TOP_GAP + BUTTON_H
+    h = 1 + WIN_CAPTION + client_h + 1
+    cx, cy = x + 1, y + 1 + WIN_CAPTION
+    tx = cx + PAD_LEFT
+    right = tx + TEXT_W
+    bx = x + WIN_W - 2 - 19
+    out = [
+        f'<rect x="{num(x)}" y="{num(y)}" width="{num(WIN_W)}" height="{num(h)}" fill="{WIN_CAPTION_BG}" '
+        'filter="url(#shadow)"/>',
+        f'<rect x="{num(cx)}" y="{num(cy)}" width="{num(WIN_W - 2)}" height="{num(client_h)}" fill="{WIN_BG}"/>',
+        text(x + 10, y + 20, t["title"], 12, WIN_CAPTION_INK),
+        f'<rect x="{num(bx)}" y="{num(y + 8)}" width="19" height="19" fill="{WIN_CLOSE}"/>'
+        f'<path d="M{num(bx + 6.5)},{num(y + 14.5)}l6,6M{num(bx + 12.5)},{num(y + 14.5)}l-6,6" stroke="#f6f6f6" '
+        'stroke-width="1.6"/>',
+        f'<rect x="{num(x + 0.5)}" y="{num(y + 0.5)}" width="{num(WIN_W - 1)}" height="{num(h - 1)}" fill="none" '
+        f'stroke="{WIN_BORDER}"/>',
+        text(tx, cy + base[0], t["title"], TITLE_SIZE, WIN_INK, True),
+    ]
+    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
+        out.append(
+            f'<text x="{num(tx)}" y="{num(cy + base[i + 1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_INK}">'
+            f'<tspan class="b">{esc(label)}: </tspan>{esc(value)}</text>'
+        )
+    footer = t["footer"].replace("{0}", "60")
+    footer_w = min(est_width(footer, BODY_SIZE, True), TEXT_W - 79 - 12)  # window.rs: narrower by the switch
+    out.append(
+        f'<text x="{num(tx)}" y="{num(cy + base[-1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_FOOTER}" class="b" '
+        f'textLength="{num(footer_w)}" lengthAdjust="spacingAndGlyphs">{esc(footer)}</text>'
+    )
+    out.append(switch(right, cy + base[-1], lang))
+    top = cy + client_h - PAD_BOTTOM - BUTTON_H
+    allow_w = max(est_width(t["allow"], BODY_SIZE) + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
+    deny_w = max(est_width(t["deny"], BODY_SIZE) + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
+    for left, w, label, edge, ink in (
+        (tx, allow_w, t["allow"], WIN_BAR, WIN_INK),
+        (right - deny_w, deny_w, t["deny"], WIN_FOOTER, WIN_FOOTER),
+    ):
+        out.append(
+            f'<rect x="{num(left + 0.5)}" y="{num(top + 0.5)}" width="{num(w - 1)}" height="{num(BUTTON_H - 1)}" '
+            f'rx="{num(BUTTON_RADIUS)}" fill="{BUTTON_FILL}" stroke="{edge}"/>'
+            + text(left + w / 2, top + BUTTON_H / 2 + BODY_SIZE * 0.36, label, BODY_SIZE, ink, anchor="middle")
+        )
+    out.append(
+        f'<rect x="{num(tx + 1)}" y="{num(top + 1)}" width="{num(allow_w - 2)}" height="{num(BUTTON_H - 2)}" '
+        f'rx="{num(BUTTON_RADIUS)}" fill="#000"{c.m.pulse(press, 0.25, "opacity:.16")}/>'
+    )
+    return "".join(out), h, (tx + allow_w / 2, top + BUTTON_H / 2)
+
+
+def notification(x: float, y: float, w: float, lang: str, lines: tuple) -> str:
+    """A Windows notification (light, as Windows 11 draws one): the app's name, the title and two lines."""
+    app = TEXTS[lang]["relay.app"]
+    body = [fit(s, 12, w - 28) for s in lines[1:]]
+    return (
+        f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="96" rx="8" fill="#f9f9f9" stroke="#d6d6d6" '
+        'filter="url(#shadow)"/>'
+        f'<rect x="{num(x + 14)}" y="{num(y + 12)}" width="13" height="13" rx="2.5" fill="#2671be"/>'
+        f'<path d="M{num(x + 17)},{num(y + 15.5)}l3,3l-3,3" fill="none" stroke="#fff" stroke-width="1.4"/>'
+        + text(x + 34, y + 22.5, app, 10.5, "#5f5f5f")
+        + text(x + 14, y + 46, fit(lines[0], 12.5, w - 28, True), 12.5, INK, True)
+        + text(x + 14, y + 65, body[0], 12, "#333333")
+        + text(x + 14, y + 83, body[1], 12, "#333333")
+    )
+
+
+def editor_window(x: float, y: float, w: float, h: float) -> str:
+    """An app on the desktop, under everything (dark, its text drawn as bars)."""
+    bars = "".join(
+        f'<rect x="{num(x + 14)}" y="{num(y + 54 + 16 * i)}" width="{num((w - 28) * (0.72, 0.54, 0.86)[i % 3])}" '
+        'height="7" rx="3.5" fill="#fff" fill-opacity=".08"/>'
+        for i in range(int((h - 70) // 16))
+    )
+    return (
+        f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="{num(h)}" rx="8" fill="#262b31" stroke="#3c444c" '
+        'filter="url(#shadow)"/>'
+        f'<path d="M{num(x)},{num(y + 30)}V{num(y + 8)}a8,8 0 0 1 8,-8H{num(x + w - 8)}a8,8 0 0 1 8,8V{num(y + 30)}Z" '
+        'fill="#31373e"/>'
+        f'<line x1="{num(x)}" y1="{num(y + 40)}" x2="{num(x + w)}" y2="{num(y + 40)}" stroke="#3c444c"/>' + bars
+    )
+
+
+def scene_relay(lang: str) -> str:
+    """The SSH relay: toasts at the top left (one per call, three at most, four seconds), and the window that asks at
+    the top right with its notification at the bottom right, gone together."""
+    tx = TEXTS[lang]
+    r = RELAY[lang]
+    d = 33.0
+    screen_h = 470
+    # without motion: the window asks, its notification is at the bottom right, and a toast is at the top left
+    c = Canvas(screen_h + 44, d, rest=24.4)
+    c.css.append(".tl{transform-box:fill-box;transform-origin:0 50%}")
+    m = c.m
+    c.add(desk(0, 0, W, screen_h), editor_window(80, 92, 440, 270), taskbar(screen_h - 28, 28, "10:42"))
+    events = [(300, "pwsh", "a1", toast_texts(lang, "pwsh"))]
+    events += [(6000 + 300 * i, "ansible", "a2", toast_texts(lang, "ansible", f"web-{i + 1:02d}")) for i in range(8)]
+    events += [(t, k, f"a-{k}", toast_texts(lang, k)) for t, k in ((13200, "c1"), (14000, "c2"), (14800, "c3"))]
+    events += [(16800, "c4", "a-c4", toast_texts(lang, "c4"))]
+    # a new command typed in the first terminal: another call, on the same answer for the terminal
+    events += [(23400, "pwsh2", "a1", toast_texts(lang, "pwsh"))]
+    events += [(t, "deploy", "a-deploy", toast_texts(lang, "deploy")) for t in (26700, 27100, 27500)]
+    t_open, t_notify, t_press, t_close = 22.8, 22.9, 25.5, 26.1
+
+    # the window that asks, at the top right (it opens and closes with a slide), and its notification
+    reason = RELAY_REASONS[lang]["service"]
+    command = RELAY_CALLS["deploy"][1]
+    values = (
+        f"{DAY} 10:42:07",
+        r["claude_pid"].replace("{0}", "4242"),
+        reason,
+        command,
+        f"deploy@web-02 · {r['host_key'].replace('{0}', HOST_KEY)}",
+        r["userauth"].replace("{0}", "deploy"),
+    )
+    win, _, allow = relay_window(c, W - WIN_RIGHT - WIN_W, 16, lang, values, t_press)
+    slide = {"hidden": "opacity:0;transform:translateY(-8px)", "shown": "opacity:1;transform:translateY(0)"}
+    c.add(g(m.at(t_open, t_close, 0.3, **slide), win))
+    nw = 320
+    note = notification(
+        W - 12 - nw,
+        screen_h - 28 - 12 - 96,
+        nw,
+        lang,
+        (r["title"], NOTIFY[lang]["toast_reason"].replace("{0}", reason), f"Claude Code · {command}"),
+    )
+    c.add(
+        g(
+            m.at(t_notify, t_close, 0.3, hidden="opacity:0;transform:translateX(24px)", shown="opacity:1;transform:translateX(0)"),
+            note,
+        )
+    )
+
+    # the toasts, drawn last so that they are on top
+    for card in simulate_toasts(events, round(d * 1000)):
+        c.add(toast_card(c, card))
+
+    rest = (500, 410)
+    c.add(
+        mouse(m, rest, ((24.6, 25.3, allow), (25.9, 26.6, rest))),
+        ripple(m, allow, t_press),
+        captions(
+            c,
+            screen_h,
+            44,
+            list(zip((0.0, 5.6, 13.0, 16.6, 18.4, 22.4), tx["relay.steps"], strict=True)),
+        ),
+    )
+    return c.render(tx["relay.title"], tx["relay.desc"])
+
+
+def relay_html_needles() -> list:
+    """What the HTML page must hold: the times and counts of pass_toast.rs, and the texts of the toast and the window."""
+    times = [
+        f"SHOW = {SHOW_MS}",
+        f"FADE = {FADE_MS}",
+        f"ENTER = {ENTER_MS}",
+        f"APPEAR = {APPEAR_MS}",
+        f"EVICT = {EVICT_MS}",
+        f"BUMP = {BUMP_MS}",
+        f"MAX = {MAX_CARDS}",
+        f"GAP = {GAP:g}",
+        f"EDGE = {EDGE:g}",
+    ]
+    keys = ("title", "pass_word", "pass_call", "pass_terminal", "no_reason", "allow", "deny")
+    return times + [RELAY[lang][k] for lang in LANGS for k in keys]
+
+
 SCENES = (
     ("readme-1-call", scene_call),
     ("readme-2-approval-leak", scene_leak),
     ("readme-3-no-reason", scene_refuse),
     ("readme-4-log", scene_log),
     ("readme-5-language", scene_lang),
+    ("readme-6-relay-screens", scene_relay),
 )
 
 
@@ -1413,6 +2016,12 @@ def check_sources() -> list:
         for lang in LANGS
         if " ".join(FOOTER_LINES[lang]) != WINDOW[lang]["footer"]
     ]
+    page = ROOT / RELAY_HTML
+    if not page.is_file():
+        problems.append(f"{RELAY_HTML} is missing")
+    else:
+        body = page.read_text(encoding="utf-8")
+        problems += [f"{RELAY_HTML} no longer has {n!r}" for n in relay_html_needles() if n not in body]
     return problems
 
 
