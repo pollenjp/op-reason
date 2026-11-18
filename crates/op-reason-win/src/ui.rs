@@ -28,6 +28,20 @@ pub struct Texts {
     /// Shown only while another op.exe runs.
     pub others: String,
     pub toast: Vec<String>,
+    /// The buttons under the footer (the SSH relay's window, [`crate::relay_ui`]); none for `op` calls.
+    pub buttons: Vec<(Button, String)>,
+}
+
+/// A button of the SSH relay's window: only a press and a release on it answers (design
+/// `2026-11-17-ssh-relay-design.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    /// Allow this call.
+    Allow,
+    /// Allow the terminal (a person's commands) for the time limit.
+    AllowTerminal,
+    /// Deny.
+    Deny,
 }
 
 /// The block of references: a head, the references shown (each with the URL that opens its item, when it has one),
@@ -373,6 +387,7 @@ pub fn build(f: &Facts, lang: Lang, account: Option<&str>) -> Texts {
         footer: t.footer.to_owned(),
         others: t.others.to_owned(),
         toast,
+        buttons: Vec::new(),
     }
 }
 

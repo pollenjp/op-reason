@@ -18,6 +18,9 @@ Every call
 It was written for AI coding agents (such as Claude Code) that run `op` on your behalf: you see what each request is
 for before you approve it, one approval never covers later requests, and you can review every call afterwards.
 
+op-reason can stand in front of the 1Password SSH agent too, so that every use of an SSH key says who asks and why:
+see [SSH keys: the relay](#ssh-keys-the-relay).
+
 ## Why a wrapper
 
 - **One approval leaks to later calls.** The 1Password desktop app binds a CLI approval to the process that started
@@ -73,6 +76,7 @@ sha256sum -c "op-reason-${arch}-linux.sha256"
 install -m 755 "op-reason-${arch}-linux" ~/.local/bin/op-reason
 ln -sf op-reason ~/.local/bin/op-reason-log
 ln -sf op-reason ~/.local/bin/op     # optional: make `op` the wrapper (~/.local/bin must come first in PATH)
+ln -sf op-reason ~/.local/bin/op-reason-ssh   # optional: ssh through the SSH relay (below)
 ```
 
 The WSL executable finds `op-reason.exe` in the `PATH` (WSL adds the Windows `PATH`) or where `OPREASON_EXE` points
@@ -82,7 +86,7 @@ it.
 ### With Nix
 
 ```sh
-nix profile install github:pollenjp/op-reason      # op-reason, op-reason-log
+nix profile install github:pollenjp/op-reason      # op-reason, op-reason-log, op-reason-ssh
 nix profile install github:pollenjp/op-reason#op   # the same, plus `op`
 ```
 
@@ -281,8 +285,115 @@ the notification, the messages and `op-reason-log`, on Windows and on WSL. The c
 | `OPREASON_POWERSHELL` | WSL: the `powershell.exe` command for the launcher (default `powershell.exe`) |
 | `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` | service account or Connect: `op` runs without the desktop app (no window, no prompt) and gets the token; desktop calls never get these variables |
 | `HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_PANE_ID` | inside [herdr](https://herdr.dev/), the window shows the workspace and pane (optional) |
+| `OPREASON_SSH_REASON` | the reason of an ssh call through the [SSH relay](#ssh-keys-the-relay) (Windows clients, and `op-reason-ssh` on WSL) |
+| `OPREASON_SSH_EXE` | WSL: the `ssh.exe` that `op-reason-ssh` runs (default: `ssh.exe` in `PATH`) |
+| `OPREASON_SSH_CALL` | set by `op-reason-ssh` for the relay (the facts of a call from WSL); not for you to set |
 
 The prefix is `OPREASON_`, not `OP_`: the 1Password CLI reads many `OP_…` variables of its own.
+
+## SSH keys: the relay
+
+`op-reason.exe --ssh-agent` stands in front of the 1Password SSH agent: it runs in the background, serves the SSH agent
+protocol on its own pipe, `\\.\pipe\op-reason-ssh-agent`, and passes every request on, unchanged, to the 1Password agent
+(`\\.\pipe\openssh-ssh-agent`). Only signatures wait for a decision; listing the keys and everything else pass at once.
+Design: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
+
+Why: 1Password's SSH prompt names the application and the key, not the caller, the destination or the reason; for ssh
+run in a terminal, the application is the terminal program, from Windows and WSL alike. With its setting "Ask approval
+for each new" at "application and terminal session", one approval lets every later signature from that terminal
+session through until 1Password locks, and at "application" every later signature from that terminal program: after
+you approved once, an agent in the same terminal can use the key without a prompt. At "request" it asks for every
+signature, which ansible on WSL (new connections for every task and host) turns into dozens of prompts per run.
+
+### Two modes
+
+| Mode | Where you decide | 1Password's setting |
+| --- | --- | --- |
+| `per-call` (default) | op-reason's window, once per call: **Allow this call**, **Deny**, and for `ssh`, `git`, `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, **Allow this terminal for 60 minutes**. 1Password approves the relay once, until it locks | "application and terminal session" (recommended); "application" works too, but then 1Password no longer asks about clients that connect to it directly from the terminal program the relay runs in ([What it does not stop](#what-it-does-not-stop)) |
+| `show-only` | 1Password's prompt, for every signature; op-reason's window shows who and why next to it | "request" |
+
+A **call** is its root process, the key and the reason. The root is Claude Code's tool call, the command you typed in a
+terminal (`git push`, `ansible-playbook`, `ssh`), or the program that runs ssh itself; from WSL, `op-reason-ssh` finds
+it on Linux. Once allowed, the call's later signatures pass without a window (ansible's forks wait for one answer); a
+denied call fails at once. An answer lasts until the root process ends (a root on WSL only times out), until 60 minutes
+have passed (`--time-limit`), or until the relay stops, and it is kept in memory only. The terminal answer covers the
+ssh-family commands typed later in that shell, not programs that live on (a terminal program, another AI agent's
+command-line tool). Requests forwarded back from a remote host (`ssh -A`) are each a call of their own: the relay
+tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with an older `ssh.exe` every signature asks.
+
+The window shows who asks (Claude Code, a person, a program; for WSL calls also herdr's workspace and pane, the
+distribution, the repository and the branch), the root process, the reason (or "no reason given"), the ssh command, the
+destination with its host key, what the signature is for (logging in as which user, or an SSHSIG namespace such as
+`git`) and the key's name in 1Password. Only a click answers it (a press and a release on a button): it never takes the
+focus and has no default button, so a key typed elsewhere never answers it. No answer within 60 seconds fails that
+signature without remembering anything.
+
+> **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
+> op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
+> tell calls apart and asking it for every signature is not usable. show-only keeps the old rule.
+
+### Starting it
+
+```powershell
+op-reason.exe --ssh-agent                      # per-call; until Ctrl+C or logoff
+op-reason.exe --ssh-agent --mode show-only
+op-reason.exe --ssh-agent --status             # exit 0 (and its process id) when a relay answers on the pipe
+```
+
+- **Start it at logon from a scheduled task** (hidden, restarted on failure), not from a script that exits: 1Password
+  leaves the requests of a relay whose parent process has ended unanswered for 60 seconds. The relay says so in a toast
+  and a record when its parent is missing or ends. Without a console of its own (a task, a double click) it shows no
+  console window.
+- One relay per logon session. Options: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
+  `--time-limit <n>[s|m|h]` (60m), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s).
+- While its window is open, the relay holds op-reason's lock, so that its windows and 1Password's prompts come in pairs
+  with those of `op` calls.
+
+### Pointing ssh at it
+
+- **Windows**: `SSH_AUTH_SOCK` set to `\\.\pipe\op-reason-ssh-agent` for Windows OpenSSH, or in `~/.ssh/config`
+  `IdentityAgent \\\\.\pipe\op-reason-ssh-agent` (OpenSSH reads `\\` in its configuration and in `-o` as one backslash, so
+  the leading pair is written twice). The reason goes in `OPREASON_SSH_REASON`:
+  `$env:OPREASON_SSH_REASON = "push the login fix"; git push`. Git for Windows runs its own ssh, which cannot reach the
+  pipe: set `GIT_SSH` (or `core.sshCommand`) to Windows OpenSSH's `ssh.exe`, such as
+  `C:\Windows\System32\OpenSSH\ssh.exe` or `C:\Program Files\OpenSSH\ssh.exe`.
+- **WSL**: run `op-reason-ssh` (the WSL executable under that name) instead of `ssh.exe`, for example
+  `GIT_SSH_COMMAND=op-reason-ssh` or ansible's `ansible_ssh_executable=op-reason-ssh`, with the reason in
+  `OPREASON_SSH_REASON`. It finds the root of the call on Linux, collects the caller as `op` does (Claude Code, herdr,
+  the repository), the distribution and the reason, hands them to the relay in `OPREASON_SSH_CALL` (through `WSLENV`),
+  and runs `ssh.exe` with your arguments, stdin, stdout and stderr unchanged (`ssh.exe` reads the Windows
+  `~/.ssh/config`, so the `IdentityAgent` line above serves WSL too). When it cannot collect, it still runs `ssh.exe`
+  (the relay then asks for each signature).
+
+### The records
+
+Every signature is recorded in `%LOCALAPPDATA%\op-reason\ssh-log.jsonl` (rotated at 4 MiB, two old files), never with
+the data signed or the signature. `op-reason.exe --log` shows them among the calls of `op`, one line each:
+
+```text
+Time      Result       Secs  Caller           Reason              Command
+09:00:12  SSH allowed  2.5   Claude deploy …  push the login fix  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
+09:00:13  SSH passed   0.1   Claude deploy …  push the login fix  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
+```
+
+### What it does not stop
+
+- A program of your own account that wants to get around it: it can fake `OPREASON_SSH_CALL`, run under an allowed
+  root, or send clicks. As for `op`, op-reason shows facts, not proofs.
+- A client that talks to 1Password's pipe directly. 1Password asks only when it has not approved the request's
+  application since it locked (at "application and terminal session", the request's pair of application and terminal
+  session), and the application it sees is not the client but the terminal program the client runs in. So at
+  "application", once the relay is approved, a client that connects directly from the terminal program the relay runs
+  in passes without a prompt; at "application and terminal session", a client in another terminal session is asked.
+  **A 1Password SSH prompt without op-reason's window is the sign.**
+- Other AI agents' command-line tools are seen as a person (typed in a terminal) or a program: only Claude Code's tool
+  calls are told apart. Their requests still wait for a click, and the terminal answer does not cover them.
+- WSL calls are told by the parent of `ssh.exe`: `wsl.exe`, `wslhost.exe` or `C:\Windows\System32\bash.exe`. A WSL
+  started through a distribution's own launcher (such as `ubuntu.exe`) may hand its `ssh.exe` another parent; the relay
+  then treats it as a Windows program (to be checked by hand, [docs/manual-verification.md](docs/manual-verification.md)).
+- Where Smart App Control blocks `op-reason.exe`, there is no relay (there is no PowerShell fallback for it). Git Bash's
+  `ssh` (MSYS2) does not use the Windows pipe, and git commit signing with `op-ssh-sign` talks to the 1Password app
+  directly (seen with `op-ssh-sign-wsl.exe`): it stays outside the relay.
 
 ## Things to know
 
@@ -320,7 +431,7 @@ nix develop path:./nix                       # Rust, pwsh, fish, jq, shellcheck,
 cargo test --workspace                       # unit tests and the call table
 cargo build && bash tests/run-all.sh         # black-box tests with fake op-reason.exe, powershell.exe and op.exe
 python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (docs/images/*.svg)
-# op-reason.exe is a Cargo workspace of its own: in crates/op-reason-win, `cargo build -p fake-op` and then
+# op-reason.exe is a Cargo workspace of its own: in crates/op-reason-win, `cargo build -p fake-op -p fake-ssh` and then
 # `cargo test --workspace` on Windows (on Linux, the portable parts only)
 # On Windows (Windows PowerShell 5.1): tests\windows\launcher.test.ps1, entry.test.ps1, entry-plan.test.ps1
 ```
@@ -333,7 +444,8 @@ python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (do
 - The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md);
   `op-reason.exe`: [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md);
   calls from WSL through it: [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md);
-  the window's language: [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md).
+  the window's language: [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md);
+  the SSH relay: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
 - What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 - Where to read what: [docs/README.md](docs/README.md).
 

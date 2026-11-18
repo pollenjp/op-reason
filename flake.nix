@@ -26,7 +26,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
 
-          # bin/op-reason, bin/op-reason-log and the fish completion for op-reason
+          # bin/op-reason, bin/op-reason-log, bin/op-reason-ssh and the fish completion for op-reason
           op-reason = pkgs.rustPlatform.buildRustPackage {
             pname = "op-reason";
             inherit version;
@@ -49,6 +49,7 @@
             cargoTestFlags = [ "--workspace" ];
             postInstall = ''
               ln -s op-reason "$out/bin/op-reason-log"
+              ln -s op-reason "$out/bin/op-reason-ssh"
               mkdir -p "$out/share/fish/vendor_completions.d"
               "$out/bin/op-reason" --completion fish op-reason >"$out/share/fish/vendor_completions.d/op-reason.fish"
             '';
@@ -67,7 +68,7 @@
           # The same plus bin/op (put it before the real op in PATH) and the fish completion for op
           op = pkgs.runCommand "op-reason-op-${version}" { meta = op-reason.meta // { mainProgram = "op"; }; } ''
             mkdir -p "$out/bin" "$out/share/fish/vendor_completions.d"
-            for name in op op-reason op-reason-log; do
+            for name in op op-reason op-reason-log op-reason-ssh; do
               ln -s ${op-reason}/bin/op-reason "$out/bin/$name"
             done
             ln -s ${op-reason}/share/fish/vendor_completions.d/op-reason.fish "$out/share/fish/vendor_completions.d/"

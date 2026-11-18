@@ -1,0 +1,29 @@
+[package]
+name = "fake-ssh"
+version = "0.0.0"
+description = "Stand-ins for the SSH relay's tests: a fake 1Password agent, a scripted ssh client, and a spawner to copy as wsl.exe"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fake-ssh"
+path = "src/main.rs"
+
+[dependencies]
+op-reason-core = { path = "../../op-reason-core" }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+]
+
+[lints]
+workspace = true

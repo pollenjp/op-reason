@@ -1,5 +1,6 @@
 # op-reason.exe, the Windows entry and the runner of calls from WSL (crates/op-reason-win, a Cargo workspace of its
-# own). Lints and tests it (both faces, with the fake op.exe on a real Windows desktop), builds the exe and the Windows
+# own). Lints and tests it (both faces and the SSH relay, with the fake op.exe and the fake agent on a real Windows
+# desktop), builds the exe and the Windows
 # zip of the release, takes screenshots of its window and of the window of the PowerShell entry (the fallback where
 # Smart App Control blocks the exe), measures how fast they start, and puts the screenshots on the pull request.
 name: Windows exe
@@ -52,9 +53,9 @@ jobs:
         run: rustup toolchain install
       - name: Clippy (the Windows-only code compiles only here)
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build the fake op.exe
-        run: cargo build --locked -p fake-op
-      - name: Tests (both faces; the desktop-mode tests show the window on the runner's desktop)
+      - name: Build the fake op.exe and the fakes of the SSH relay's tests (agent, client, wsl.exe)
+        run: cargo build --locked -p fake-op -p fake-ssh
+      - name: Tests (both faces and the SSH relay; the desktop-mode tests show the window on the runner's desktop)
         run: cargo test --locked --workspace
       - name: Release build
         run: cargo build --locked --release -p op-reason-win
@@ -88,6 +89,7 @@ jobs:
           ../../.github/scripts/windows-exe-shots.ps1
           -Exe target/release/op-reason.exe -FakeOp target/debug/op.exe
           -Launcher ../../launcher/launcher.ps1 -Entry ../../windows/op-reason.ps1 -EntryCmd ../../windows/op-reason.cmd
+          -FakeSsh target/debug/fake-ssh.exe
           -Out screenshots
       - name: Upload screenshots and timings
         if: always()

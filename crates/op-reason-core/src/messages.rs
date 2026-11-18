@@ -135,6 +135,18 @@ pub fn no_op_exe(lang: Lang, path: &str) -> String {
     }
 }
 
+/// `op-reason-ssh` found no `ssh.exe` (`tried`: `OPREASON_SSH_EXE`, or `ssh.exe`).
+pub fn no_ssh_exe(lang: Lang, tried: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "ssh.exe was not found ({tried}). op-reason-ssh runs Windows OpenSSH's ssh.exe: keep the Windows PATH in WSL's PATH, or set OPREASON_SSH_EXE to it."
+        ),
+        Lang::Ja => format!(
+            "ssh.exe が見つかりません ({tried})。op-reason-ssh は Windows の OpenSSH の ssh.exe を起こします。WSL の PATH に Windows の PATH を残すか、OPREASON_SSH_EXE にそのパスを入れてください。"
+        ),
+    }
+}
+
 /// `powershell.exe` was not found.
 pub fn no_powershell(lang: Lang, cmd: &str) -> String {
     match lang {

@@ -61,7 +61,7 @@ pub fn state_dir() -> PathBuf {
 
 /// The language of this invocation: the copy of the language chosen in the window (`<state>/lang.json`), then
 /// `OPREASON_LANG`, then English (design `2026-11-15-language-toggle-design.md` §2).
-fn wsl_lang() -> Lang {
+pub(crate) fn wsl_lang() -> Lang {
     lang::pick(
         settings::read(&state_dir().join(settings::COPY_FILE))
             .ok()
@@ -295,7 +295,7 @@ fn collect(lang: Lang, parsed: &Parsed) -> Call {
     let herdr = if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
         let workspace = std::env::var("HERDR_WORKSPACE_ID").unwrap_or_default();
         if !workspace.is_empty() && launch::which("herdr").is_some() {
-            herdr_label = herdr_workspace_label(&workspace)
+            herdr_label = herdr_workspace_label(&workspace, Duration::from_secs(2))
                 .chars()
                 .map(|c| if c.is_control() { ' ' } else { c })
                 .collect();
@@ -341,7 +341,7 @@ fn collect(lang: Lang, parsed: &Parsed) -> Call {
 
 /// The current directory as the shell shows it: `$PWD` when it is the same directory (keeps symlinks), otherwise the
 /// real path, otherwise `$PWD` (the directory may have been removed), otherwise `?`.
-fn current_dir_text() -> String {
+pub(crate) fn current_dir_text() -> String {
     use std::os::unix::fs::MetadataExt;
     let real = std::env::current_dir().ok();
     let pwd = env_nonempty("PWD");
@@ -359,11 +359,11 @@ fn current_dir_text() -> String {
     }
 }
 
-/// `herdr workspace get <id>` → `.result.workspace.label` (2-second timeout; empty on any failure).
-fn herdr_workspace_label(workspace: &str) -> String {
+/// `herdr workspace get <id>` → `.result.workspace.label` (within `limit`; empty on any failure).
+pub(crate) fn herdr_workspace_label(workspace: &str, limit: Duration) -> String {
     launch::output_timeout(
         launch::command("herdr").args(["workspace", "get", workspace]),
-        Duration::from_secs(2),
+        limit,
     )
     .filter(|(s, _)| s.success())
     .and_then(|(_, out)| serde_json::from_slice::<serde_json::Value>(&out).ok())

@@ -67,6 +67,14 @@ name = "fake-op"
 version = "0.0.0"
 
 [[package]]
+name = "fake-ssh"
+version = "0.0.0"
+dependencies = [
+ "op-reason-core",
+ "windows",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

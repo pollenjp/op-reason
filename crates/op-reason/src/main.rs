@@ -3,7 +3,8 @@
 //! call. See the README and `docs/superpowers/specs/2026-11-15-op-reason-design.md`.
 //!
 //! One executable, chosen by the name it is called by: `op` (a symlink) or `op-reason` run the wrapper,
-//! `op-reason-log` runs the log viewer.
+//! `op-reason-log` runs the log viewer, `op-reason-ssh` runs Windows `ssh.exe` with the facts of the call for the SSH
+//! relay of `op-reason.exe`.
 
 #[cfg(unix)]
 mod launch;
@@ -16,6 +17,8 @@ mod runner;
 #[cfg(unix)]
 mod signals;
 #[cfg(unix)]
+mod ssh;
+#[cfg(unix)]
 mod wrapper;
 
 #[cfg(unix)]
@@ -26,6 +29,7 @@ fn main() {
     let args: Vec<std::ffi::OsString> = argv.collect();
     let code = match invocation(&argv0) {
         Invocation::LogViewer => wrapper::log_viewer(&args),
+        Invocation::Ssh => ssh::run(args),
         Invocation::Wrapper(name) => wrapper::run(name, args),
     };
     std::process::exit(code);

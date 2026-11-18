@@ -5,7 +5,7 @@
 CI runs op-reason with fake `op-reason.exe`, `powershell.exe` and `op.exe` only: the 1Password desktop app cannot run
 there, and the Windows runners have no WSL2. These checks need a person, a Windows machine with the 1Password app and
 the 1Password CLI, and WSL. The WSL checks (1–14 and R) take about 30 minutes and show about fifteen approval prompts.
-The checks of the references (F) add about ten minutes.
+The checks of the references (F) add about ten minutes, the checks of the SSH relay (S) about forty-five.
 
 ## Rules while checking
 
@@ -144,6 +144,90 @@ Control blocks op-reason.exe").
 | W6 | `op-reason --reason "check W6: deny" vault list`, **deny** | Exit not 0, op's error on stderr; the `end` record says `denied` |
 | W7 | `$x = op-reason --reason "check W7: capture" whoami --format json`, approve | `$x` holds the JSON text |
 | W8 | Press Ctrl+C while the prompt of `op-reason --reason "check W8: interrupt" vault list` is open | The window disappears; deny the prompt; the `end` record says `interrupted` |
+
+## Checks of the SSH relay
+
+`op-reason.exe --ssh-agent` in front of the 1Password SSH agent
+([2026-11-17-ssh-relay-design.md](superpowers/specs/2026-11-17-ssh-relay-design.md)). CI runs it with a fake agent and
+clicks its buttons, but cannot show 1Password's prompts. These take about 45 minutes and show eight to eleven prompts of
+1Password. They connect to GitHub with `ssh -T git@github.com` (it authenticates with your key and prints
+`Hi <user>!`, then closes: nothing on GitHub changes). Where a step says "note", nobody has seen it yet. The results of
+the first run are below the table.
+
+Preparation:
+
+1. **The Windows zip of this pull request**: in the pull request's checks, open the run of "Windows exe", download the
+   artifact `op-reason-windows`, and unpack the `op-reason-windows.zip` in it into a new folder, for example
+   `$dir = "$env:LOCALAPPDATA\Programs\op-reason-ssh-check"` (or `gh run download <run id> -n op-reason-windows -D $dir`
+   and unpack). Check it with `& "$dir\op-reason-windows\op-reason.exe" --version`, and below call
+   `$exe = "$dir\op-reason-windows\op-reason.exe"`.
+2. **WSL**: build this branch as in the preparation above and add `ln -sf op-reason target/release/op-reason-ssh`.
+   In a WSL shell kept for these checks (its Linux `ssh` and `ssh-add` lose their agent), hand the relay's pipe to
+   `ssh.exe`:
+   `export SSH_AUTH_SOCK='\\.\pipe\op-reason-ssh-agent' WSLENV="${WSLENV:+$WSLENV:}SSH_AUTH_SOCK"`. Write a script for
+   the loop of S4: `printf '%s\n' 'for i in 1 2 3 4 5; do op-reason-ssh -T git@github.com; done' > /tmp/s4.sh`.
+3. In a second PowerShell window: `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`. Nothing else may serve that
+   name (stop a relay of an earlier try).
+4. 1Password: **Settings → Developer → Use the SSH agent** is on, a key that GitHub knows is in it, and **Ask approval
+   for each new** is **application and terminal session** (put it back so after S10 and S18).
+5. **Start the relay** in a PowerShell window that stays open (its parent must stay alive): `& $exe --ssh-agent`. It
+   prints `the SSH relay listens on \\.\pipe\op-reason-ssh-agent (per-call) and passes requests on to …` and stays;
+   Ctrl+C stops it. Run the checks in a second PowerShell window and in WSL.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| S1 | In the second PowerShell: `$env:OPREASON_SSH_REASON = 'check S1: who am I on GitHub'; ssh -T git@github.com`. Click **Allow this call**, then approve 1Password's prompt | op-reason's window "SSH key: allow this call?" at the top right with Caller "Human (terminal) · pwsh.exe" (or powershell.exe), Root "ssh.exe (pid …)", the reason, the command, Destination "git@github.com · host key SHA256:…", For "logging in as git", Key "<the key's name> · SHA256:…" and three buttons (Allow this call, Allow this terminal for 60 minutes, Deny). After the click its title becomes "SSH key: 1Password is asking" until 1Password answers. **1 prompt**, which names the terminal program the relay was started in, not op-reason.exe; then `Hi <user>!` (exit 1 is GitHub's). If Caller says "Program: pwsh.exe" instead, note the shell's command line (`(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").CommandLine`): it was not taken for an interactive shell, and in S2 the call then passes without a window |
+| S2 (C1) | Run S1's command again, this time through the configuration form instead of `SSH_AUTH_SOCK`: `Remove-Item Env:SSH_AUTH_SOCK; ssh -o 'IdentityAgent=\\\\.\pipe\op-reason-ssh-agent' -T git@github.com; $env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`; click **Allow this call** | The window again (a new call); **no 1Password prompt**: it passes within a second. This also shows that `IdentityAgent` with the leading pair of backslashes doubled reaches the relay; if ssh says it cannot connect to the agent instead, note it |
+| S3 (C1) | In WSL: `OPREASON_SSH_REASON='check S3 from WSL' op-reason-ssh -T git@github.com`; click **Allow this call** | The window has a WSL line (the distribution), a herdr line when the shell runs inside herdr (`HERDR_ENV=1`), Caller "Human (terminal) · <your shell>", and the reason; **no prompt** |
+| S4 | In WSL: `OPREASON_SSH_REASON='check S4: five connections' bash /tmp/s4.sh`; click **Allow this call** once | One window for the five connections (Root "bash (pid …) · bash /tmp/s4.sh"); five `Hi <user>!`; no prompt. Run it again: one window again (a new call) |
+| S5 | As S4 with `check S5: deny`; click **Deny** | All five fail (`Permission denied (publickey)`) without more windows, at once after the click |
+| S6 (optional) | With ansible, a playbook for a host that takes your key: `ANSIBLE_SSH_EXECUTABLE=op-reason-ssh OPREASON_SSH_REASON='check S6: playbook' ansible-playbook …`; Allow; run it again | One window per run, whatever the number of tasks and hosts. Note how many windows without buttons and toasts come while the forks run |
+| S7 | **Run S8 first**: after the terminal answer of S7, ssh typed in that terminal passes without a window, S8's command too. In the second PowerShell, without a reason (`Remove-Item Env:OPREASON_SSH_REASON`): `ssh -T git@github.com`; click **Allow this terminal for 60 minutes**; run it again; then `git ls-remote git@github.com:<you>/<a repository of yours>.git` with Git for Windows pointed at Windows OpenSSH (`$env:GIT_SSH = (Get-Command ssh.exe).Source`; Git's own ssh cannot reach the pipe); then run the ssh command in a new PowerShell tab (with `SSH_AUTH_SOCK` set there too) | Reason "no reason given". The second run and `git ls-remote` pass without a window (commands typed in that terminal); the new tab gets the window again (Deny it) |
+| S8 | Before S7 (or in a new PowerShell tab with `SSH_AUTH_SOCK` set): S1's command with `check S8: no answer`; do not click for 60 seconds | The window closes after 60 seconds and ssh fails; running it again asks again |
+| S9 (C4) | `ssh -A <a host of yours that allows agent forwarding>` (Allow its own call; after S7 it passes on the terminal answer), then on that host `ssh -T git@github.com` twice | Each signature on the host gets a window: Caller "unknown (forwarded from a remote host)", Destination "forwarded from <host> (host key …) · onward to the host with key …", footer "this answer covers this signature only"; Allow each. No prompt |
+| S10 (C2) | Stop the relay (Ctrl+C). Set 1Password's **Ask approval for each new** to **request**. Start `& $exe --ssh-agent --mode show-only` and run S1's command (`check S10: request`) twice, approving each prompt | For each run, op-reason's window "SSH key: 1Password is asking" (no buttons, footer "show-only mode: decide in 1Password's prompt …") and one 1Password prompt at the same time: **2 prompts**. Then set 1Password back to **application and terminal session** |
+| S11 | With the show-only relay still running: run S1's command (`check S11: default`) twice (approve a prompt if one comes). If neither a prompt nor an answer comes (it happened once right after 1Password's setting was changed), wait for the 60-second timeout and run it again | The second signature passes in under half a second: one toast "SSH key: 1Password did not ask" (only once); `& $exe --log` shows "SSH: 1Password did not ask (show-only)" |
+| S12 | Stop the relay and start `& $exe --ssh-agent` again. Lock 1Password. Run S1's command (`check S12: locked`); click **Allow this call**; answer 1Password's access request (Windows Hello) | One access request unlocks 1Password and approves the relay at once (no second prompt). Until then op-reason's window stays as "SSH key: 1Password is asking"; it closes when 1Password answers |
+| S13 (optional) | Point a terminal program's own ssh connection at the relay (`IdentityAgent \\\\.\pipe\op-reason-ssh-agent` for its host in `~/.ssh/config`), connect, then make it reconnect | The first connection asks (Caller "Program: <its exe>"); its reconnects pass until the program exits. Note what the program shows while the window waits |
+| S14 (C3) | In WSL, in a scratch repository with commit signing through 1Password (`gpg.format ssh`, `gpg.ssh.program` = `op-ssh-sign-wsl.exe`, `commit.gpgsign true`) and the key set in the repository: `git config user.signingkey "key::$(ssh-add.exe -L \| grep '<the key's name>' \| head -n1)"` (in the shell of the preparation, Linux's `ssh-add` has no agent, so a `gpg.ssh.defaultKeyCommand` that asks it finds no key). Then `git commit --allow-empty -m 'check S14'` | No window of op-reason and no record of the relay: `op-ssh-sign-wsl.exe` does not use `SSH_AUTH_SOCK` and talks to the 1Password app directly, so signing stays outside the relay. Only 1Password's prompt comes, and the commit is signed (`git cat-file -p HEAD` shows `gpgsig -----BEGIN SSH SIGNATURE-----`) |
+| S15 | Stop the relay. In PowerShell: `cmd /c start "" /b $exe --ssh-agent` (cmd exits at once, the relay stays without a parent). Within a few seconds note the toast; then run S1's command (`check S15: no parent`) and Allow | A toast "op-reason's SSH relay has no parent process" or "… lost its parent process". 1Password does not ask: after about 60 seconds the relay records `no-answer`, ssh fails, and a toast says "SSH key: 1Password did not answer …" with the cause. Stop that relay: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` |
+| S16 | `& $exe --log --since 2h`, then `& $exe --log --json --since 2h` | One line per signature among the `op` calls ("SSH allowed", "SSH passed", "SSH denied", "SSH timed out", "SSH signed", "SSH no answer from 1Password"), with caller and reason (a passed row shows those of its call); the relay's own lines (started, its parent, 1Password did not ask). The JSON has neither the data signed nor a signature |
+| S17 (optional) | Open WSL through a distribution's own launcher (such as Ubuntu from the Start menu), set `SSH_AUTH_SOCK` and `WSLENV` as in the preparation, and run S3's command (`check S17: launcher`) | Note whether the window has the WSL line. If it does not, note the parent of `ssh.exe` while the window is open: `Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" \| ForEach-Object { (Get-Process -Id $_.ParentProcessId).Path }` |
+| S18 | A client that talks to 1Password directly. Start the relay again as in step 5 of the preparation (the relay, the second PowerShell and a third terminal opened for this check must all be terminals of one terminal program). Lock 1Password. In the second PowerShell run S1's command (`check S18: through the relay`), click **Allow this call** and answer 1Password. Then in the third terminal, straight to 1Password's pipe: `ssh -o 'IdentityAgent=\\\\.\pipe\openssh-ssh-agent' -T git@github.com`; deny the prompt that comes. Then set 1Password's **Ask approval for each new** to **application**, lock 1Password and run both commands again in the same terminals (as in S11, if a request right after the change gets no answer, wait for the timeout and run it again). Finally `& $exe --log --since 30m` | At **application and terminal session**: the direct client gets 1Password's prompt, naming the terminal program, without op-reason's window; denied, ssh says `agent refused operation`. At **application**: once the relay is approved, the direct client passes without a prompt (`Hi <user>!`). The log shows the two calls through the relay and nothing of the direct client. Then set 1Password back to **application and terminal session** |
+
+Put everything back: stop the relay, 1Password's setting at **application and terminal session**, lock 1Password once.
+
+### Results of 2026-11-18
+
+op-reason 0.3.0 from this pull request (Windows: the zip of its Windows exe workflow; WSL: a release build of the
+branch), the 1Password CLI 2.41.1, the 1Password app 8.12.46.29 (Microsoft Store), Windows OpenSSH 10.4p1, Windows 11
+build 26300. 1Password at **application and terminal session**; at **request** for S10, and at **application** for the
+second half of S18, which was added and run after the others. The relay and the shells ran in a terminal program
+(PowerShell 7 and the bash of a WSL distribution); the relay's PowerShell stayed open. The steps and expectations above
+are corrected where the run showed otherwise.
+
+| # | Result | What happened |
+| --- | --- | --- |
+| S1 | As expected | All the lines and the three buttons. One prompt, which named the terminal program, not op-reason.exe (the expectation said op-reason.exe) |
+| S2 | As expected | `IdentityAgent` with the doubled pair reached the relay; no prompt. The first two tries timed out after 60.2 seconds: the window, at the top right of the main display, went unnoticed |
+| S3 | As expected | The WSL line, Caller "Human (terminal) · bash" and the reason; no prompt. No herdr line: the shell was not inside herdr |
+| S4 | As expected | One window for the five connections (Root `bash /tmp/s4.sh`); the other four passed on the same decision in 0.1 seconds |
+| S5 | As expected | One Deny; the other four were denied on the same decision at once, all five `Permission denied` within 5 seconds of the click |
+| S6 | Skipped | No ansible |
+| S7 | As expected | No reason; after the terminal answer, ssh and `git ls-remote` passed without a window; a new tab got the window again (denied). Git for Windows had to be pointed at Windows OpenSSH (now in the step) |
+| S8 | As expected | Run before S7 (in the same terminal after S7 it passes on the terminal answer; now in the step). The window closed after 60 seconds and ssh failed; the next run asked again (seen with S2's timeouts too) and was denied |
+| S9 | As expected | The login to the host that allows agent forwarding passed on S7's terminal answer. The two signatures from that host each got a window (Caller "unknown (forwarded from a remote host)", the keys of the forwarding host and of the next one, this signature only) and were allowed; no prompt |
+| S10 | As expected | Both runs: the window without buttons (title and footer of show-only) together with 1Password's prompt: 2 prompts |
+| S11 | As expected, on a second try | Right after 1Password's setting was changed back, the first request got neither a prompt nor an answer for 60 seconds; the relay kept its window, showed the timeout toast and failed the request. The next run had the prompt as usual; after the approval the signatures passed in 0.3 and 0.2 seconds, and the record "1Password did not ask (show-only)" and its toast came once. The toast went unnoticed among the other toasts in the notification center |
+| S12 | As expected | One access request (Windows Hello) unlocked 1Password and approved the relay at once; until then the window stayed as "1Password is asking", and it closed after the authentication |
+| S13 | Skipped | Optional |
+| S14 | Outside the relay | The commit was signed, but the relay recorded nothing and showed no window: `op-ssh-sign-wsl.exe` does not use `SSH_AUTH_SOCK` and talks to the 1Password app directly; only 1Password's prompt came. The key had to be set in the repository (now in the step) |
+| S15 | As expected | Started with `cmd /c start "" /b`: the record and the toast that the relay has no parent process. After Allow, 1Password showed no prompt; after 59.7 seconds the relay recorded `no-answer`, ssh failed, and the toast "1Password did not answer" gave the cause |
+| S16 | As expected | One line per signature, with every result seen: allowed, allowed (terminal), allowed (forwarded), passed, denied, timed out, signed, no answer from 1Password; passed rows show the reason of their call; the relay's own lines. The 42 `ssh-*` records of the JSON hold neither the data signed nor a signature |
+| S17 | Skipped | Optional |
+| S18 | Not asked at application | Added after the first run, and run in three terminals of the same terminal program (the relay, the call through it, the direct client). At application and terminal session, after the relay had been allowed and approved (from locked), the direct client got 1Password's prompt without op-reason's window and was denied (`agent refused operation`). At application, after the same, it passed without a prompt in 2 seconds, and the relay recorded nothing of it. 1Password's prompts named the terminal program, for the relay's request and for the direct one. The README had said that such a client is a new application for 1Password; it now says when one is asked |
+
+At the end the relay was stopped, 1Password's setting checked and 1Password locked once.
 
 ## Open question: does plain `signout` close only one process's session?
 

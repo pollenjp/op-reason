@@ -5,8 +5,11 @@
 //!
 //! Its controls are the language switch `English | 日本語` at the right of the footer (design
 //! `2026-11-15-language-toggle-design.md` §4): a click on the other language lays the window out again in that
-//! language and hands the choice to the caller; and the links of the references the call reads (design
-//! `2026-11-17-refs-in-window-design.md` §4): a click opens the item in the 1Password app. Neither activates the window.
+//! language and hands the choice to the caller; the links of the references the call reads (design
+//! `2026-11-17-refs-in-window-design.md` §4): a click opens the item in the 1Password app; and, in the SSH relay's
+//! window (design `2026-11-17-ssh-relay-design.md` §6), a row of buttons under the footer: a press and a release on a
+//! button is the answer, which the owner reads with [`Window::answer`]. None of them activates the window, and the
+//! window has no default button: a key typed elsewhere never reaches it.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -15,18 +18,18 @@ use std::time::{Duration, Instant};
 
 use op_reason_core::lang::Lang;
 use windows::Win32::Foundation::{
-    HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1CreateFactory,
-    ID2D1Factory, ID2D1HwndRenderTarget,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -46,6 +49,7 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
     MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
@@ -59,12 +63,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, SendMessageW, SetCursor, SetTimer, SetWindowTextW,
-    WM_CANCELMODE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
-use crate::ui::{self, Both, Texts};
+use crate::ui::{self, Both, Button, Texts};
 
 // Layout in DIPs, as the launcher's WPF window.
 const OUTER_WIDTH: f32 = 520.0;
@@ -87,6 +91,18 @@ const NO_WRAP: f32 = 10_000.0;
 const REF_INDENT: f32 = 12.0;
 /// How long a closing window waits for the threads that open links.
 const OPENING_WAIT: Duration = Duration::from_secs(2);
+// The row of buttons at the bottom (the SSH relay's window): its height, the gap above it and between buttons, the room
+// around a label, the narrowest button and the corners. The tests click 20 DIPs inside the first button's left edge
+// and the last button's right edge, 26 DIPs above the client area's bottom (PAD_BOTTOM and half of BUTTON_H).
+const BUTTON_H: f32 = 28.0;
+const BUTTON_TOP_GAP: f32 = 10.0;
+const BUTTON_GAP: f32 = 8.0;
+const BUTTON_PAD_X: f32 = 14.0;
+const BUTTON_MIN_W: f32 = 96.0;
+const BUTTON_RADIUS: f32 = 4.0;
+/// Buttons take no press until this long after they appear: a click meant for the window underneath, at the moment this
+/// one comes up on top, must not answer it.
+const BUTTON_ARMING: Duration = Duration::from_millis(400);
 
 const CLASS_NAME: PCWSTR = w!("op-reason-approval");
 /// The timer of [`Window::watch`].
@@ -111,6 +127,8 @@ const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);
 const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);
 /// "and N more" and the hint under the references.
 const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);
+const BUTTON_FILL: D2D1_COLOR_F = rgb(0xFA, 0xFA, 0xFA);
+const BUTTON_PRESSED: D2D1_COLOR_F = rgb(0xD8, 0xD8, 0xD8);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -133,11 +151,20 @@ struct Para {
     link: Option<String>,
 }
 
-/// What the left button went down on: a language of the switch, or the paragraph of a link.
+/// What the left button went down on: a language of the switch, the paragraph of a link, or a button.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Target {
     Switch(Lang),
     Link(usize),
+    Button(usize),
+}
+
+/// A button of the row: what it answers, and its label laid out.
+struct ButtonBox {
+    button: Button,
+    layout: IDWriteTextLayout,
+    width: f32,
+    height: f32,
 }
 
 /// One part of the language switch: a language's name or the bar.
@@ -183,10 +210,21 @@ struct State {
     on_choose: Option<Box<dyn FnMut(Lang)>>,
     /// The threads that open links (waited for a moment when the window closes).
     opening: Vec<JoinHandle<()>>,
+    /// The row of buttons (none in the windows of `op` calls).
+    buttons: Vec<ButtonBox>,
+    /// When the buttons appeared ([`BUTTON_ARMING`]).
+    buttons_since: Instant,
+    /// The button pressed and released (the answer).
+    answer: Option<Button>,
 }
 
 impl State {
     fn client_height_dip(&self) -> f32 {
+        let row = if self.buttons.is_empty() {
+            0.0
+        } else {
+            BUTTON_TOP_GAP + BUTTON_H
+        };
         PAD_TOP
             + self
                 .paras
@@ -194,7 +232,33 @@ impl State {
                 .filter(|p| self.show_others || p.role != Role::Others)
                 .map(|p| p.height + 2.0 * LINE_GAP)
                 .sum::<f32>()
+            + row
             + PAD_BOTTOM
+    }
+
+    /// Where each button is (DIPs of the client area): a row at the bottom, the buttons that allow from the left, Deny at
+    /// the right (after the others when they leave no room).
+    fn button_rects(&self) -> Vec<ui::Rect> {
+        let bottom = self.client_height_dip() - PAD_BOTTOM;
+        let top = bottom - BUTTON_H;
+        let mut x = PAD_LEFT;
+        let mut rects = Vec::with_capacity(self.buttons.len());
+        for b in &self.buttons {
+            let w = (b.width + 2.0 * BUTTON_PAD_X).max(BUTTON_MIN_W);
+            let left = if b.button == Button::Deny {
+                (PAD_LEFT + self.width - w).max(x)
+            } else {
+                x
+            };
+            rects.push(ui::Rect {
+                left,
+                top,
+                right: left + w,
+                bottom,
+            });
+            x = left + w + BUTTON_GAP;
+        }
+        rects
     }
 
     /// The paragraphs shown, each with its top (DIPs).
@@ -261,11 +325,17 @@ impl State {
         })
     }
 
-    /// What a press or a release at the point is on: the switch's other language, or a link.
+    /// What a press or a release at the point is on: the switch's other language, a link, or a button.
     fn target(&self, x: f32, y: f32) -> Option<Target> {
         self.hit(x, y)
             .map(Target::Switch)
             .or_else(|| self.link_at(x, y).map(Target::Link))
+            .or_else(|| {
+                self.button_rects()
+                    .iter()
+                    .position(|r| r.contains(x, y))
+                    .map(Target::Button)
+            })
     }
 
     /// Lays the window out in `lang`. Everything is built before anything is replaced, so a failure keeps the old
@@ -278,8 +348,10 @@ impl State {
             self.width,
             footer_width(self.width, &switch),
         )?;
+        let buttons = build_buttons(&self.fonts, self.texts.get(lang))?;
         self.switch = switch;
         self.paras = paras;
+        self.buttons = buttons;
         self.lang = lang;
         Ok(())
     }
@@ -325,6 +397,22 @@ impl State {
             // SAFETY: the color lives across the call.
             switch_brushes.push(unsafe { t.CreateSolidColorBrush(&p.color, None)? });
         }
+        let rects = self.button_rects();
+        let pressed = match self.pressed {
+            Some(Target::Button(i)) => Some(i),
+            _ => None,
+        };
+        // SAFETY: the colors live across the calls.
+        let (fill, fill_pressed, border, deny) = unsafe {
+            (
+                t.CreateSolidColorBrush(&BUTTON_FILL, None)?,
+                t.CreateSolidColorBrush(&BUTTON_PRESSED, None)?,
+                t.CreateSolidColorBrush(&GRAY, None)?,
+                t.CreateSolidColorBrush(&FIREBRICK, None)?,
+            )
+        };
+        // SAFETY: the color lives across the call.
+        let black = unsafe { t.CreateSolidColorBrush(&BLACK, None)? };
         let tops = self.tops();
         let origins = self
             .switch_anchor()
@@ -352,6 +440,39 @@ impl State {
             }
             for ((p, brush), (x, y)) in self.switch.iter().zip(&switch_brushes).zip(&origins) {
                 t.DrawTextLayout(Vector2 { X: *x, Y: *y }, &p.layout, brush, options);
+            }
+            for (i, (b, r)) in self.buttons.iter().zip(&rects).enumerate() {
+                let rounded = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: r.left,
+                        top: r.top,
+                        right: r.right,
+                        bottom: r.bottom,
+                    },
+                    radiusX: BUTTON_RADIUS,
+                    radiusY: BUTTON_RADIUS,
+                };
+                let (face, ink) = if b.button == Button::Deny {
+                    (&deny, &deny)
+                } else {
+                    (&border, &black)
+                };
+                let back = if pressed == Some(i) {
+                    &fill_pressed
+                } else {
+                    &fill
+                };
+                t.FillRoundedRectangle(&rounded, back);
+                t.DrawRoundedRectangle(&rounded, face, 1.0, None);
+                t.DrawTextLayout(
+                    Vector2 {
+                        X: r.left + (r.right - r.left - b.width) / 2.0,
+                        Y: r.top + (BUTTON_H - b.height) / 2.0,
+                    },
+                    &b.layout,
+                    ink,
+                    options,
+                );
             }
             t.EndDraw(None, None)
         };
@@ -399,7 +520,11 @@ fn register_class() -> Result<()> {
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            return Err(windows::core::Error::from_thread());
+            let e = windows::core::Error::from_thread();
+            // Another thread of the relay registered it first
+            if e.code() != ERROR_CLASS_ALREADY_EXISTS.to_hresult() {
+                return Err(e);
+            }
         }
     }
     let _ = DONE.set(true);
@@ -588,6 +713,30 @@ fn add_refs(
     Ok(())
 }
 
+/// The buttons of the texts, each label laid out on one line.
+fn build_buttons(fonts: &Fonts, text: &Texts) -> Result<Vec<ButtonBox>> {
+    text.buttons
+        .iter()
+        .map(|(button, label)| {
+            let wide: Vec<u16> = label.encode_utf16().collect();
+            // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
+            unsafe {
+                let layout = fonts
+                    .dw
+                    .CreateTextLayout(&wide, &fonts.body, NO_WRAP, f32::MAX)?;
+                let mut m = DWRITE_TEXT_METRICS::default();
+                layout.GetMetrics(&mut m)?;
+                Ok(ButtonBox {
+                    button: *button,
+                    layout,
+                    width: m.widthIncludingTrailingWhitespace,
+                    height: m.height,
+                })
+            }
+        })
+        .collect()
+}
+
 /// The parts of the switch with `shown` in bold black; the other language blue and underlined (the link), the bar gray.
 fn build_switch(fonts: &Fonts, shown: Lang) -> Result<Vec<Piece>> {
     ui::SWITCH_LABELS
@@ -703,6 +852,7 @@ impl Window {
 
             let switch = build_switch(&fonts, lang)?;
             let paras = build_paras(&fonts, texts.get(lang), width, footer_width(width, &switch))?;
+            let buttons = build_buttons(&fonts, texts.get(lang))?;
             let title = HSTRING::from(texts.get(lang).title.as_str());
 
             let hinstance = GetModuleHandleW(None)?;
@@ -724,6 +874,9 @@ impl Window {
                 pressed: None,
                 on_choose: Some(on_choose),
                 opening: Vec::new(),
+                buttons,
+                buttons_since: Instant::now(),
+                answer: None,
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -804,6 +957,57 @@ impl Window {
     pub fn is_open(&self) -> bool {
         // SAFETY: `state` stays valid until Drop.
         unsafe { !(*self.state).destroyed }
+    }
+
+    /// The button that was pressed and released, once one was.
+    pub fn answer(&self) -> Option<Button> {
+        // SAFETY: `state` stays valid until Drop.
+        unsafe { (*self.state).answer }
+    }
+
+    /// Puts new texts in (the same window: a changed count of waiting calls, the buttons gone after an answer) and lays
+    /// the window out again in the language shown; the top right corner stays.
+    pub fn set_texts(&self, texts: &Both) {
+        if !self.is_open() {
+            return;
+        }
+        // SAFETY: `state` stays valid until Drop; the reference ends before the Win32 calls, which re-enter the window
+        // procedure.
+        let (title, client_h, dpi) = unsafe {
+            let st = &mut *self.state;
+            let old = std::mem::replace(&mut st.texts, texts.clone());
+            let had = st.buttons.len();
+            if st.relayout(st.lang).is_err() {
+                st.texts = old;
+                return;
+            }
+            // the same buttons (a new count of waiting calls): a press in progress stays; new buttons arm again
+            if st.buttons.len() != had {
+                st.pressed = None;
+                st.buttons_since = Instant::now();
+            }
+            (
+                HSTRING::from(st.texts.get(st.lang).title.as_str()),
+                st.client_height_dip(),
+                st.dpi,
+            )
+        };
+        // SAFETY: valid window handle on its own thread.
+        unsafe {
+            let _ = SetWindowTextW(self.hwnd, &title);
+            if let Ok((w, h)) = outer_size(client_h, dpi) {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    0,
+                    0,
+                    w,
+                    h,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
     /// Shows or hides the "other op.exe" line and fits the height.
@@ -1018,18 +1222,51 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             }
             WM_LBUTTONDOWN => {
-                let st = &mut *ptr;
-                let (x, y) = dip_point(lparam, st.dpi);
-                st.pressed = st.target(x, y);
+                let on_button = {
+                    let st = &mut *ptr;
+                    let (x, y) = dip_point(lparam, st.dpi);
+                    let target = st.target(x, y);
+                    let early = matches!(target, Some(Target::Button(_)))
+                        && st.buttons_since.elapsed() < BUTTON_ARMING;
+                    st.pressed = if early { None } else { target };
+                    matches!(st.pressed, Some(Target::Button(_)))
+                };
+                if on_button {
+                    // the release comes here even outside the window, so that only a press and a release on the
+                    // same button answers
+                    SetCapture(hwnd);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
+            WM_CAPTURECHANGED => {
+                let was_button = {
+                    let st = &mut *ptr;
+                    let was = matches!(st.pressed, Some(Target::Button(_)));
+                    if was {
+                        st.pressed = None;
+                    }
+                    was
+                };
+                if was_button {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                let chosen = {
+                let (chosen, was_button) = {
                     let st = &mut *ptr;
                     let (x, y) = dip_point(lparam, st.dpi);
                     let pressed = st.pressed.take();
-                    st.target(x, y).filter(|t| pressed == Some(*t))
+                    (
+                        st.target(x, y).filter(|t| pressed == Some(*t)),
+                        matches!(pressed, Some(Target::Button(_))),
+                    )
                 };
+                if was_button {
+                    let _ = ReleaseCapture();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
                 match chosen {
                     Some(Target::Switch(lang)) => choose(hwnd, ptr, lang),
                     Some(Target::Link(i)) => {
@@ -1038,6 +1275,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             && let Some(t) = super::shell::open_item(&url)
                         {
                             st.opening.push(t);
+                        }
+                    }
+                    Some(Target::Button(i)) => {
+                        let st = &mut *ptr;
+                        if st.answer.is_none() {
+                            st.answer = st.buttons.get(i).map(|b| b.button);
                         }
                     }
                     None => {}

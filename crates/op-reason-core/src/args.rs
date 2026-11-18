@@ -11,6 +11,9 @@ use std::path::Path;
 pub enum Invocation {
     /// `op-reason-log`: the log viewer.
     LogViewer,
+    /// `op-reason-ssh`: runs Windows `ssh.exe` with the facts of the call (WSL; design `2026-11-17-ssh-relay-design.md`
+    /// §7).
+    Ssh,
     /// The wrapper, called by its own name or another one.
     Wrapper(Name),
 }
@@ -34,6 +37,7 @@ pub fn invocation(argv0: &OsStr) -> Invocation {
     let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
     match stem {
         "op-reason-log" => Invocation::LogViewer,
+        "op-reason-ssh" => Invocation::Ssh,
         "op-reason" => Invocation::Wrapper(Name::OpReason),
         _ => Invocation::Wrapper(Name::Other),
     }
@@ -209,38 +213,42 @@ fn is_bare_flag(a: &str) -> bool {
 pub fn display(masked: &[String]) -> String {
     let mut out = String::from("op");
     for a in masked {
-        let a: String = a
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
         out.push(' ');
-        if !a.is_empty()
-            && a.bytes().all(|b| {
-                b.is_ascii_alphanumeric()
-                    || matches!(
-                        b,
-                        b'_' | b'.'
-                            | b'/'
-                            | b':'
-                            | b'='
-                            | b'@'
-                            | b'%'
-                            | b'+'
-                            | b','
-                            | b'*'
-                            | b'?'
-                            | b'-'
-                    )
-            })
-        {
-            out.push_str(&a);
-        } else {
-            out.push('"');
-            out.push_str(&a.replace('\\', "\\\\").replace('"', "\\\""));
-            out.push('"');
-        }
+        out.push_str(&word(a));
     }
     out
+}
+
+/// One argument as [`display`] shows it: as it is when it is made only of `[A-Za-z0-9_./:=@%+,*?-]`, otherwise in
+/// double quotes with `\` and `"` escaped; control characters become spaces.
+pub fn word(arg: &str) -> String {
+    let a: String = arg
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if !a.is_empty()
+        && a.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'.'
+                        | b'/'
+                        | b':'
+                        | b'='
+                        | b'@'
+                        | b'%'
+                        | b'+'
+                        | b','
+                        | b'*'
+                        | b'?'
+                        | b'-'
+                )
+        })
+    {
+        a
+    } else {
+        format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 /// How a call runs.
@@ -516,6 +524,10 @@ mod tests {
         assert_eq!(
             invocation(OsStr::new("op")),
             Invocation::Wrapper(Name::Other)
+        );
+        assert_eq!(
+            invocation(OsStr::new("/home/me/.nix-profile/bin/op-reason-ssh")),
+            Invocation::Ssh
         );
     }
 }

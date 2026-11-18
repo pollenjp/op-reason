@@ -1,8 +1,75 @@
-//! What `/proc` tells: the Claude Code ancestor, and other op-reason processes connected through pipes.
+//! What `/proc` tells: the Claude Code ancestor, other op-reason processes connected through pipes, and the chain of
+//! ancestors that `op-reason-ssh` finds the root of its call in.
 
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
+
+use op_reason_core::ssh::roots::Node;
+
+/// One process of a chain: its PID, its start time (clock ticks after boot) and its name and arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub pid: u32,
+    pub start: u64,
+    pub node: Node,
+}
+
+/// `start` and its ancestors, nearest first, read from `<root>/<pid>/stat` and `cmdline` (at most 64). A parent that
+/// started after its child ends the chain: that PID was reused. Empty when `start` cannot be read.
+pub fn chain(root: &Path, start: u32) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    let mut pid = start;
+    for _ in 0..64 {
+        let Some((comm, ppid, started)) = stat(root, pid) else {
+            break;
+        };
+        if out.last().is_some_and(|child| started > child.start) {
+            break;
+        }
+        out.push(Link {
+            pid,
+            start: started,
+            node: Node {
+                name: comm,
+                args: cmdline(root, pid),
+            },
+        });
+        if ppid == 0 || ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+    out
+}
+
+/// The `comm`, the parent and the start time of `<root>/<pid>/stat` (fields 2, 4 and 22).
+fn stat(root: &Path, pid: u32) -> Option<(String, u32, u64)> {
+    let text = fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+    // comm is in parentheses and may contain spaces and parentheses: it ends at the last ") "
+    let open = text.find('(')?;
+    let close = text.rfind(") ")?;
+    let comm = text.get(open + 1..close)?.to_owned();
+    let mut fields = text.get(close + 2..)?.split_whitespace();
+    let ppid = fields.nth(1)?.parse().ok()?;
+    let started = fields.nth(17)?.parse().ok()?;
+    Some((comm, ppid, started))
+}
+
+/// The arguments of `<root>/<pid>/cmdline` (empty when it cannot be read).
+fn cmdline(root: &Path, pid: u32) -> Vec<String> {
+    let Ok(bytes) = fs::read(root.join(pid.to_string()).join("cmdline")) else {
+        return Vec::new();
+    };
+    let mut args: Vec<String> = bytes
+        .split(|b| *b == 0)
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    if args.last().is_some_and(String::is_empty) {
+        args.pop();
+    }
+    args
+}
 
 /// The nearest ancestor (up to 64 levels) whose `comm` is `claude`, walking `<root>/<pid>/stat` from `start`.
 pub fn find_claude(root: &Path, start: u32) -> Option<u32> {
@@ -135,6 +202,80 @@ mod tests {
             fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
         }
         root
+    }
+
+    /// A fake `/proc` with start times and command lines: `(pid, comm, ppid, start, argv)`.
+    fn temp_proc_full(entries: &[(u32, &str, u32, u64, &[&str])]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "op-reason-proc-chain-{}",
+            op_reason_core::log::random_u64()
+        ));
+        for (pid, comm, ppid, start, argv) in entries {
+            let d = root.join(pid.to_string());
+            fs::create_dir_all(&d).unwrap();
+            fs::write(
+                d.join("stat"),
+                format!("{pid} ({comm}) S {ppid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 {start} 0 0\n"),
+            )
+            .unwrap();
+            let mut cmdline = argv.join("\0");
+            cmdline.push('\0');
+            fs::write(d.join("cmdline"), cmdline).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn the_chain_with_start_times_and_arguments() {
+        let root = temp_proc_full(&[
+            (30, "op-reason-ssh", 20, 300, &["op-reason-ssh", "host"]),
+            (20, "a) b", 10, 200, &["weird", "x y"]),
+            (10, "fish", 1, 100, &["-fish"]),
+            (1, "init", 0, 1, &["/init"]),
+        ]);
+        let links = chain(&root, 30);
+        let got: Vec<(u32, u64, &str)> = links
+            .iter()
+            .map(|l| (l.pid, l.start, l.node.name.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (30, 300, "op-reason-ssh"),
+                (20, 200, "a) b"),
+                (10, 100, "fish"),
+                (1, 1, "init")
+            ]
+        );
+        assert_eq!(
+            links[1].node.args,
+            vec!["weird".to_owned(), "x y".to_owned()]
+        );
+        assert_eq!(links[2].node.args, vec!["-fish".to_owned()]);
+        assert!(chain(&root, 99).is_empty(), "no such process");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_parent_that_started_after_its_child_ends_the_chain() {
+        let root = temp_proc_full(&[
+            (30, "op-reason-ssh", 20, 300, &["op-reason-ssh"]),
+            (20, "git", 10, 200, &["git", "push"]),
+            (10, "bash", 1, 250, &["bash"]),
+        ]);
+        let pids: Vec<u32> = chain(&root, 30).iter().map(|l| l.pid).collect();
+        assert_eq!(pids, vec![30, 20], "10 is a reused PID");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_arguments_leave_them_empty() {
+        let root = temp_proc_full(&[(30, "x", 1, 3, &["x"])]);
+        fs::remove_file(root.join("30").join("cmdline")).unwrap();
+        let links = chain(&root, 30);
+        assert_eq!(links.len(), 1);
+        assert!(links[0].node.args.is_empty());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

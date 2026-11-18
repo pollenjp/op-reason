@@ -7,7 +7,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::contract::{Herdr, Refs};
@@ -18,8 +18,8 @@ pub const LOG_MAX: u64 = 1_048_576;
 /// Seconds to wait for `log.lock` before writing anyway.
 pub const LOG_LOCK_WAIT: Duration = Duration::from_secs(5);
 
-/// `caller` in `start` and `refused`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// `caller` in `start` and `refused` (and in the SSH relay's records and `OPREASON_SSH_CALL`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Caller {
     /// `claude` or `human`.
     #[serde(rename = "type")]

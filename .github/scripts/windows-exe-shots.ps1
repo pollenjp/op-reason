@@ -15,6 +15,11 @@
 # links (docs/superpowers/specs/2026-11-17-refs-in-window-design.md). Timings are black-box: from starting the process until a visible window with the expected title
 # exists (FindWindow), and until the process exits.
 #
+# With -FakeSsh (crates/op-reason-win/fake-ssh), the SSH relay (op-reason.exe --ssh-agent) too: its window for a call
+# from WSL (a copy of fake-ssh named wsl.exe stands for the interop host, OPREASON_SSH_CALL for op-reason-ssh's facts),
+# per-call for Claude Code in Japanese and for a person's command in English (with the button that allows the
+# terminal), and show-only in English (docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
+#
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
 [CmdletBinding()]
 param(
@@ -24,6 +29,7 @@ param(
   [Parameter(Mandatory)] [string] $Entry,
   [Parameter(Mandatory)] [string] $EntryCmd,
   [Parameter(Mandatory)] [string] $Out,
+  [string] $FakeSsh = '',
   [int] $Runs = 10
 )
 $ErrorActionPreference = 'Stop'
@@ -307,6 +313,71 @@ $p.WaitForExit()
 $clickNote = "Click on the language switch: switched=$($hJa -ne [IntPtr]::Zero), foreground unchanged=$($before -eq $after), " +
   "settings.json: $(Get-Content -Raw -ErrorAction SilentlyContinue (Join-Path $clickDir 'op-reason\settings.json'))"
 Write-Host $clickNote
+
+# --- the SSH relay
+
+if ($FakeSsh) {
+  $FakeSsh = (Resolve-Path $FakeSsh).Path
+  $relayLad = Join-Path $work 'relay'
+  $agentDir = Join-Path $work 'agent'
+  $wslDir = Join-Path $work 'wslhost'
+  New-Item -ItemType Directory -Force -Path $relayLad, $agentDir, $wslDir | Out-Null
+  Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $wslDir 'wsl.exe')
+  $pipe = '\\.\pipe\op-reason-shots-' + $PID
+  $up = '\\.\pipe\op-reason-shots-up-' + $PID
+  $agent = Start-Proc $FakeSsh @('agent', $up, $agentDir) @{}
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while (-not (Test-Path (Join-Path $agentDir 'agent.ready')) -and $sw.ElapsedMilliseconds -lt 10000) { Start-Sleep -Milliseconds 50 }
+
+  # One call from WSL: the relay in a mode and a language, the client through the fake wsl.exe, the window saved.
+  function Show-Relay([string] $Name, [string] $Mode, [string] $Lang, [string] $Title, $Call) {
+    $relay = Start-Proc $Exe @('--ssh-agent', '--mode', $Mode, '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
+      @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    do {
+      Start-Sleep -Milliseconds 100
+      & $Exe --ssh-agent --status --pipe $pipe *> $null
+    } while ($LASTEXITCODE -ne 0 -and $sw.ElapsedMilliseconds -lt 10000)
+    $json = $Call | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii
+    $client = Start-Proc (Join-Path $wslDir 'wsl.exe') @('spawn', $FakeSsh, 'client', $pipe, 'list', 'bind', 'sign') `
+      @{ OPREASON_SSH_CALL = $json }
+    $h = Wait-Window $Title
+    if ($h -eq [IntPtr]::Zero) { Write-Warning "no window for scene $Name" } else {
+      [Threading.Thread]::Sleep(800)
+      Save-Window $h (Join-Path $Out "$Name.png")
+    }
+    foreach ($q in @($client, $relay)) { if (-not $q.HasExited) { $q.Kill() }; $q.WaitForExit() }
+  }
+
+  $herdrFacts = [ordered]@{ workspace = 'w1'; label = (& $u '\u30c7\u30d7\u30ed\u30a4'); pane = 'w1:p2' }
+  $claudeCall = [ordered]@{
+    v = 1; distro = 'Ubuntu'; rule = 'claude'
+    root = [ordered]@{ pid = 31337; start = 1; name = 'bash'; cmd = 'bash -c -l "git push origin fix/login"' }
+    caller = [ordered]@{ type = 'claude'; claude_pid = 4242; herdr = $herdrFacts; cwd = '~/src/op-reason'; repo = 'pollenjp/op-reason'; branch = 'fix/login' }
+    session = 'demo'; reason = (& $u '\u4fee\u6b63\u3092 GitHub \u306b push \u3059\u308b')
+  }
+  Show-Relay '13-relay-claude-ja' 'per-call' 'ja' `
+    (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') $claudeCall
+  $personCall = [ordered]@{
+    v = 1; distro = 'Ubuntu'; rule = 'shell'
+    root = [ordered]@{ pid = 2718; start = 2; name = 'git'; cmd = 'git pull --rebase' }
+    shell = [ordered]@{ pid = 2000; start = 1; name = 'fish'; cmd = '' }
+    caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = '~/src/infra'; repo = 'me/infra'; branch = 'main' }
+    session = $null; reason = ''
+  }
+  Show-Relay '14-relay-person-en' 'per-call' 'en' 'SSH key: allow this call?' $personCall
+  # show-only: the fake agent answers after six seconds, as while 1Password asks
+  Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '6000' -NoNewline
+  $ansibleCall = [ordered]@{
+    v = 1; distro = 'Ubuntu'; rule = 'shell'
+    root = [ordered]@{ pid = 1414; start = 3; name = 'ansible-playboo'; cmd = 'python3 /usr/bin/ansible-playbook site.yml --limit db' }
+    shell = [ordered]@{ pid = 1000; start = 1; name = 'fish'; cmd = '' }
+    caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = '~/src/infra'; repo = 'me/infra'; branch = 'main' }
+    session = $null; reason = 'Rotate the database password on the db hosts'
+  }
+  Show-Relay '15-relay-show-only-en' 'show-only' 'en' 'SSH key: 1Password is asking' $ansibleCall
+  $agent.Kill(); $agent.WaitForExit()
+}
 
 # --- timings
 

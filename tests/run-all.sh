@@ -16,7 +16,7 @@ here=$(
 )
 bin=${1:-${OPREASON_BIN:-${here}/../target/debug/op-reason}}
 failed=()
-for t in wrapper e2e log completion launcher; do
+for t in wrapper e2e log completion ssh launcher; do
   echo "### ${t}"
   if [[ ${t} == launcher ]]; then
     bash "${here}/${t}.test.sh" || failed+=("${t}")
