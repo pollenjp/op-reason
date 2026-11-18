@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "op-reason"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "op-reason-core",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "op-reason-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
