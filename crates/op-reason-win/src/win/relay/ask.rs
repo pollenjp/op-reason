@@ -1,7 +1,8 @@
 //! The windows of the relay, one at a time (design §5.5): a request takes a ticket in the queue; the thread whose
 //! ticket's turn it is takes op-reason's lock (`Local\op-reason`, shared with `op-reason.exe` and the launcher, so that
 //! op-reason's windows and 1Password's prompts come in pairs), writes `holder.json`, shows the window and its toast,
-//! and passes the turn on when it closes. A request of a call that asks already waits for that answer.
+//! and passes the turn on when it closes. A request of a call that asks already waits for that answer. The window's
+//! notification goes with it, except after a per-call time-out (design `2026-11-18-pass-toasts-design.md` §6).
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -99,6 +100,8 @@ pub(super) struct Shown<'a> {
     lang: Lang,
     last_look: Instant,
     toast: Option<toast::Pending>,
+    /// Leave the notification when the window closes (it timed out unanswered).
+    keep_notification: bool,
 }
 
 impl Drop for Shown<'_> {
@@ -106,8 +109,12 @@ impl Drop for Shown<'_> {
         if let Some(dir) = &self.holder_dir {
             holder::remove(dir);
         }
-        // the toast's thread ends by itself; its result is not recorded
-        self.toast = None;
+        // the notification goes with the window; its result is not recorded
+        if let Some(mut t) = self.toast.take()
+            && !self.keep_notification
+        {
+            t.hide();
+        }
     }
 }
 
@@ -140,7 +147,7 @@ impl<'a> Shown<'a> {
                 &facts.command,
             );
         }
-        let toast = Some(toast::start(texts.get(lang).toast.clone()));
+        let toast = Some(toast::start_for_window(texts.get(lang).toast.clone()));
         Ok(Shown {
             window: w,
             _held: held,
@@ -151,6 +158,7 @@ impl<'a> Shown<'a> {
             lang,
             last_look: Instant::now(),
             toast,
+            keep_notification: false,
         })
     }
 
@@ -188,6 +196,11 @@ impl<'a> Shown<'a> {
     /// The language the window was opened in.
     pub fn lang(&self) -> Lang {
         self.lang
+    }
+
+    /// Leaves the notification when the window closes: the sign of a request that went unanswered.
+    fn keep_notification(&mut self) {
+        self.keep_notification = true;
     }
 
     fn ticket(&self) -> u64 {
@@ -355,6 +368,7 @@ fn ask<'a>(
         }
         if Instant::now() >= deadline {
             ended(shared, shown.ticket(), End::Timeout);
+            shown.keep_notification();
             return Outcome::Timeout;
         }
         if pipe::gone(client) {

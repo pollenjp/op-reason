@@ -605,7 +605,8 @@ fn start_failed(lang: Lang, err: &std::io::Error, o: &mut Outcome) -> i32 {
 
 /// Desktop mode: window, toast, op.exe, then sign-out (when `close`). Without texts (a payload without facts) no window
 /// and no toast, as in the launcher. The window starts in `lang`; its switch moves to the other language and writes
-/// the choice down. The toast stays in `lang`.
+/// the choice down. The toast stays in `lang`, and goes when the window closes; without a window it stays, the only sign
+/// of the call (design `2026-11-18-pass-toasts-design.md` §6).
 pub(super) fn run_desktop(
     op: &Path,
     args: &[OsString],
@@ -648,13 +649,13 @@ pub(super) fn run_desktop(
             None
         }
     };
-    let pending = texts.map(|t| toast::start(t.get(lang).toast.clone()));
+    let mut pending = texts.map(|t| toast::start_for_window(t.get(lang).toast.clone()));
     let toast_result = |pending: Option<toast::Pending>| {
         pending.map_or_else(|| "skipped".to_owned(), toast::Pending::result)
     };
     if console::interrupted() {
         // Ctrl+C before op.exe started: no prompt is raised
-        drop(win);
+        close_window(win, &mut pending);
         o.toast = Some(toast_result(pending));
         o.others = Some(others);
         o.result = "interrupted".to_owned();
@@ -664,7 +665,7 @@ pub(super) fn run_desktop(
     let mut running = match opexe::start(op, args, how.env, how.stderr, how.input) {
         Ok(r) => r,
         Err(e) => {
-            drop(win);
+            close_window(win, &mut pending);
             o.toast = Some(toast_result(pending));
             o.others = Some(others);
             return start_failed(lang, &e, o);
@@ -684,7 +685,7 @@ pub(super) fn run_desktop(
             w.set_others(true);
         }
     });
-    drop(win);
+    close_window(win, &mut pending);
     o.stderr = running.stderr_copy();
     o.signout = Some(if close {
         let (signout, seen) = opexe::close_session(op);
@@ -699,6 +700,15 @@ pub(super) fn run_desktop(
     let code = finish(o, code, Mode::Desktop, &copy);
     o.stderr = copy;
     code
+}
+
+/// Closes the window, and its notification with it; a notification without a window stays.
+fn close_window(win: Option<window::Window>, pending: &mut Option<toast::Pending>) {
+    let shown = win.is_some();
+    drop(win);
+    if shown && let Some(p) = pending.as_mut() {
+        p.hide();
+    }
 }
 
 /// Help and service modes: op.exe without a window. `close` closes a session in case one was opened (help).
