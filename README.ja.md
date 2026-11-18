@@ -45,7 +45,8 @@ WSL からの呼び出しでは、WSL の実行ファイルが理由を確かめ
 (lock・窓の文・記録は同じです)。
 
 `op-reason.exe` が動かないところ (署名が無いので、Smart App Control に止められることがあります) では、PowerShell の
-launcher `launcher.ps1` が新しい `powershell.exe` で同じ仕事をします。WSL からの呼び出しはひとりでにそちらへ回り、Windows
+launcher `launcher.ps1` が新しい `powershell.exe` で同じ仕事をします (その窓はいつも主画面の右上に出て、通知は通知
+センターに残ります)。WSL からの呼び出しはひとりでにそちらへ回り、Windows
 では PowerShell の入口がそれを使います。詳しくは [docs/architecture/README.md](docs/architecture/README.md) (英語)。
 
 ## 要るもの
@@ -344,7 +345,7 @@ op-reason が画面に出すものは 3 つで、それぞれの場所に出ま�
   下の窓へ通し、音を鳴らさず、通知センターにも入りません。Windows のアニメーション効果を切っていれば、ずれたり薄れたり
   せずに出て消えます。
 - **窓**は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。`op` の呼び出しの
-  窓も同じです。
+  窓も、`op-reason.exe` が出すものは同じです。PowerShell の launcher の窓は主画面の右上のままで、その通知も残ります。
 - **通知**は窓と一緒に消えるので、通知センターに溜まりません。per-call の窓が時間切れで閉じたときは、答えなかった依頼の
   印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は
   残ります。

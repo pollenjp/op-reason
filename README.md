@@ -47,7 +47,8 @@ Windows notification that goes when the window closes, starts `op.exe` with your
 Windows, `op-reason.exe` does all of this in its own process, with the same lock, window texts and log.
 
 Where `op-reason.exe` cannot run (Smart App Control may block it: it is not signed), the PowerShell launcher
-`launcher.ps1` does the same job in a fresh `powershell.exe`: calls from WSL fall back to it by themselves, and the
+`launcher.ps1` does the same job in a fresh `powershell.exe` (its window always at the top right of the primary screen,
+its notification left in the notification center): calls from WSL fall back to it by themselves, and the
 PowerShell entry uses it on Windows. Details: [docs/architecture/README.md](docs/architecture/README.md).
 
 ## Requirements
@@ -352,7 +353,8 @@ op-reason shows three things on the screen, each in its own place
   three at most (a fourth pushes the oldest out at once). Toasts never take the focus, let clicks through, make no
   sound and stay out of the notification center. With Windows' animation effects off they neither slide nor fade.
 - **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
-  and stay there. The windows of `op` calls do too.
+  and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
+  stays at the top right of the primary screen, and its notifications stay.
 - **Notifications** go with their window, so they do not pile up in the notification center; a per-call window that
   timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
   did not ask, 1Password did not answer, the relay has no parent process) stay.

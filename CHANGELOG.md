@@ -10,11 +10,12 @@
   the focus, let clicks through, make no sound and stay out of the notification center; with Windows' animation effects
   off they neither slide nor fade.
 - **op-reason's windows open on the screen you work on**: the screen of the foreground window (the primary screen when
-  there is none), for the relay's windows and those of `op` calls. Before, they always opened on the primary screen.
+  there is none), for the relay's windows and those of `op` calls that `op-reason.exe` runs. Before, they always opened
+  on the primary screen.
 - **A window's notification goes with its window**, from the screen and from the notification center, so they no
   longer pile up there. A per-call window that timed out unanswered leaves its notification; the one-time notices
-  (1Password did not ask, 1Password did not answer, the relay has no parent process) stay. The launcher's notifications
-  are unchanged.
+  (1Password did not ask, 1Password did not answer, the relay has no parent process) stay. The PowerShell launcher's
+  window and notifications are unchanged.
 - The READMEs show where the windows, the toasts and the notifications appear, in an animation and in an HTML page
   (`docs/html/relay-screens.html`).
 

@@ -420,12 +420,12 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     </figure>
     <ul data-l="en">
       <li><b>Toasts.</b> A signature that an earlier answer lets through (Allow this call, Allow this terminal) shows a card for four seconds, then fades: <code>Passed · &lt;caller&gt;</code>, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top, three at most (a fourth pushes the oldest out at once). Toasts never take the focus, let clicks through, make no sound and stay out of the notification center. With Windows' animation effects off they neither slide nor fade.</li>
-      <li><b>Windows</b> open on the screen you work on (that of the foreground window; the primary screen when there is none) and stay there. The windows of <code>op</code> calls do too.</li>
+      <li><b>Windows</b> open on the screen you work on (that of the foreground window; the primary screen when there is none) and stay there. The windows of <code>op</code> calls do too, when <code>op-reason.exe</code> runs them; the PowerShell launcher's window stays at the top right of the primary screen, and its notifications stay.</li>
       <li><b>Notifications</b> go with their window, so they do not pile up in the notification center; a per-call window that timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password did not ask, 1Password did not answer, the relay has no parent process) stay.</li>
     </ul>
     <ul data-l="ja" lang="ja">
       <li><b>トースト</b>: 前の答え (この呼び出しを許可・このターミナルを 60 分許可) で通った署名は、カードを 4 秒出して薄れて消えます。中身は <code>通過 · &lt;呼び手&gt;</code>、ssh のコマンドと接続先、通った訳 (この呼び出しの許可・ターミナルの許可) と理由です。同じ呼び出しの署名は 1 枚にまとめ、数 (×N) と最後の接続先を出して 4 秒を数え直します。ほかの呼び出しは 1 枚ずつ一番上に入り、同時に 3 枚まで (4 枚目が来たら一番古いものをすぐ消す)。トーストはフォーカスを取らず、クリックを下の窓へ通し、音を鳴らさず、通知センターにも入りません。Windows のアニメーション効果を切っていれば、ずれたり薄れたりせずに出て消えます。</li>
-      <li><b>窓</b>は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。<code>op</code> の呼び出しの窓も同じです。</li>
+      <li><b>窓</b>は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。<code>op</code> の呼び出しの窓も、<code>op-reason.exe</code> が出すものは同じです。PowerShell の launcher の窓は主画面の右上のままで、その通知も残ります。</li>
       <li><b>通知</b>は窓と一緒に消えるので、通知センターに溜まりません。per-call の窓が時間切れで閉じたときは、答えなかった依頼の印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は残ります。</li>
     </ul>
   </section>
