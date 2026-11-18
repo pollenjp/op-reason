@@ -344,6 +344,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 - **Windows**: Windows の OpenSSH なら `SSH_AUTH_SOCK` に `\\.\pipe\op-reason-ssh-agent` を置くか、`~/.ssh/config` に
   `IdentityAgent \\\\.\pipe\op-reason-ssh-agent` (OpenSSH は設定と `-o` の `\\` を `\` 1 つと読むので、先頭の 2 つを重ねます)。
   理由は `OPREASON_SSH_REASON` で渡します: `$env:OPREASON_SSH_REASON = "ログインの修正を push する"; git push`。
+  Git for Windows は自前の ssh を使い、それはパイプに届きません: `GIT_SSH` (か `core.sshCommand`) を Windows の OpenSSH の
+  `ssh.exe` (`C:\Windows\System32\OpenSSH\ssh.exe` や `C:\Program Files\OpenSSH\ssh.exe`) にします。
 - **WSL**: `ssh.exe` の代わりに `op-reason-ssh` (その名前の WSL の実行ファイル) を打ちます。たとえば
   `GIT_SSH_COMMAND=op-reason-ssh`、ansible なら `ansible_ssh_executable=op-reason-ssh`。理由は `OPREASON_SSH_REASON` です。
   `op-reason-ssh` は Linux の側で呼び出しの起点を見つけ、`op` と同じように呼び手 (Claude Code・herdr・repository) を集め、
@@ -374,8 +376,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   ディストリビューション自身の起動プログラム (`ubuntu.exe` など) で始めた WSL では `ssh.exe` の親が別になることがあり、
   そのとき中継は Windows のプログラムとして扱います (手で確かめること: [docs/manual-verification.ja.md](docs/manual-verification.ja.md))。
 - Smart App Control が `op-reason.exe` を止める所では、中継はありません (PowerShell の代わりもありません)。Git Bash の
-  `ssh` (MSYS2) は Windows のパイプを使いません。`op-ssh-sign` による git の commit の署名は、1Password のアプリに直に
-  話すかもしれません。
+  `ssh` (MSYS2) は Windows のパイプを使いません。`op-ssh-sign` による git の commit の署名は 1Password のアプリに直に話し
+  (`op-ssh-sign-wsl.exe` で確かめた)、中継の外にあります。
 
 ## 知っておくこと
 

@@ -353,7 +353,9 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
 - **Windows**: `SSH_AUTH_SOCK` set to `\\.\pipe\op-reason-ssh-agent` for Windows OpenSSH, or in `~/.ssh/config`
   `IdentityAgent \\\\.\pipe\op-reason-ssh-agent` (OpenSSH reads `\\` in its configuration and in `-o` as one backslash, so
   the leading pair is written twice). The reason goes in `OPREASON_SSH_REASON`:
-  `$env:OPREASON_SSH_REASON = "push the login fix"; git push`.
+  `$env:OPREASON_SSH_REASON = "push the login fix"; git push`. Git for Windows runs its own ssh, which cannot reach the
+  pipe: set `GIT_SSH` (or `core.sshCommand`) to Windows OpenSSH's `ssh.exe`, such as
+  `C:\Windows\System32\OpenSSH\ssh.exe` or `C:\Program Files\OpenSSH\ssh.exe`.
 - **WSL**: run `op-reason-ssh` (the WSL executable under that name) instead of `ssh.exe`, for example
   `GIT_SSH_COMMAND=op-reason-ssh` or ansible's `ansible_ssh_executable=op-reason-ssh`, with the reason in
   `OPREASON_SSH_REASON`. It finds the root of the call on Linux, collects the caller as `op` does (Claude Code, herdr,
@@ -385,8 +387,8 @@ Time      Result       Secs  Caller           Reason              Command
   started through a distribution's own launcher (such as `ubuntu.exe`) may hand its `ssh.exe` another parent; the relay
   then treats it as a Windows program (to be checked by hand, [docs/manual-verification.md](docs/manual-verification.md)).
 - Where Smart App Control blocks `op-reason.exe`, there is no relay (there is no PowerShell fallback for it). Git Bash's
-  `ssh` (MSYS2) does not use the Windows pipe, and git commit signing with `op-ssh-sign` may talk to the 1Password app
-  directly.
+  `ssh` (MSYS2) does not use the Windows pipe, and git commit signing with `op-ssh-sign` talks to the 1Password app
+  directly (seen with `op-ssh-sign-wsl.exe`): it stays outside the relay.
 
 ## Things to know
 

@@ -68,8 +68,8 @@ Non-goals:
 - Pointing clients at the relay and starting it at logon: the author's dotfiles, after a release (§12).
 - Claude Code hooks or rules that ask agents for a reason (the dotfiles).
 - A fallback relay in PowerShell. Where Smart App Control blocks `op-reason.exe` there is no relay; the README says so.
-- Git Bash's `ssh` (MSYS2; it does not use the Windows pipe), and `op-ssh-sign` if it talks to the 1Password app
-  directly (C3).
+- Git Bash's `ssh` (MSYS2; it does not use the Windows pipe), and `op-ssh-sign`, which talks to the 1Password app
+  directly (C3, §15).
 - Requests other than signatures (listing keys, adding and removing keys, lock and unlock): passed on unchanged,
   without a window.
 - Any change to `op` calls.
@@ -321,9 +321,11 @@ way: `git-upload-pack '…'` is worth seeing.
 ## 12. The dotfiles, after a release (not this repository)
 
 - Install the release and start `op-reason.exe --ssh-agent` at logon from a scheduled task (hidden, restarted on
-  failure), so that its parent stays alive (not from a script that exits).
+  failure), so that its parent stays alive (not from a script that exits). Check then what 1Password's prompt names
+  for it and that 1Password answers it (not seen yet, §15).
 - Point clients at the relay, including the terminal program's own connections (so that forwarded requests come
   through it).
+- Point Git for Windows at Windows OpenSSH (`core.sshCommand` or `GIT_SSH`): its own ssh cannot reach the pipe (§15).
 - Run `op-reason-ssh` instead of `ssh.exe` from WSL.
 - Decide what clients do when the relay does not run (they have no agent then).
 - Tell agents to set `OPREASON_SSH_REASON`.
@@ -397,5 +399,34 @@ The first rows answer the builder check (decided before the implementation); the
 - Checked on CI (GitHub's Windows runner with the fake agent, client and `wsl.exe` of `crates/op-reason-win/fake-ssh`;
   no 1Password): the 19 end-to-end tests of `crates/op-reason-win/tests/relay.rs`, real clicks on Allow and Deny
   included, and the screenshots of the window in both modes on the pull request.
-- Not yet: C2, C3 (§4.2) and the manual checks of §11 (`docs/manual-verification.md`, S1–S17), including the form of
-  `IdentityAgent` (S2) and a WSL started through a distribution's own launcher (S17).
+- Checked with a build of this change on the author's Windows (2026-11-18; the checks S1–S17 of
+  `docs/manual-verification.md`, which lists the results one by one; op-reason 0.3.0 from the pull request, the
+  1Password CLI 2.41.1, the 1Password app 8.12.46.29, Windows OpenSSH 10.4p1, Windows build 26300; S6, S13 and S17
+  skipped):
+  - C1 with the relay itself: after one approval the later signatures passed without a prompt, from Windows (also
+    through `IdentityAgent` with the leading pair doubled), from WSL, the other connections of a loop (0.1 s each) and
+    the login to a host that allows agent forwarding. 1Password's prompt named the terminal program the relay was
+    started in, not `op-reason.exe` (S1; also S12 and S14): most likely 1Password walks up from the relay to an
+    application it knows. The design does not rest on that name: the decision is made in op-reason's window, and the
+    approval covers the relay as C1 expects.
+  - C2: show-only with "request" showed op-reason's window and 1Password's prompt together, for each signature (S10).
+  - C3: `op-ssh-sign-wsl.exe` does not use `SSH_AUTH_SOCK`; it talks to the 1Password app directly, so commit signing
+    from WSL stays outside the relay, as the README says (S14).
+  - C4: each signature forwarded back from the host that allows agent forwarding got a window of its own, with both
+    host keys (S9).
+  - per-call: one window for a loop of five connections; a denial failed the other four at once; the terminal answer
+    covered `ssh` and `git ls-remote` typed in that terminal, and not a new tab; no click within 60 seconds failed the
+    signature, and the next run asked again (S4, S5, S7, S8).
+  - 1Password locked: one access request (Windows Hello) unlocked it and approved the relay at once, while the window
+    stayed as "1Password is asking" (S12).
+  - A relay without a parent: the record and the toast at start; 1Password showed no prompt and left the request
+    unanswered (59.7 s), and the toast of the missing answer gave the cause (S15), as in the first try of C1.
+  - Right after 1Password's setting was changed, one request got neither a prompt nor an answer for 60 seconds; the
+    next one was asked as usual (S11). The relay kept its window and failed the request at the timeout.
+  - Git for Windows runs its own ssh, which cannot reach the pipe; with `GIT_SSH` set to Windows OpenSSH's `ssh.exe`,
+    git went through the relay (S7, §12).
+  - The records: one line per signature among the `op` calls, every result seen; the 42 `ssh-*` records held neither
+    the data signed nor a signature (S16).
+- Not yet: a playbook run (S6), a terminal program's own connections and reconnects (S13), a WSL started through a
+  distribution's own launcher (S17), and what 1Password names and whether it answers when the relay is started from
+  a logon task (§12).
