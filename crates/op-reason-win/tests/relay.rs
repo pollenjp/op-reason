@@ -1219,6 +1219,46 @@ fn a_signature_that_passes_without_a_window_shows_a_toast() {
 }
 
 #[test]
+fn a_fourth_call_pushes_a_card_out_and_counts_it() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("toast-more");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let reasons = ["first call", "second call", "third call", "fourth call"];
+    for r in reasons {
+        let c = sb.client(Some(r), &["sign"]).spawn().unwrap();
+        answer(true);
+        assert_eq!(text(&c.wait_with_output().unwrap()), "sign 14\n", "{r}");
+    }
+    // each call signs again, without a window: four cards, the first pushed out
+    for r in reasons {
+        let out = sb.client(Some(r), &["sign"]).output().unwrap();
+        assert_eq!(text(&out), "sign 14\n", "{r}: {out:?}");
+    }
+    assert!(
+        wait_until(Duration::from_secs(3), || toasts::window()
+            .is_some_and(|(_, t)| t.lines().last() == Some("+1"))),
+        "three cards and +1 (now: {:?})",
+        toasts::window().map(|w| w.1)
+    );
+    let (_, title) = toasts::window().unwrap();
+    report(&format!("toasts of four calls: {title:?}"));
+    assert_eq!(
+        title.lines().count(),
+        4,
+        "three first lines and +1: {title}"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || toasts::window().is_none()),
+        "gone after the four seconds and the fade"
+    );
+}
+
+#[test]
 fn the_window_notification_goes_with_the_window() {
     if !on_ci() {
         eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");

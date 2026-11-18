@@ -414,12 +414,13 @@ if ($FakeSsh) {
     [void][OpReasonShots]::SetCursorPos(400, 600)
   }
 
-  # The toasts: the calls of $Calls are allowed one by one, then each signs $Signs[i] times without a window. The client
-  # of call i is ssh.exe (a copy of fake-ssh) with the ssh arguments $SshArgs[i].
+  # The toasts: the calls of $Calls are allowed one by one, then each signs $Signs[i] times without a window, the first
+  # $Together of them at once and each later one after the one before. The client of call i is ssh.exe (a copy of
+  # fake-ssh) with the ssh arguments $SshArgs[i].
   $sshDir = Join-Path $work 'openssh'
   New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
   Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $sshDir 'ssh.exe')
-  function Show-Toasts([string] $Name, [string] $Lang, [string] $Title, $Calls, [int[]] $Signs, $SshArgs) {
+  function Show-Toasts([string] $Name, [string] $Lang, [string] $Title, $Calls, [int[]] $Signs, $SshArgs, [int] $Together = 0) {
     $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
       @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -439,11 +440,15 @@ if ($FakeSsh) {
       }
       if (-not $client.WaitForExit(15000)) { $client.Kill() }
     }
+    $running = @()
     for ($i = 0; $i -lt $jsons.Count; $i++) {
       $steps = (@('bind') + @(1..$Signs[$i] | ForEach-Object { 'sign' })) -join ' '
-      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
+      $running += Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
         @{ OPREASON_SSH_CALL = $jsons[$i]; FAKE_SSH_PIPE = $pipe; FAKE_SSH_STEPS = $steps }
-      if (-not $client.WaitForExit(15000)) { $client.Kill() }
+      if ($i -ge $Together - 1) {
+        foreach ($q in $running) { if (-not $q.WaitForExit(15000)) { $q.Kill() } }
+        $running = @()
+      }
     }
     $t = Wait-ClassWindow 'op-reason-pass-toast' 5000
     if ($t -eq [IntPtr]::Zero) { Write-Warning "no toast for scene $Name" } else {
@@ -456,13 +461,28 @@ if ($FakeSsh) {
     $relay.WaitForExit()
   }
 
+  # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
+  $repos = @('infra', 'app', 'docs')
+  $fetchCalls = @(0..2 | ForEach-Object {
+    $repo = $repos[$_]
+    [ordered]@{
+      v = 1; distro = 'Ubuntu'; rule = 'shell'
+      root = [ordered]@{ pid = 2801 + $_; start = 2; name = 'git'; cmd = "git -C ~/src/$repo fetch" }
+      shell = [ordered]@{ pid = 2000; start = 1; name = 'fish'; cmd = '' }
+      caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = "~/src/$repo"; repo = "me/$repo"; branch = 'main' }
+      session = $null; reason = ''
+    }
+  })
   Show-Toasts '16-relay-toasts-ja' 'ja' `
     (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') `
-    @($personCall, $claudeCall) @(3, 1) @(
+    ($fetchCalls + @($personCall, $claudeCall)) @(1, 1, 1, 3, 1) @(
+      , @('git@github.com', "git-upload-pack 'me/infra.git'")
+      , @('git@github.com', "git-upload-pack 'me/app.git'")
+      , @('git@github.com', "git-upload-pack 'me/docs.git'")
       , @('-T', 'git@github.com')
       , @('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60s', '-o', 'ServerAliveInterval=30',
         'deploy@build-runner-07.staging.internal.example.com', "/bin/sh -c 'echo ~ && sleep 0'")
-    )
+    ) 3
   # show-only: the fake agent answers after six seconds, as while 1Password asks
   Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '6000' -NoNewline
   $ansibleCall = [ordered]@{
