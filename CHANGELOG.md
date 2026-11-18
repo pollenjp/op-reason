@@ -1,17 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-11-18
 
 - **The SSH relay: who and why for every use of an SSH key.** `op-reason.exe --ssh-agent` stands in front of the
   1Password SSH agent: it serves the agent protocol on its own pipe (`\\.\pipe\op-reason-ssh-agent`) and passes every
   request on, unchanged, to 1Password's (`\\.\pipe\openssh-ssh-agent`). Point ssh at it with `SSH_AUTH_SOCK` (or
-  `IdentityAgent`, with the leading pair of backslashes doubled), and give the reason in `OPREASON_SSH_REASON`.
+  `IdentityAgent`, with the leading pair of backslashes doubled; Git for Windows through Windows OpenSSH, with
+  `GIT_SSH`), and give the reason in `OPREASON_SSH_REASON`.
   - `per-call` (the default) asks once per call in op-reason's window (Allow this call, Deny, and for `ssh`, `git`,
-    `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, Allow this terminal for 60 minutes) and remembers the answer
-    for the call, for 60 minutes at most:
-    ansible's connections wait for one answer, and a denied call fails at once. A call is its root process (Claude
-    Code's tool call, the command typed in a terminal, or the program that runs ssh), the key and the reason. 1Password
-    approves the relay once, until it locks. **Here op-reason's window is where you decide**, unlike for `op`.
+    `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, Allow this terminal for 60 minutes) and remembers the
+    answer for the call, for 60 minutes at most: ansible's connections wait for one answer, and a denied call fails at
+    once. A call is its root process (Claude Code's tool call, the command typed in a terminal, or the program that
+    runs ssh), the key and the reason; requests forwarded back from a remote host (`ssh -A`) ask one by one. 1Password
+    approves the relay once, until it locks. Keep 1Password at "application and terminal session": at "application",
+    that approval also lets a client that talks to 1Password directly from the terminal program the relay runs in
+    through without a prompt. **Here op-reason's window is where you decide**, unlike for `op`.
   - `show-only` decides nothing: for people whose 1Password asks for every request, it shows who and why next to each
     prompt, and says once when a signature passed too fast for a prompt.
   - The window shows the caller, the root process, the place, the reason, the ssh command, the destination with its
@@ -20,6 +23,8 @@
     `op-reason.exe --log` lists them among the calls of `op`.
   - Start it from a scheduled task: 1Password leaves a relay whose parent process has ended unanswered, and the relay
     says so when that happens. `--status` tells whether a relay answers.
+  - Outside the relay: git commit signing with `op-ssh-sign`, which talks to the 1Password app directly, and Git
+    Bash's own ssh.
 - **`op-reason-ssh` on WSL**: the WSL executable under that name runs `ssh.exe` with the facts of the call (the root on
   Linux, the caller, herdr, the place, the distribution and the reason) for the relay, with the arguments and streams
   unchanged. The Nix packages link it.
