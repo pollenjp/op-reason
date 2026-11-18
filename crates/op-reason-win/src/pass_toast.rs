@@ -46,7 +46,7 @@ pub const DROP: f32 = 12.0;
 const EVICT_LINGER_MS: u64 = 40;
 
 /// The top of the card in place `slot` (0 at the top).
-pub fn slot_y(slot: usize) -> f32 {
+pub const fn slot_y(slot: usize) -> f32 {
     EDGE + slot as f32 * (CARD_H + GAP)
 }
 
