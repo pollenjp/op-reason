@@ -462,14 +462,15 @@ if ($FakeSsh) {
   }
 
   # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
-  $repos = @('infra', 'app', 'docs')
+  # (ForEach-Object runs in this scope: its variables must not take a name of the script's, such as $repo)
+  $fetchNames = @('infra', 'app', 'docs')
   $fetchCalls = @(0..2 | ForEach-Object {
-    $repo = $repos[$_]
+    $fetchName = $fetchNames[$_]
     [ordered]@{
       v = 1; distro = 'Ubuntu'; rule = 'shell'
-      root = [ordered]@{ pid = 2801 + $_; start = 2; name = 'git'; cmd = "git -C ~/src/$repo fetch" }
+      root = [ordered]@{ pid = 2801 + $_; start = 2; name = 'git'; cmd = "git -C ~/src/$fetchName fetch" }
       shell = [ordered]@{ pid = 2000; start = 1; name = 'fish'; cmd = '' }
-      caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = "~/src/$repo"; repo = "me/$repo"; branch = 'main' }
+      caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = "~/src/$fetchName"; repo = "me/$fetchName"; branch = 'main' }
       session = $null; reason = ''
     }
   })

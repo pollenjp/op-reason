@@ -1234,18 +1234,29 @@ fn a_fourth_call_pushes_a_card_out_and_counts_it() {
         answer(true);
         assert_eq!(text(&c.wait_with_output().unwrap()), "sign 14\n", "{r}");
     }
-    // each call signs again, without a window: four cards, the first pushed out
-    for r in reasons {
-        let out = sb.client(Some(r), &["sign"]).output().unwrap();
+    // each call signs again, without a window and all at once (well within the four seconds of the first): four
+    // cards, one pushed out
+    let again: Vec<Child> = reasons
+        .iter()
+        .map(|r| sb.client(Some(r), &["sign"]).spawn().unwrap())
+        .collect();
+    for (r, c) in reasons.iter().zip(again) {
+        let out = c.wait_with_output().unwrap();
         assert_eq!(text(&out), "sign 14\n", "{r}: {out:?}");
     }
+    // the text that showed +1, kept: the four seconds of the card pushed out may end right after
+    let seen = std::cell::RefCell::new(None);
     assert!(
-        wait_until(Duration::from_secs(3), || toasts::window()
-            .is_some_and(|(_, t)| t.lines().last() == Some("+1"))),
+        wait_until(Duration::from_secs(3), || {
+            let t = toasts::window().map(|w| w.1);
+            let more = t.as_ref().is_some_and(|t| t.lines().last() == Some("+1"));
+            *seen.borrow_mut() = t;
+            more
+        }),
         "three cards and +1 (now: {:?})",
-        toasts::window().map(|w| w.1)
+        seen.borrow()
     );
-    let (_, title) = toasts::window().unwrap();
+    let title = seen.into_inner().unwrap_or_default();
     report(&format!("toasts of four calls: {title:?}"));
     assert_eq!(
         title.lines().count(),
