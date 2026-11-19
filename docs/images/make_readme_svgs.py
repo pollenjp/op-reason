@@ -248,7 +248,7 @@ SHOW_MS, FADE_MS, ENTER_MS, APPEAR_MS, EVICT_MS, BUMP_MS = 4000, 800, 240, 220, 
 MAX_CARDS = 3
 EDGE, GAP, CARD_W, CARD_H, DROP = 12.0, 8.0, 300.0, 70.0, 12.0
 EVICT_LINGER_MS = 40  # pass_toast.rs: a card pushed out is dropped this long after it has gone transparent
-OPACITY = 0.7  # a card shown (the text behind shows through); a glow lifts it to 1
+OPACITY = 0.7  # a card shown (the text behind shows through); the ring of its glow is drawn at full strength
 MORE_GAP, MORE_H = 4.0, 16.0  # the tag +N: this far under the third place, this high
 # A card as crates/op-reason-win/src/win/pass_window.rs draws it
 TOAST_TEXT_X, TOAST_TEXT_W = 36.0, CARD_W - 36.0 - 12.0
@@ -336,7 +336,8 @@ def sources() -> dict:
         f"pub const MORE_GAP: f32 = {MORE_GAP:.1f};",
         f"pub const MORE_H: f32 = {MORE_H:.1f};",
         "slot_y(MAX_CARDS - 1) + CARD_H + MORE_GAP",
-        "c.opacity.value(now) * (OPACITY + (1.0 - OPACITY) * glow)",
+        "opacity: shown * OPACITY,",
+        "glow: glow * shown,",
     ]
     pass_window = [
         f"const TEXT_X: f32 = {TOAST_TEXT_X:.1f};",
@@ -1786,7 +1787,8 @@ def glow_value(ms: float) -> float:
 def toast_card(c: Canvas, card: SimCard) -> str:
     """A card of the simulation where pass_window.rs draws it, moving and fading as simulated: shadow, glow, light
     yellow face with a gray border, the green check, its texts over time and the line of its four seconds (in steps of
-    half a second). The whole card is at 70% (an inner group, lifted to 100% by a glow) times its fade (the outer)."""
+    half a second). The card is at 70% (an inner group) times its fade (the outer); the ring of its glow is outside the
+    70%, at full strength, and fades with the card."""
     m = c.m
     rest = round(m.rest * 1000)
     shown = card.y[0].t <= rest and (card.gone is None or card.gone > rest)
@@ -1807,10 +1809,8 @@ def toast_card(c: Canvas, card: SimCard) -> str:
                 (end / 1000, glow_value(end - b) if end < b + BUMP_MS else 0.0, STEP),
             ]
         glow_attr = m.keyframes([(t, f"opacity:{num(v)}", e) for t, v, e in glows])
-        lift_attr = m.keyframes([(t, f"opacity:{num(OPACITY + (1 - OPACITY) * v)}", e) for t, v, e in glows])
     else:
         glow_attr = ' style="opacity:0"'
-        lift_attr = f' style="opacity:{num(OPACITY)}"'
     ends = sorted([*card.arms[1:], *card.fades, *([card.gone] if card.gone is not None else [])])
     bar = [(0.0, "transform:scaleX(0)")]
     for a in card.arms:
@@ -1824,8 +1824,6 @@ def toast_card(c: Canvas, card: SimCard) -> str:
     parts = [
         f'<rect x="{num(x - 1)}" y="1" width="{num(CARD_W + 2)}" height="{num(CARD_H + 2)}" rx="7" fill="#000" '
         'fill-opacity=".16"/>',
-        f'<rect x="{num(x - 2.5)}" y="-2.5" width="{num(CARD_W + 5)}" height="{num(CARD_H + 5)}" rx="8.5" fill="none" '
-        f'stroke="{TOAST_GREEN}" stroke-width="2.5" stroke-opacity=".9"{glow_attr}/>',
         f'<rect x="{num(x)}" y="0" width="{num(CARD_W)}" height="{num(CARD_H)}" rx="6" fill="{TOAST_BG}"/>',
         f'<rect x="{num(x + 0.5)}" y=".5" width="{num(CARD_W - 1)}" height="{num(CARD_H - 1)}" rx="6" fill="none" '
         f'stroke="{TOAST_BORDER}" stroke-opacity=".8"/>',
@@ -1866,7 +1864,11 @@ def toast_card(c: Canvas, card: SimCard) -> str:
             f'lengthAdjust="spacing" xml:space="preserve">{esc(why)}</text>'
         )
         parts.append(g(m.at(t / 1000, None if until is None else until / 1000), lines))
-    inner = g(m.keyframes(ostops), g(lift_attr, *parts))
+    ring = (
+        f'<rect x="{num(x - 2.5)}" y="-2.5" width="{num(CARD_W + 5)}" height="{num(CARD_H + 5)}" rx="8.5" fill="none" '
+        f'stroke="{TOAST_GREEN}" stroke-width="2.5" stroke-opacity=".9"{glow_attr}/>'
+    )
+    inner = g(m.keyframes(ostops), g(f' style="opacity:{num(OPACITY)}"', *parts), ring)
     return f'<g transform="translate(0,{num(rest_y)})">{g(m.keyframes(ystops), inner)}</g>'
 
 

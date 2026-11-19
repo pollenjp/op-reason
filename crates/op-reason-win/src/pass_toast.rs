@@ -12,7 +12,8 @@
 //! - Four seconds after its last signature a card fades out in 0.8 seconds, and the cards below move up.
 //! - The count is that of the call's signatures since its answer, also across cards: it goes on when the call signs
 //!   again after its card has gone.
-//! - A card shown is drawn at 70% opacity (the text behind shows through); a glow lifts it to full opacity.
+//! - A card shown is drawn at 70% opacity (the text behind shows through), also while it glows: the glow is a ring
+//!   around it, drawn at full strength.
 //!
 //! Without motion (Windows' animation effects off) cards neither slide, fade nor glow: they appear and go at once.
 
@@ -47,7 +48,7 @@ pub const CARD_W: f32 = 300.0;
 pub const CARD_H: f32 = 70.0;
 /// How far above its place a new card starts.
 pub const DROP: f32 = 12.0;
-/// A card's opacity while it is shown: the text behind it shows through.
+/// A card's opacity while it is shown: the text behind it shows through (its glow's ring is not part of it).
 pub const OPACITY: f32 = 0.7;
 /// The room between the third place and the count of the cards pushed out (`+N`).
 pub const MORE_GAP: f32 = 4.0;
@@ -142,9 +143,9 @@ pub struct CardView<'a> {
     pub id: u64,
     /// The card's top, from the top of the stack.
     pub y: f32,
-    /// The whole card's opacity: [`OPACITY`] once it has appeared, more while it glows, less while it fades.
+    /// The whole card's opacity: [`OPACITY`] once it has appeared, less while it appears or fades.
     pub opacity: f32,
-    /// The glow of a call that signed again, 0 to 1.
+    /// How strongly the ring of a call that signed again shows around the card, 0 to 1 (it fades with the card).
     pub glow: f32,
     /// The share of its four seconds left, while it is shown with motion and not fading.
     pub left: Option<f32>,
@@ -374,14 +375,16 @@ impl<K: Clone + Eq + Hash> Stack<K> {
             .iter()
             .chain(self.leaving.iter())
             .map(|c| {
+                // how far the card has appeared: 1 once in, 0 when gone
+                let shown = c.opacity.value(now);
                 let glow = c
                     .bump
                     .map_or(0.0, |b| glow(now.saturating_sub(b), now >= b));
                 CardView {
                     id: c.id,
                     y: c.y.value(now),
-                    opacity: c.opacity.value(now) * (OPACITY + (1.0 - OPACITY) * glow),
-                    glow,
+                    opacity: shown * OPACITY,
+                    glow: glow * shown,
                     left: (self.animate && c.state == State::Live).then(|| {
                         (1.0 - now.saturating_sub(c.armed) as f32 / SHOW_MS as f32).clamp(0.0, 1.0)
                     }),
@@ -543,7 +546,7 @@ mod tests {
         s.advance(4300);
         assert!(s.frame(4300)[0].opacity < OPACITY, "fading");
         s.pass(4300, "a", "r1", t("A"));
-        assert_eq!(s.frame(4300 + BUMP_MS)[0].opacity, OPACITY, "back");
+        assert_eq!(s.frame(4300 + APPEAR_MS)[0].opacity, OPACITY, "back");
         s.advance(8299);
         assert_eq!(s.frame(8299)[0].opacity, OPACITY, "four seconds again");
         s.advance(8300 + FADE_MS);
@@ -633,19 +636,38 @@ mod tests {
     }
 
     #[test]
-    fn a_bump_lifts_the_card_to_full_opacity() {
+    fn a_bump_rings_a_card_that_stays_at_seventy_percent() {
         let mut s = Stack::new(true, HOUR);
         s.pass(0, "a", "r1", t("A"));
         s.pass(1000, "a", "r1", t("A"));
-        assert_eq!(s.frame(1000)[0].opacity, OPACITY);
+        let peak = s.frame(1000 + BUMP_MS / 4);
         assert_eq!(
-            s.frame(1000 + BUMP_MS / 4)[0].opacity,
-            1.0,
-            "full at the glow's peak"
+            (peak[0].opacity, peak[0].glow),
+            (OPACITY, 1.0),
+            "the ring at full, the card at 70%: a burst keeps the text behind readable"
         );
-        let o = s.frame(1000 + BUMP_MS / 2)[0].opacity;
-        assert!(OPACITY < o && o < 1.0, "on its way back: {o}");
-        assert_eq!(s.frame(1000 + BUMP_MS)[0].opacity, OPACITY, "back to 70%");
+        assert_eq!(s.frame(1000 + BUMP_MS)[0].glow, 0.0);
+        s.advance(5000 + FADE_MS / 2);
+        s.pass(5000 + FADE_MS / 2, "a", "r1", t("A"));
+        let back = s.frame(5000 + FADE_MS / 2 + BUMP_MS / 4);
+        assert!(
+            back[0].glow < 1.0 && back[0].opacity < OPACITY,
+            "a card coming back rings as much as it shows: {back:?}"
+        );
+    }
+
+    #[test]
+    fn of_cards_that_signed_at_once_the_lowest_is_pushed_out() {
+        let mut s = Stack::new(true, HOUR);
+        for call in ["a", "b", "c", "d"] {
+            s.pass(5, call, "r", t(&call.to_uppercase()));
+        }
+        assert_eq!(
+            s.heads(),
+            ["Passed · D", "Passed · C", "Passed · B"],
+            "four calls in one wake: A goes"
+        );
+        assert_eq!(s.more(), 1);
     }
 
     #[test]

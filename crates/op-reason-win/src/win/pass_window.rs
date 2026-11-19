@@ -2,8 +2,8 @@
 //! show as cards at the top left of the screen of the foreground window. One layered window holds every card
 //! ([`crate::pass_toast::Stack`] decides them) and is drawn with Direct2D into a bitmap with an alpha channel
 //! (`UpdateLayeredWindow`). Each card is drawn into a Direct2D layer that is put on the bitmap at the card's opacity
-//! (70% once shown), so that the text behind shows through the whole card alike; `+N` under the third card counts the
-//! cards pushed out. The window never takes the focus, lets clicks and the pointer through (`WS_EX_TRANSPARENT`), is
+//! (70% once shown), so that the text behind shows through the whole card alike; the ring of a card that glows is drawn
+//! after it, at full strength. `+N` under the third card counts the cards pushed out. The window never takes the focus, lets clicks and the pointer through (`WS_EX_TRANSPARENT`), is
 //! always on top, stays out of the taskbar and Alt+Tab, and is hidden while no card is shown. Its window text lists the
 //! cards' first lines, newest first, then `+N`.
 //!
@@ -91,7 +91,7 @@ const CHECK: (f32, f32, f32) = (18.0, 17.5, 8.0); // center and radius
 const BAR_TOP: f32 = CARD_H - 5.0;
 /// The widest share of line 2 that the destination may take; the command gets the rest.
 const DEST_SHARE: f32 = 0.6;
-/// How far a card's layer reaches beyond the card: its shadow and its glow.
+/// How far a card's layer reaches beyond the card: its shadow.
 const CARD_BLEED: f32 = 4.0;
 // The tag `+N` (at the cards' left edge, `more_y()` from the top, `MORE_H` high): its room left and right of the text,
 // and its corners.
@@ -437,7 +437,7 @@ impl Surface {
     }
 }
 
-/// The brushes of the cards, at their own alphas (a card's opacity is its layer's).
+/// The brushes of the cards, at their own alphas (a card's opacity is its layer's; the glow's is set per card).
 struct Paint {
     fill: ID2D1SolidColorBrush,
     border: ID2D1SolidColorBrush,
@@ -470,7 +470,7 @@ impl Paint {
         })
     }
 
-    /// How much the next card glows: its ring's opacity.
+    /// How strongly the next ring shows.
     fn set_glow(&self, glow: f32) {
         // SAFETY: a brush of a live target.
         unsafe { self.glow.SetOpacity(glow.clamp(0.0, 1.0)) }
@@ -740,7 +740,6 @@ impl Ui {
             // the leaving cards first, then from the bottom up: the top card is drawn last
             for c in frame.iter().rev() {
                 if let Some(lines) = self.lines.get(&c.id) {
-                    surface.paint.set_glow(c.glow);
                     let bounds = D2D_RECT_F {
                         left: EDGE - CARD_BLEED,
                         top: c.y - CARD_BLEED,
@@ -750,6 +749,10 @@ impl Ui {
                     push_layer(rt, &surface.layer, bounds, c.opacity);
                     draw_card(rt, c, lines, &surface.paint);
                     rt.PopLayer();
+                    if c.glow > 0.0 {
+                        surface.paint.set_glow(c.glow);
+                        draw_ring(rt, c.y, &surface.paint);
+                    }
                 }
             }
             if let Some((_, t)) = &self.more {
@@ -837,8 +840,27 @@ unsafe fn draw_more(rt: &ID2D1DCRenderTarget, t: &Text, p: &Paint) {
     }
 }
 
-/// One card at its place, drawn opaque into its layer: shadow, glow, light yellow face, gray border, the green check,
-/// three lines, the line of the time left.
+/// The green ring around the card at `y` whose call signed again (outside its layer: at full strength on a card at
+/// 70%).
+///
+/// # Safety
+///
+/// Between `BeginDraw` and `EndDraw` of `rt`; the brushes are `rt`'s.
+unsafe fn draw_ring(rt: &ID2D1DCRenderTarget, y: f32, p: &Paint) {
+    let (x, right, bottom) = (EDGE, EDGE + CARD_W, y + CARD_H);
+    // SAFETY: (caller) inside BeginDraw and EndDraw, with a brush of this target.
+    unsafe {
+        rt.DrawRoundedRectangle(
+            &rounded(x - 2.5, y - 2.5, right + 2.5, bottom + 2.5, RADIUS + 2.5),
+            &p.glow,
+            2.5,
+            None,
+        );
+    }
+}
+
+/// One card at its place, drawn opaque into its layer: shadow, light yellow face, gray border, the green check, three
+/// lines, the line of the time left.
 ///
 /// # Safety
 ///
@@ -856,14 +878,6 @@ unsafe fn draw_card(rt: &ID2D1DCRenderTarget, c: &CardView<'_>, l: &Lines, p: &P
             &rounded(x - 1.0, y + 1.0, right + 1.0, bottom + 3.0, RADIUS + 1.0),
             &p.shadow,
         );
-        if c.glow > 0.0 {
-            rt.DrawRoundedRectangle(
-                &rounded(x - 2.5, y - 2.5, right + 2.5, bottom + 2.5, RADIUS + 2.5),
-                &p.glow,
-                2.5,
-                None,
-            );
-        }
         rt.FillRoundedRectangle(&rounded(x, y, right, bottom, RADIUS), &p.fill);
         rt.DrawRoundedRectangle(
             &rounded(x + 0.5, y + 0.5, right - 0.5, bottom - 0.5, RADIUS),

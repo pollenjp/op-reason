@@ -173,8 +173,9 @@ The texts are in `relay_ui`'s table with the window's.
   (one per call, ×N, line 2 of the last signature, the four seconds started again, a fading card that signs again comes
   back, the fourth pushing out the oldest, fading and closing up, the count going on after the card has gone and
   starting again for a new answer, no motion with animation effects off, when to draw next; after §11: the opacity, 70%
-  when shown, from 70% while fading and lifted by a bump; `+N`, counted until each pushed-out card's four seconds have
-  passed, the card whose last signature is the oldest pushed out, a pushed-out call that signs again coming back).
+  when shown, from 70% while fading and at 70% under a bump's ring; `+N`, counted until each pushed-out card's four
+  seconds have passed, the card whose last signature is the oldest pushed out (of two at once, the lower one), a
+  pushed-out call that signs again coming back).
 - Windows CI (`tests/relay.rs`, real clicks): after Allow, the same call signs three times: one toast window, visible,
   "×3" among its texts, layered, click-through (`WindowFromPoint` does not find it), never active, at the top left of
   the work area of the foreground window's screen; gone after about five seconds. Four other calls that pass one after
@@ -182,8 +183,8 @@ The texts are in `relay_ui`'s table with the window's.
 - Windows CI (B): while a window is open its notification is in the notification center (`ToastNotificationHistory`
   read with the same AppUserModelID), and after the window has closed it is not; after a per-call time-out it stays.
   Where the runner keeps no notification history, the test says so and checks nothing.
-- The CI screenshots add the toasts (a call of three signatures and another call, after three calls that they push out,
-  so that `+2` shows) and the whole screen with them.
+- The CI screenshots add the toasts (a call of three signatures and another call, after three calls of which they push
+  two out, so that `+2` shows) and the whole screen with them.
 - `make_readme_svgs.py --check` fails when the texts or the values it copies from the Rust sources (the toast's texts,
   its sizes and times) differ, and when the HTML page no longer has them.
 
@@ -240,8 +241,10 @@ Implementer's decisions:
 - **Each card is drawn into a Direct2D layer** whose opacity is the card's (0.7 while shown, down to 0 as it fades):
   the card is one picture at 70%, not a face, text and lines each at 70% on top of each other (where the face would
   show through the text). The `+N` tag is drawn the same way, at 70%.
-- **A bump lifts the card to full opacity**: in the 420 ms of a bump the card goes up to 100% in the first quarter and
-  back to 70% in the rest, with the green ring as before. On a 70% card the ring alone is easy to miss. Without motion
+- **A bump keeps the card at 70%; its green ring is drawn at full strength**, after the card's layer and outside it,
+  as before this change (it fades with the card only). Lifting the whole card to 100% at each bump was built first and
+  dropped after the review: while a call signs again and again (ansible, every few hundred milliseconds) the card
+  stayed nearly opaque (0.89 on average in the README's scene), and the text behind was hidden again. Without motion
   there is no bump, as before.
 - **The card pushed out is the one whose last signature is the oldest**, no longer the bottom one, which may have
   signed again a moment ago. So the cards shown always signed after those pushed out: `+N` is back at 0 before a card

@@ -182,7 +182,9 @@ html[lang="ja"] body { word-break: auto-phrase; }
   background: var(--op-yellow); color: #000; font-family: var(--font-win); font-size: 12px; line-height: 17px;
   box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 2px 0 1px rgba(0, 0, 0, 0.16), 0 6px 16px rgba(0, 0, 0, 0.3);
 }
-.stack .card { top: 0; left: 12px; will-change: transform, opacity; }
+/* A card on the stage: its place (moving and fading), the card at 70% in it, and the ring of its glow at full strength. */
+.stack .slot { position: absolute; top: 0; left: 12px; width: 300px; height: 70px; will-change: transform, opacity; }
+.slot .card { left: 0; top: 0; }
 .t-ico { position: absolute; left: 10px; top: 9.5px; width: 16px; height: 16px; }
 .t-ico circle { fill: var(--op-green); }
 .t-ico path { fill: none; stroke: #fff; stroke-width: 1.8; }
@@ -460,7 +462,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 (() => {
   'use strict';
   const SHOW = 4000, FADE = 800, ENTER = 240, APPEAR = 220, EVICT = 140, BUMP = 420, MAX = 3, GAP = 8, EDGE = 12;
-  // A card shown is at 70% (a glow lifts it to 100%); the tag +N: how far under the third place, how high, its room.
+  // A card shown is at 70% (the ring of its glow at full strength); the tag +N: how far under the third place, how high,
+  // the room beside its text.
   const OPACITY = 0.7, MORE_GAP = 4, MORE_H = 16, MORE_PAD = 6;
   // A card's size, how far above its place a new card starts, how long a card pushed out stays once transparent.
   const CARD_W = 300, CARD_H = 70, DROP = 12, LINGER = 40;
@@ -524,7 +527,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
         { t: 'A signature that passes without a window: a toast at the top left',
           b: 'A signature that an earlier answer lets through (here an ssh typed in a terminal that was allowed for 60 minutes) shows a card at the top left of the screen, at 70% opacity so that the text behind it shows through. The green line is its four seconds; then the card fades out in 0.8 seconds.' },
         { t: 'One card per call: ×N and its last destination, four seconds again',
-          b: 'One run of ansible signs once per host. The signatures of one call share one card: each adds one to ×N, puts its destination on line 2, makes the card glow once (its ring lights up and it turns opaque for a moment) and starts its four seconds again.' },
+          b: 'One run of ansible signs once per host. The signatures of one call share one card: each adds one to ×N, puts its destination on line 2, makes the card glow once (a green ring around it; the card stays at 70%) and starts its four seconds again.' },
         { t: "Another call's card goes on top; the others move down",
           b: 'Each other call gets a card of its own. The newest goes in at the top, in the corner, and the cards already shown move down.' },
         { t: 'A fourth card pushes the oldest out at once; +N counts the cards pushed out',
@@ -546,7 +549,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
         { t: '窓を出さずに通った署名: 左上にトースト',
           b: '前の答えで通った署名 (ここでは 60 分許可したターミナルで打った ssh) は、画面の左上に、後ろの字が透ける濃さ 70% のカードを出します。下の緑の線が残りの 4 秒で、なくなると 0.8 秒で薄れて消えます。' },
         { t: '同じ呼び出しは 1 枚: ×N と最後の接続先、4 秒を数え直す',
-          b: 'ansible は 1 回の実行でホストごとに署名します。同じ呼び出しの署名は 1 枚にまとめ、署名のたびに ×N が 1 つ増え、2 行目が最後の接続先になり、カードが一度光って (縁が光り、一瞬だけ不透明になる) 4 秒を数え直します。' },
+          b: 'ansible は 1 回の実行でホストごとに署名します。同じ呼び出しの署名は 1 枚にまとめ、署名のたびに ×N が 1 つ増え、2 行目が最後の接続先になり、カードが一度光って (まわりに緑の輪が出る。カードは 70% のまま) 4 秒を数え直します。' },
         { t: '別の呼び出しは一番上に入り、ほかは下へずれる',
           b: 'ほかの呼び出しは 1 枚ずつカードを出します。一番新しいものが一番上 (角) に入り、出ていたカードは下へずれます。' },
         { t: '4 枚目が来たら一番古いカードをすぐ消し、+N で数える',
@@ -632,13 +635,12 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   function paint(c) {
     const p = PASS[lang], call = c.call;
     const why = p[call.why] + ' · ' + (call.reason ? call.reason[lang] : p.none);
-    c.el.innerHTML = CHECK +
+    c.face.innerHTML = CHECK +
       '<div class="t-l1"><span class="t-w">' + esc(p.word) + '</span><span class="t-c"> · ' + esc(pick(call.who)) + '</span>' +
       (c.count >= 2 ? '<span class="t-n">×' + c.count + '</span>' : '') + '</div>' +
       '<div class="t-l2"><span class="t-cmd">' + esc(c.cmd) + '</span>' + (c.dest ? '<span class="t-dst"> → ' + esc(c.dest) + '</span>' : '') + '</div>' +
-      '<div class="t-l3">' + esc(why) + '</div><i class="t-bar"></i><i class="t-glow"></i>';
-    c.bar = c.el.querySelector('.t-bar');
-    c.glowEl = c.el.querySelector('.t-glow');
+      '<div class="t-l3">' + esc(why) + '</div><i class="t-bar"></i>';
+    c.bar = c.face.querySelector('.t-bar');
   }
   // Every card that holds a place moves towards it; the top card is drawn over the others, the leaving ones under all.
   function layout() {
@@ -705,8 +707,15 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
       y: anim(slotY(0) - DROP, slotY(0), ENTER, easeOut), op: anim(0, 1, APPEAR, lin)
     };
     c.el = document.createElement('div');
-    c.el.className = 'card';
+    c.el.className = 'slot';
     c.el.style.opacity = '0';
+    c.face = document.createElement('div');
+    c.face.className = 'card';
+    c.face.style.opacity = String(OPACITY);
+    c.glowEl = document.createElement('i');
+    c.glowEl.className = 't-glow';
+    c.el.appendChild(c.face);
+    c.el.appendChild(c.glowEl);
     paint(c);
     stackEl.appendChild(c.el);
     all.push(c);
@@ -875,9 +884,9 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 
   function render() {
     for (const c of all) {
-      // the whole card at 70%, lifted to 100% by a glow, times its fade
+      // the place fades; in it the card stays at 70% and the ring of its glow shows at full strength
       const gl = c.bump == null ? 0 : glow(now - c.bump);
-      c.el.style.opacity = (val(c.op) * (OPACITY + (1 - OPACITY) * gl)).toFixed(3);
+      c.el.style.opacity = val(c.op).toFixed(3);
       c.el.style.transform = 'translateY(' + val(c.y).toFixed(2) + 'px)';
       const live = c.state === 'live';
       c.bar.style.visibility = live ? '' : 'hidden';

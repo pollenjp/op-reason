@@ -281,16 +281,18 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 **Interfaces:**
 - `pub const OPACITY: f32 = 0.7;` (a card shown), `pub const MORE_GAP: f32 = 4.0;`, `pub const MORE_H: f32 = 16.0;`,
   `pub const fn more_y() -> f32` (the top of the `+N` tag: under the third place).
-- `CardView::opacity` = how far the card has appeared (0 to 1, as before) × (`OPACITY` + (1 − `OPACITY`) × glow).
+- `CardView::opacity` = how far the card has appeared (0 to 1, as before) × `OPACITY`; `CardView::glow` = the glow ×
+  how far the card has appeared (its ring, drawn at full strength outside the card's layer).
 - `Stack::more(&self) -> usize`: the cards pushed out whose four seconds have not passed (call `advance` first).
 - The card pushed out: the one whose last signature is the oldest (a tie: the lower one). A pushed-out call that signs
   again enters at the top as a new card and leaves the count. Without motion, `next_wake` also wakes at the end of a
   pushed-out card's four seconds.
 
 - [ ] **Step 1:** failing tests: `a_card_is_drawn_at_seventy_percent` (in place, halfway through its fade, without
-  motion), `a_bump_lifts_the_card_to_full_opacity`, `cards_pushed_out_are_counted_until_their_four_seconds_pass`
-  (ten calls: +7, then down one by one, cards counted once whatever their ×N),
-  `the_card_pushed_out_is_the_one_whose_last_signature_is_the_oldest`,
+  motion), `a_bump_rings_a_card_that_stays_at_seventy_percent`,
+  `cards_pushed_out_are_counted_until_their_four_seconds_pass` (ten calls: +7, then down one by one, cards counted once
+  whatever their ×N), `the_card_pushed_out_is_the_one_whose_last_signature_is_the_oldest`,
+  `of_cards_that_signed_at_once_the_lowest_is_pushed_out`,
   `a_call_pushed_out_that_signs_again_comes_back_on_top`, `the_count_is_gone_before_a_card_shown_fades`,
   `without_animation_the_count_goes_down_on_time`; the existing tests read 0.7 where they read 1.
 - [ ] **Step 2:** implement; `cargo test` and `cargo clippy --all-targets -- -D warnings` in `crates/op-reason-win`.
@@ -301,7 +303,8 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 - Modify: `crates/op-reason-win/src/win/pass_window.rs`
 
 - [ ] **Step 1:** one `ID2D1Layer` per surface; each card is drawn inside `PushLayer` with its opacity (content bounds:
-  the card with its shadow and glow), its brushes at their own alphas; the glow brush's opacity is the glow.
+  the card with its shadow), its brushes at their own alphas; then, outside the layer, the ring of its glow (the glow
+  brush's opacity is `CardView::glow`).
 - [ ] **Step 2:** the tag `+N` at (`EDGE`, `more_y()`), `MORE_H` high, light yellow, gray border, dark gray bold 11
   DIPs, in a layer at `OPACITY`, laid out again only when N changes; the bitmap `STACK_H` = `more_y()` + `MORE_H` +
   `EDGE`; the window's text: the cards' first lines, then `+N`.
@@ -315,8 +318,8 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 
 - [ ] **Step 1:** `a_fourth_call_pushes_a_card_out_and_counts_it` (CI only): four reasons allowed one by one, then each
   signs once without a window: three first lines and `+1` in the window's text.
-- [ ] **Step 2:** the screenshot scene: three calls allowed and passed first (they are pushed out), then the call of
-  three signatures and the call with the long destination: three cards and `+2`.
+- [ ] **Step 2:** the screenshot scene: three calls allowed and passed first (two of them are pushed out), then the call
+  of three signatures and the call with the long destination: three cards and `+2`.
 
 ### Task 13: The README animation and the HTML page
 
@@ -325,8 +328,9 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
   `docs/html/relay-screens.html`
 
 - [ ] **Step 1:** the script: copies of `OPACITY`, `MORE_GAP`, `MORE_H` (checked); `simulate_toasts` pushes out the card
-  whose last signature is the oldest and keeps the counts of `+N` over time; a card's group fades from 0.7 and an inner
-  group lifts it during a bump; the tag under the third place, one per value of N; the scene's fourth card at 16.0 s and
+  whose last signature is the oldest and keeps the counts of `+N` over time; a card's group fades, an inner group holds
+  it at 0.7 and the ring of its glow is outside that group; the tag under the third place, one per value of N; the
+  scene's fourth card at 16.0 s and
   a fifth call at 16.4 s (+1, +2, +1, gone), the caption at 15.8 s; `relay.desc` and the fourth step say `+N`.
 - [ ] **Step 2:** the HTML page: the same rules, the tag, the fifth call, its callouts and scenes; `OPACITY = 0.7` in its
   constants (checked).
