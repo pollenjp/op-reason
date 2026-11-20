@@ -2,7 +2,8 @@
 //! agent, on a connection of their own opened at the first message (so a connection that closes without a message
 //! leaves no trace). Sign requests are decided first (per-call) or shown while 1Password answers (show-only); a request
 //! that 1Password takes more than a second to answer gets the window without buttons, so that its prompt never stands
-//! alone. Every signature is recorded.
+//! alone. Every signature is recorded. A signature that an earlier answer let through without a window gets a toast
+//! (design `2026-11-18-pass-toasts-design.md` §4.1).
 
 use std::fs::File;
 use std::io::Write;
@@ -59,6 +60,14 @@ enum Upstream {
     NotYet,
     Up(File),
     Missing,
+}
+
+/// A request's exchange with the 1Password agent: what came back, in how many seconds, and whether the window without
+/// buttons came meanwhile.
+struct Exchanged {
+    reply: Reply,
+    secs: f64,
+    late_window: bool,
 }
 
 /// What came back from the 1Password agent.
@@ -195,13 +204,18 @@ impl<'a> Conn<'a> {
         Err(Reply::Closed)
     }
 
-    fn exchange(&mut self, msg: &[u8], mut watch: Watch<'_, 'a>) -> (Reply, f64) {
+    fn exchange(&mut self, msg: &[u8], mut watch: Watch<'_, 'a>) -> Exchanged {
         let shared = self.shared;
+        let at_once = |reply| Exchanged {
+            reply,
+            secs: 0.0,
+            late_window: false,
+        };
         if let Err(r) = self.send(&wire::frame(msg)) {
-            return (r, 0.0);
+            return at_once(r);
         }
         let Upstream::Up(up) = &mut self.upstream else {
-            return (Reply::Missing, 0.0);
+            return at_once(Reply::Missing);
         };
         let t0 = Instant::now();
         let mut late = Late::Idle;
@@ -237,10 +251,15 @@ impl<'a> Conn<'a> {
                 }
             }
         }
+        let late_window = matches!(late, Late::Shown(_));
         drop(late);
         if stalled {
             self.upstream = Upstream::NotYet;
-            return (Reply::Closed, t0.elapsed().as_secs_f64());
+            return Exchanged {
+                reply: Reply::Closed,
+                secs: t0.elapsed().as_secs_f64(),
+                late_window,
+            };
         }
         let reply = match wire::read_message(up) {
             Ok(Some(body)) => Reply::Body(body),
@@ -249,7 +268,11 @@ impl<'a> Conn<'a> {
                 Reply::Closed
             }
         };
-        (reply, t0.elapsed().as_secs_f64())
+        Exchanged {
+            reply,
+            secs: t0.elapsed().as_secs_f64(),
+            late_window,
+        }
     }
 
     /// A request other than a signature: passed on unchanged (the keys' comments are read from the answer to the key
@@ -260,7 +283,7 @@ impl<'a> Conn<'a> {
             kind => Request::Other(kind),
         };
         let facts = self.facts(request);
-        let (reply, _) = self.exchange(msg, Watch::Late(Box::new(facts)));
+        let reply = self.exchange(msg, Watch::Late(Box::new(facts))).reply;
         Some(match reply {
             Reply::Body(body) => {
                 if let Some(keys) = wire::identities(&body) {
@@ -402,8 +425,16 @@ impl<'a> Conn<'a> {
             &id,
         ) {
             Outcome::Passed(d) => {
-                let (reply, _) = self.exchange(msg, Watch::Late(Box::new(facts)));
-                self.finish(&who, &id, &req, reply, "passed", None, Some(&d.id), t0)
+                let toast = relay_ui::pass_texts(&facts, d.answer, shared.lang());
+                let ex = self.exchange(msg, Watch::Late(Box::new(facts)));
+                // signed without a window: the toast (not after the window without buttons, which showed it)
+                if signed(&ex.reply)
+                    && !ex.late_window
+                    && let Some(toasts) = shared.toasts()
+                {
+                    toasts.pass(mark.clone(), &d.id, toast);
+                }
+                self.finish(&who, &id, &req, ex.reply, "passed", None, Some(&d.id), t0)
             }
             Outcome::Refused(d) => {
                 self.record(&who, &id, Some(&req), "denied", None, Some(&d.id), t0);
@@ -411,7 +442,7 @@ impl<'a> Conn<'a> {
             }
             Outcome::Asked(answer, mut shown) => {
                 if answer.allows() {
-                    let (reply, _) = self.exchange(msg, Watch::Shown(&mut shown));
+                    let reply = self.exchange(msg, Watch::Shown(&mut shown)).reply;
                     drop(shown);
                     self.finish(&who, &id, &req, reply, "allowed", Some(answer), None, t0)
                 } else {
@@ -440,11 +471,11 @@ impl<'a> Conn<'a> {
             Err(o) => return self.unanswered(who, id, req, o, t0),
         };
         let lang = shown.lang();
-        let (reply, secs) = self.exchange(msg, Watch::Shown(&mut shown));
+        let ex = self.exchange(msg, Watch::Shown(&mut shown));
         drop(shown);
-        let signed = matches!(&reply, Reply::Body(b) if b.first() == Some(&wire::SIGN_RESPONSE));
-        let out = self.finish(who, id, req, reply, "signed", None, None, t0);
-        if signed && secs < NO_PROMPT && !shared.told_no_prompt.swap(true, Ordering::SeqCst) {
+        let fast = signed(&ex.reply) && ex.secs < NO_PROMPT;
+        let out = self.finish(who, id, req, ex.reply, "signed", None, None, t0);
+        if fast && !shared.told_no_prompt.swap(true, Ordering::SeqCst) {
             let _ = toast::start(relay_ui::no_prompt_toast(lang));
             shared.relay_record("no-prompt", None);
         }
@@ -635,6 +666,11 @@ impl<'a> Conn<'a> {
         };
         self.shared.record(log::line(&r));
     }
+}
+
+/// Whether 1Password signed.
+fn signed(reply: &Reply) -> bool {
+    matches!(reply, Reply::Body(b) if b.first() == Some(&wire::SIGN_RESPONSE))
 }
 
 /// A caller the relay cannot see.

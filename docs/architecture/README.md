@@ -81,7 +81,9 @@ what the PowerShell entry and the launcher do, in one process:
 4. **Lock** `Local\op-reason` before the `start` record, waiting up to `OPREASON_LOCK_WAIT` seconds (a time-out is a
    `refused` record with `lock-timeout`, exit 75); write `holder.json`. A mutex that cannot be used at all is recorded
    as `lock: failed`, and the call goes on.
-5. **Start** record; the window (Direct2D and DirectWrite, the launcher's texts) and the toast (on a worker thread);
+5. **Start** record; the window (Direct2D and DirectWrite, the launcher's texts; at the top right of the work area of
+   the screen of the foreground window, with that screen's DPI) and the toast (on a worker thread; tagged, and removed
+   from the screen and the notification center when the window closes, unless no window could be shown);
    `op.exe` with the caller's stdin and stdout, its stderr copied through while the tail is kept for `denied` and
    `timeout`. A desktop `op inject` without `-i` reads its template from stdin before the lock (when stdin is not a
    console), and `op.exe` gets the same bytes. `op.exe` runs in a kill-on-close Job Object (created suspended, put in
@@ -162,7 +164,9 @@ names the server's process.
 Threads: the main thread accepts connections; one thread per connection reads its requests in turn; the thread whose
 turn it is shows the window; one forgets decisions once a minute; one watches the relay's parent process (1Password
 leaves a relay whose parent has ended unanswered; a toast and a `ssh-relay` record say so); one waits for Ctrl+C while
-a console is attached (without one of its own, the relay calls `FreeConsole`).
+a console is attached (without one of its own, the relay calls `FreeConsole`); and, from the first signature that passes
+without a window, one owns the toasts' window
+([2026-11-18-pass-toasts-design.md](../superpowers/specs/2026-11-18-pass-toasts-design.md)).
 
 ### One request
 
@@ -186,14 +190,20 @@ a console is attached (without one of its own, the relay calls `FreeConsole`).
    request, one without a root, and one from an `ssh.exe` connection that signs before any `session-bind@openssh.com`
    (OpenSSH before 8.9: rule `unbound`) are each a call of their own). A request of a call whose request is in its
    window or with 1Password follows it; an answer in the book (or, for a person's command, the terminal's) passes or
-   fails the request at once. Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
+   fails the request at once. One that passes and that 1Password signs (without the window without buttons on the way)
+   gets a toast at the top left of the screen of the foreground window: a layered, click-through window that never takes
+   the focus, one card per call (×N, the last destination) at 90% opacity, three at most and `+N` under them for the
+   cards pushed out, each gone four seconds after its call's last signature (`crates/op-reason-win/src/pass_toast.rs`
+   decides the cards, `src/win/pass_window.rs` draws them, each card in a Direct2D layer at its opacity).
+   Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
    `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons and the toast,
-   and keeps the footer's count of waiting calls current. A click (press and release on a button) is remembered for the
-   call (Allow this terminal: also for the shell and the key); after Allow the window drops its buttons ("1Password is
-   asking") until 1Password answers, then closes, and the lock and the turn pass on. No click within `--answer-wait`
-   (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed it, without
-   remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a press only
-   400 ms after they appear, and the window captures the mouse from a press on a button until its release.
+   and keeps the footer's count of waiting calls current. The toast (the Windows notification) is removed when the
+   window closes, except after a time-out (`timeout`), which leaves it. A click (press and release on a button) is
+   remembered for the call (Allow this terminal: also for the shell and the key); after Allow the window drops its
+   buttons ("1Password is asking") until 1Password answers, then closes, and the lock and the turn pass on. No click
+   within `--answer-wait` (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed
+   it, without remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a
+   press only 400 ms after they appear, and the window captures the mouse from a press on a button until its release.
 4. **show-only**: every signature waits for its turn and the lock, shows the window without buttons, goes to 1Password
    and closes the window with the answer. A signature that passes in under half a second gets a toast once per run, and
    a `no-prompt` record (1Password most likely did not ask).
@@ -351,10 +361,10 @@ call holds the mutex, or the SSH relay's window is open), `settings.json` (the l
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the references and the account copy, the window and its screenshots; on CI, a real click on a link with a temporary `onepassword:` handler) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
 | `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
-| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages) and toasts, its usage |
-| `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends |
-| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
-| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) |
+| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion) |
+| `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends; on CI, the toast of signatures that pass (one card, layered, click-through, at the top left of the work area, gone after four seconds; four calls: three cards and `+1`) and the window's notification in the notification center (removed with its window, left after a time-out; nothing is checked where the runner keeps no notification history) |
+| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; a desktop call's notification removed when its window closes (where the runner keeps notification history); on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
+| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) and toasts |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |
 | `tests/release-notes.test.sh` | `.github/scripts/release-notes.sh` (the notes of a release: the version's section of `CHANGELOG.md`; the versions of `Cargo.toml`, `crates/op-reason-win` and the PowerShell entry agree, also with the tag) on made-up repositories and on this one |
 | [manual-verification.md](../manual-verification.md) | checks with the real 1Password app (by hand) |

@@ -1716,3 +1716,75 @@ fn a_click_on_the_switch_changes_the_language_and_leaves_the_focus_where_it_was(
         "ui keeps the texts the call started with: {st}"
     );
 }
+
+/// The notifications of a process in the notification center (its tags in the group `op-reason`), read with the
+/// AppUserModelID op-reason borrows; `None` when the history cannot be read.
+fn notices(pid: u32) -> Option<usize> {
+    use windows::UI::Notifications::ToastNotificationManager;
+    use windows::core::HSTRING;
+    let aumid = HSTRING::from(
+        r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
+    );
+    let list = ToastNotificationManager::History()
+        .ok()?
+        .GetHistoryWithId(&aumid)
+        .ok()?;
+    let mine = format!("{pid}-");
+    let mut n = 0;
+    for i in 0..list.Size().ok()? {
+        let t = list.GetAt(i).ok()?;
+        let group = t.Group().map(|g| g.to_string()).unwrap_or_default();
+        let tag = t.Tag().map(|g| g.to_string()).unwrap_or_default();
+        if group == "op-reason" && tag.starts_with(&mine) {
+            n += 1;
+        }
+    }
+    Some(n)
+}
+
+#[test]
+fn a_desktop_call_removes_its_notification_with_its_window() {
+    let _g = serial();
+    let sb = Sandbox::new("notice");
+    let child = sb
+        .command(
+            &[
+                s("--reason"),
+                s("notification check"),
+                s("vault"),
+                s("list"),
+            ],
+            &[("FAKE_SLEEP_MS", "4000")],
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let kept = wait_until(Duration::from_secs(4), || {
+        notices(pid).is_some_and(|n| n > 0)
+    });
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    use std::io::Write;
+    if !kept {
+        let _ = writeln!(
+            std::io::stderr(),
+            "exe notification: not checked, the notification center keeps no history here (history: {:?})",
+            notices(pid)
+        );
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "exe notification: in the history while the window was open, after the call {:?}",
+        notices(pid)
+    );
+    assert_eq!(notices(pid), Some(0), "removed when the window closed");
+    assert!(
+        lines_with(&sb.log(), "end")[0].contains(r#""toast":"shown""#),
+        "the record still says shown: {}",
+        sb.log()
+    );
+}

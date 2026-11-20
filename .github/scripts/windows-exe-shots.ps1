@@ -18,7 +18,12 @@
 # With -FakeSsh (crates/op-reason-win/fake-ssh), the SSH relay (op-reason.exe --ssh-agent) too: its window for a call
 # from WSL (a copy of fake-ssh named wsl.exe stands for the interop host, OPREASON_SSH_CALL for op-reason-ssh's facts),
 # per-call for Claude Code in Japanese and for a person's command in English (with the button that allows the
-# terminal), and show-only in English (docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
+# terminal), and show-only in English (docs/superpowers/specs/2026-11-17-ssh-relay-design.md). Then its toasts in
+# Japanese: two calls allowed with a click each, then three signatures of the first and one of the second pass without
+# a window; their client is a copy of fake-ssh named ssh.exe with an ssh command line (the second one long, with a long
+# destination), so that the toasts show the command and the destination as for a real ssh; the toast window and the
+# whole screen are saved with CAPTUREBLT, which layered windows need
+# (docs/superpowers/specs/2026-11-18-pass-toasts-design.md).
 #
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
 [CmdletBinding()]
@@ -51,6 +56,9 @@ public static class OpReasonShots {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
@@ -164,25 +172,45 @@ function Wait-Window([string] $Title, [int] $TimeoutMs = 30000) {
   return [IntPtr]::Zero
 }
 
-function Save-Rect([int] $Left, [int] $Top, [int] $Width, [int] $Height, [string] $Path) {
+function Save-Rect([int] $Left, [int] $Top, [int] $Width, [int] $Height, [string] $Path, [switch] $Layered) {
   $bmp = [Drawing.Bitmap]::new($Width, $Height)
   $g = [Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($Left, $Top, 0, 0, $bmp.Size)
+  if ($Layered) {
+    # SRCCOPY | CAPTUREBLT (CopyFromScreen takes no combination of the two)
+    $dst = $g.GetHdc()
+    $src = [OpReasonShots]::GetDC([IntPtr]::Zero)
+    [void][OpReasonShots]::BitBlt($dst, 0, 0, $Width, $Height, $src, $Left, $Top, 0x40CC0020)
+    [void][OpReasonShots]::ReleaseDC([IntPtr]::Zero, $src)
+    $g.ReleaseHdc($dst)
+  } else {
+    $g.CopyFromScreen($Left, $Top, 0, 0, $bmp.Size)
+  }
   $bmp.Save($Path, [Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose()
   $bmp.Dispose()
 }
 
-function Save-Window([IntPtr] $Handle, [string] $Path) {
+function Save-Window([IntPtr] $Handle, [string] $Path, [switch] $Layered) {
   $r = [OpReasonShots+RECT]::new()
   [void][OpReasonShots]::GetWindowRect($Handle, [ref]$r)
   $m = 8
-  Save-Rect ($r.Left - $m) ($r.Top - $m) ($r.Right - $r.Left + 2 * $m) ($r.Bottom - $r.Top + 2 * $m) $Path
+  Save-Rect ($r.Left - $m) ($r.Top - $m) ($r.Right - $r.Left + 2 * $m) ($r.Bottom - $r.Top + 2 * $m) $Path -Layered:$Layered
 }
 
-function Save-Screen([string] $Path) {
+function Save-Screen([string] $Path, [switch] $Layered) {
   $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-  Save-Rect $b.Left $b.Top $b.Width $b.Height $Path
+  Save-Rect $b.Left $b.Top $b.Width $b.Height $Path -Layered:$Layered
+}
+
+# Waits until a visible window of the class exists. Returns the handle (or zero on time-out).
+function Wait-ClassWindow([string] $Class, [int] $TimeoutMs = 10000) {
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+    $h = [OpReasonShots]::FindWindowW($Class, [NullString]::Value)
+    if ($h -ne [IntPtr]::Zero -and [OpReasonShots]::IsWindowVisible($h)) { return $h }
+    [Threading.Thread]::Sleep(5)
+  }
+  return [IntPtr]::Zero
 }
 
 # --- screenshots
@@ -366,6 +394,96 @@ if ($FakeSsh) {
     session = $null; reason = ''
   }
   Show-Relay '14-relay-person-en' 'per-call' 'en' 'SSH key: allow this call?' $personCall
+
+  # Clicks the first button of the relay's window (Allow this call) with the real mouse: 20 DIPs inside the client
+  # area's left edge and 26 DIPs above its bottom (as crates/op-reason-win/tests/relay.rs does).
+  function Invoke-AllowClick([IntPtr] $Handle) {
+    $rc = [OpReasonShots+RECT]::new()
+    [void][OpReasonShots]::GetClientRect($Handle, [ref]$rc)
+    $k = [math]::Max(96, [OpReasonShots]::GetDpiForWindow($Handle)) / 96.0
+    $pt = [OpReasonShots+POINT]::new()
+    $pt.X = [int][math]::Round(20 * $k)
+    $pt.Y = $rc.Bottom - [int][math]::Round(26 * $k)
+    [void][OpReasonShots]::ClientToScreen($Handle, [ref]$pt)
+    [void][OpReasonShots]::SetCursorPos($pt.X, $pt.Y)
+    [Threading.Thread]::Sleep(100)
+    [OpReasonShots]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
+    [Threading.Thread]::Sleep(60)
+    [OpReasonShots]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+    # out of the way of the screenshots
+    [void][OpReasonShots]::SetCursorPos(400, 600)
+  }
+
+  # The toasts: the calls of $Calls are allowed one by one, then each signs $Signs[i] times without a window, the first
+  # $Together of them at once and each later one after the one before. The client of call i is ssh.exe (a copy of
+  # fake-ssh) with the ssh arguments $SshArgs[i].
+  $sshDir = Join-Path $work 'openssh'
+  New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+  Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $sshDir 'ssh.exe')
+  function Show-Toasts([string] $Name, [string] $Lang, [string] $Title, $Calls, [int[]] $Signs, $SshArgs, [int] $Together = 0) {
+    $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
+      @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    do {
+      Start-Sleep -Milliseconds 100
+      & $Exe --ssh-agent --status --pipe $pipe *> $null
+    } while ($LASTEXITCODE -ne 0 -and $sw.ElapsedMilliseconds -lt 10000)
+    $jsons = @($Calls | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii })
+    $ssh = Join-Path $sshDir 'ssh.exe'
+    for ($i = 0; $i -lt $jsons.Count; $i++) {
+      $client = Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
+        @{ OPREASON_SSH_CALL = $jsons[$i]; FAKE_SSH_PIPE = $pipe; FAKE_SSH_STEPS = 'list bind sign' }
+      $h = Wait-Window $Title
+      if ($h -eq [IntPtr]::Zero) { Write-Warning "no window to allow for scene $Name" } else {
+        [Threading.Thread]::Sleep(700)
+        Invoke-AllowClick $h
+      }
+      if (-not $client.WaitForExit(15000)) { $client.Kill() }
+    }
+    $running = @()
+    for ($i = 0; $i -lt $jsons.Count; $i++) {
+      $steps = (@('bind') + @(1..$Signs[$i] | ForEach-Object { 'sign' })) -join ' '
+      $running += Start-Proc (Join-Path $wslDir 'wsl.exe') (@('spawn', $ssh) + $SshArgs[$i]) `
+        @{ OPREASON_SSH_CALL = $jsons[$i]; FAKE_SSH_PIPE = $pipe; FAKE_SSH_STEPS = $steps }
+      if ($i -ge $Together - 1) {
+        foreach ($q in $running) { if (-not $q.WaitForExit(15000)) { $q.Kill() } }
+        $running = @()
+      }
+    }
+    $t = Wait-ClassWindow 'op-reason-pass-toast' 5000
+    if ($t -eq [IntPtr]::Zero) { Write-Warning "no toast for scene $Name" } else {
+      # the last card's slide (240 ms) and glow (420 ms) are over
+      [Threading.Thread]::Sleep(700)
+      Save-Window $t (Join-Path $Out "$Name.png") -Layered
+      Save-Screen (Join-Path $Out "$Name-screen.png") -Layered
+    }
+    if (-not $relay.HasExited) { $relay.Kill() }
+    $relay.WaitForExit()
+  }
+
+  # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
+  # (ForEach-Object runs in this scope: its variables must not take a name of the script's, such as $repo)
+  $fetchNames = @('infra', 'app', 'docs')
+  $fetchCalls = @(0..2 | ForEach-Object {
+    $fetchName = $fetchNames[$_]
+    [ordered]@{
+      v = 1; distro = 'Ubuntu'; rule = 'shell'
+      root = [ordered]@{ pid = 2801 + $_; start = 2; name = 'git'; cmd = "git -C ~/src/$fetchName fetch" }
+      shell = [ordered]@{ pid = 2000; start = 1; name = 'fish'; cmd = '' }
+      caller = [ordered]@{ type = 'human'; claude_pid = $null; herdr = $null; cwd = "~/src/$fetchName"; repo = "me/$fetchName"; branch = 'main' }
+      session = $null; reason = ''
+    }
+  })
+  Show-Toasts '16-relay-toasts-ja' 'ja' `
+    (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') `
+    ($fetchCalls + @($personCall, $claudeCall)) @(1, 1, 1, 3, 1) @(
+      , @('git@github.com', "git-upload-pack 'me/infra.git'")
+      , @('git@github.com', "git-upload-pack 'me/app.git'")
+      , @('git@github.com', "git-upload-pack 'me/docs.git'")
+      , @('-T', 'git@github.com')
+      , @('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60s', '-o', 'ServerAliveInterval=30',
+        'deploy@build-runner-07.staging.internal.example.com', "/bin/sh -c 'echo ~ && sleep 0'")
+    ) 3
   # show-only: the fake agent answers after six seconds, as while 1Password asks
   Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '6000' -NoNewline
   $ansibleCall = [ordered]@{

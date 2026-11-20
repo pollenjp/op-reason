@@ -13,6 +13,9 @@
 //!   when set.
 //! - `fake-ssh spawn <program> <args>…`: runs the program and exits with its code; copied as `wsl.exe`, it stands for
 //!   the WSL interop host that starts a WSL call's `ssh.exe`.
+//! - With `FAKE_SSH_PIPE` set and any other arguments (copied as `ssh.exe` and started with an ssh command line, such as
+//!   `-T git@github.com`, which the relay reads for the command and the destination): `client` on that pipe with the
+//!   steps of `FAKE_SSH_STEPS` (separated by spaces).
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -290,12 +293,25 @@ fn main() {
                 .collect::<Vec<_>>(),
         ),
         "spawn" => spawn(&args[1..]),
-        _ => {
-            eprintln!(
-                "usage: fake-ssh agent <pipe> <dir> | client <pipe> <step>… | spawn <program> <args>…"
-            );
-            2
-        }
+        _ => match std::env::var("FAKE_SSH_PIPE") {
+            Ok(pipe) if !pipe.is_empty() => {
+                let steps = std::env::var("FAKE_SSH_STEPS").unwrap_or_default();
+                client(
+                    &pipe,
+                    &steps
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                )
+            }
+            _ => {
+                eprintln!(
+                    "usage: fake-ssh agent <pipe> <dir> | client <pipe> <step>… | spawn <program> <args>… \
+                     (or FAKE_SSH_PIPE and FAKE_SSH_STEPS with an ssh command line)"
+                );
+                2
+            }
+        },
     };
     std::process::exit(code);
 }

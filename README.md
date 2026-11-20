@@ -41,12 +41,14 @@ see [SSH keys: the relay](#ssh-keys-the-relay).
 
 For every call from WSL, the WSL executable checks the reason, collects the caller and the place, and starts a fresh
 `op-reason.exe --run` on Windows with the call. `op-reason.exe` takes a lock shared by WSL and Windows (one approval
-prompt at a time), shows the window at the top right of the screen, starts `op.exe` with your stdin, stdout and
-stderr, and when `op` exits runs `op.exe whoami` and, if a session is open, `op.exe signout --all`. Called from
+prompt at a time), shows the window at the top right of the screen you work on (that of the foreground window) with a
+Windows notification that goes when the window closes, starts `op.exe` with your stdin, stdout and stderr, and when
+`op` exits runs `op.exe whoami` and, if a session is open, `op.exe signout --all`. Called from
 Windows, `op-reason.exe` does all of this in its own process, with the same lock, window texts and log.
 
 Where `op-reason.exe` cannot run (Smart App Control may block it: it is not signed), the PowerShell launcher
-`launcher.ps1` does the same job in a fresh `powershell.exe`: calls from WSL fall back to it by themselves, and the
+`launcher.ps1` does the same job in a fresh `powershell.exe` (its window always at the top right of the primary screen,
+its notification left in the notification center): calls from WSL fall back to it by themselves, and the
 PowerShell entry uses it on Windows. Details: [docs/architecture/README.md](docs/architecture/README.md).
 
 ## Requirements
@@ -314,8 +316,9 @@ signature, which ansible on WSL (new connections for every task and host) turns 
 
 A **call** is its root process, the key and the reason. The root is Claude Code's tool call, the command you typed in a
 terminal (`git push`, `ansible-playbook`, `ssh`), or the program that runs ssh itself; from WSL, `op-reason-ssh` finds
-it on Linux. Once allowed, the call's later signatures pass without a window (ansible's forks wait for one answer); a
-denied call fails at once. An answer lasts until the root process ends (a root on WSL only times out), until 60 minutes
+it on Linux. Once allowed, the call's later signatures pass without a window, each shown in a toast at the top left
+([Windows, toasts and notifications](#windows-toasts-and-notifications); ansible's forks wait for one answer); a denied
+call fails at once. An answer lasts until the root process ends (a root on WSL only times out), until 60 minutes
 have passed (`--time-limit`), or until the relay stops, and it is kept in memory only. The terminal answer covers the
 ssh-family commands typed later in that shell, not programs that live on (a terminal program, another AI agent's
 command-line tool). Requests forwarded back from a remote host (`ssh -A`) are each a call of their own: the relay
@@ -331,6 +334,36 @@ signature without remembering anything.
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
 > tell calls apart and asking it for every signature is not usable. show-only keeps the old rule.
+
+### Windows, toasts and notifications
+
+op-reason shows three things on the screen, each in its own place
+([design](docs/superpowers/specs/2026-11-18-pass-toasts-design.md)):
+
+| What | Where | Gone |
+| --- | --- | --- |
+| op-reason's window: it asks (per-call), or shows who and why while 1Password asks | the top right of the screen of the foreground window | when the request is answered |
+| A toast: a signature that passed without a window (per-call) | the top left of that screen | four seconds after the call's last signature |
+| The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
+
+- **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a
+  card for four seconds, then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed
+  for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them
+  (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top,
+  three at most: a fourth pushes the oldest out at once, and `+N` under the third card counts the cards pushed out
+  until four seconds after their last signature. A card is drawn at 90% opacity, so that the text behind it shows
+  through faintly. Toasts never take the focus, let clicks through, make no sound and stay out of the notification
+  center. With Windows' animation effects off they neither slide nor fade.
+- **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
+  and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
+  stays at the top right of the primary screen, and its notifications stay.
+- **Notifications** go with their window, so they do not pile up in the notification center; a per-call window that
+  timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
+  did not ask, 1Password did not answer, the relay has no parent process) stay.
+
+![Animation of a Windows desktop. A signature that passes without a window shows a small light yellow card, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
+
+🌐 [HTML version: the relay's windows, toasts and notifications](docs/html/relay-screens.html)
 
 ### Starting it
 
@@ -438,14 +471,17 @@ python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (do
 
 - The animations of the READMEs are made by `docs/images/make_readme_svgs.py` (Python, standard library only). To
   change a text or the layout, change the script, not the SVGs, and run it again in the development shell. Their
-  texts are copies of op-reason's (the window, the refusal, the log table): `--check`, which CI runs, fails when the
-  SVGs differ from the script's output or when a copied text is no longer in the Rust sources.
+  texts are copies of op-reason's (the window, the refusal, the log table, the relay's window and toasts): `--check`,
+  which CI runs, fails when the SVGs differ from the script's output, or when a copied text or time is no longer in the
+  Rust sources or in the HTML page of the relay's toasts (`docs/html/relay-screens.html`).
 - The checks with the real 1Password app are listed in [docs/manual-verification.md](docs/manual-verification.md).
 - The design: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md);
   `op-reason.exe`: [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md);
   calls from WSL through it: [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md);
   the window's language: [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md);
-  the SSH relay: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md).
+  the SSH relay: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md);
+  its toasts, the screen of the windows and the notifications:
+  [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md).
 - What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 - Where to read what: [docs/README.md](docs/README.md).
 

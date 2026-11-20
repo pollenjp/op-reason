@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **The SSH relay shows a toast for a signature that passes without a window.** In per-call mode, a later signature of
+  an allowed call, or a command typed in a terminal that was allowed, shows a small card at the top left of the screen
+  for four seconds: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed for this call,
+  allowed for this terminal) and the reason. The signatures of one call share one card that counts them (×N) and shows
+  the last destination; other calls get a card each, three at most: a fourth pushes the oldest out, and `+N` under the
+  third card counts the cards pushed out until four seconds after their last signature. A card is drawn at 90%
+  opacity, so that the text behind it shows through faintly. Toasts never take the focus, let clicks through, make no
+  sound and stay out of the notification center; with Windows' animation effects off they neither slide nor fade.
+- **op-reason's windows open on the screen you work on**: the screen of the foreground window (the primary screen when
+  there is none), for the relay's windows and those of `op` calls that `op-reason.exe` runs. Before, they always opened
+  on the primary screen.
+- **A window's notification goes with its window**, from the screen and from the notification center, so they no
+  longer pile up there. A per-call window that timed out unanswered leaves its notification; the one-time notices
+  (1Password did not ask, 1Password did not answer, the relay has no parent process) stay. The PowerShell launcher's
+  window and notifications are unchanged.
+- The READMEs show where the windows, the toasts and the notifications appear, in an animation and in an HTML page
+  (`docs/html/relay-screens.html`).
+
 ## 0.4.0 — 2026-11-18
 
 - **The SSH relay: who and why for every use of an SSH key.** `op-reason.exe --ssh-agent` stands in front of the

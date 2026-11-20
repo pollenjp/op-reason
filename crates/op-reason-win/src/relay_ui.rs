@@ -4,9 +4,13 @@
 //! - [`Phase::Ask`] (per-call): "SSH key: allow this call?" with who, what and why, and the buttons.
 //! - [`Phase::Asking`]: the same facts without buttons while 1Password's prompt may be open (show-only, after a click on
 //!   Allow, or a request that 1Password is slow to answer).
+//!
+//! And the toast of a signature that an earlier answer let through without a window ([`pass_texts`]; design
+//! `2026-11-18-pass-toasts-design.md` §4.3).
 
 use op_reason_core::contract::{Herdr, Place};
 use op_reason_core::lang::Lang;
+use op_reason_core::ssh::decide::Answer;
 use op_reason_core::ssh::wire::Purpose;
 
 use crate::relay_opts::Mode;
@@ -140,6 +144,9 @@ struct Table {
     footer_asking_per_call: &'static str,
     footer_asking_slow: &'static str,
     footer_asking_show_only: &'static str,
+    pass_word: &'static str,
+    pass_call: &'static str,
+    pass_terminal: &'static str,
 }
 
 const EN: Table = Table {
@@ -180,6 +187,9 @@ const EN: Table = Table {
     footer_asking_per_call: "per-call mode · allowed here; 1Password itself may ask now. Deny any 1Password prompt that comes without this window",
     footer_asking_slow: "per-call mode · 1Password itself may ask now (to unlock it, for example). Deny any 1Password prompt that comes without this window",
     footer_asking_show_only: "show-only mode: decide in 1Password's prompt. Deny any 1Password prompt that comes without this window",
+    pass_word: "Passed",
+    pass_call: "allowed for this call",
+    pass_terminal: "allowed for this terminal",
 };
 
 const JA: Table = Table {
@@ -220,6 +230,9 @@ const JA: Table = Table {
     footer_asking_per_call: "呼び出しごとに決めるモード · ここでは許可済み。いまは 1Password 自身が確認することがあります。この窓が出ていない 1Password の確認は拒否してください",
     footer_asking_slow: "呼び出しごとに決めるモード · いまは 1Password 自身が確認することがあります (ロックの解除など)。この窓が出ていない 1Password の確認は拒否してください",
     footer_asking_show_only: "表示だけのモード: 決めるのは 1Password の画面です。この窓が出ていない 1Password の確認は拒否してください",
+    pass_word: "通過",
+    pass_call: "この呼び出しの許可",
+    pass_terminal: "ターミナルの許可",
 };
 
 fn table(lang: Lang) -> &'static Table {
@@ -403,6 +416,61 @@ pub fn caller_short(c: &Caller, lang: Lang) -> String {
         Caller::Person { .. } => ui::table(lang).human_short.to_owned(),
         Caller::Program { name } => name.clone(),
         Caller::Unknown(_) => "?".to_owned(),
+    }
+}
+
+/// The toast of a signature that passed without a window: three lines (design `2026-11-18-pass-toasts-design.md` §4.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassTexts {
+    /// "Passed": the first word of line 1.
+    pub word: String,
+    /// The caller in a few words ([`caller_short`]).
+    pub caller: String,
+    /// The client's command line, as the window's Command line shows it.
+    pub command: String,
+    /// Where the client connects, when its command line says.
+    pub destination: Option<String>,
+    /// Line 3: why it passed (the answer that covers it), then the reason.
+    pub why: String,
+}
+
+impl PassTexts {
+    /// Line 1: `Passed · <caller>`, then ` ×N` for a card of `count` signatures (two or more).
+    pub fn head(&self, count: u32) -> String {
+        let mut out = format!("{} · {}", self.word, self.caller);
+        if count >= 2 {
+            out.push_str(&format!(" ×{count}"));
+        }
+        out
+    }
+
+    /// Line 2: `<command> → <destination>`, the command alone without a destination.
+    pub fn line2(&self) -> String {
+        match &self.destination {
+            Some(d) => format!("{} → {d}", self.command),
+            None => self.command.clone(),
+        }
+    }
+}
+
+/// The toast's texts for a signature of the call of `f` that the earlier `answer` let through.
+pub fn pass_texts(f: &Facts, answer: Answer, lang: Lang) -> PassTexts {
+    let t = table(lang);
+    let how = match answer {
+        Answer::AllowTerminal => t.pass_terminal,
+        Answer::Allow | Answer::Deny => t.pass_call,
+    };
+    let reason = if f.reason.is_empty() {
+        t.no_reason
+    } else {
+        &f.reason
+    };
+    PassTexts {
+        word: t.pass_word.to_owned(),
+        caller: caller_short(&f.caller, lang),
+        command: f.command.clone(),
+        destination: f.destination.clone().filter(|d| !d.is_empty()),
+        why: format!("{how} · {reason}"),
     }
 }
 
@@ -768,6 +836,49 @@ mod tests {
             line(&build(&f, Phase::Asking, Lang::En), "For"),
             Some("agent request 17")
         );
+    }
+
+    #[test]
+    fn the_pass_toast_says_who_what_and_why() {
+        let en = pass_texts(&facts(), Answer::Allow, Lang::En);
+        assert_eq!(en.word, "Passed");
+        assert_eq!(en.caller, "Claude Code");
+        assert_eq!(
+            en.command,
+            r#"ssh.exe git@github.com "git-receive-pack 'me/r.git'""#
+        );
+        assert_eq!(en.destination.as_deref(), Some("git@github.com"));
+        assert_eq!(en.why, "allowed for this call · push the fix");
+        assert_eq!(en.head(1), "Passed · Claude Code");
+        assert_eq!(en.head(3), "Passed · Claude Code ×3");
+        assert_eq!(
+            en.line2(),
+            r#"ssh.exe git@github.com "git-receive-pack 'me/r.git'" → git@github.com"#
+        );
+        let ja = pass_texts(&facts(), Answer::Allow, Lang::Ja);
+        assert_eq!(ja.word, "通過");
+        assert_eq!(ja.head(2), "通過 · Claude Code ×2");
+        assert_eq!(ja.why, "この呼び出しの許可 · push the fix");
+    }
+
+    #[test]
+    fn the_terminal_answer_and_no_reason() {
+        let mut f = facts();
+        f.caller = Caller::Person {
+            shell: "pwsh.exe".into(),
+        };
+        f.reason = String::new();
+        f.destination = None;
+        let en = pass_texts(&f, Answer::AllowTerminal, Lang::En);
+        assert_eq!(en.why, "allowed for this terminal · no reason given");
+        assert_eq!(en.caller, "Human");
+        assert_eq!(en.destination, None);
+        assert_eq!(en.line2(), f.command, "the command alone");
+        let ja = pass_texts(&f, Answer::AllowTerminal, Lang::Ja);
+        assert_eq!(ja.why, "ターミナルの許可 · 理由なし");
+        assert_eq!(ja.caller, "人");
+        f.destination = Some(String::new());
+        assert_eq!(pass_texts(&f, Answer::Allow, Lang::En).destination, None);
     }
 
     #[test]

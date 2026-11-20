@@ -38,13 +38,15 @@ op-reason は 1Password の SSH agent の前にも立てます。SSH の鍵を�
 ![op-reason の部品](docs/architecture/plantuml/out/01_overview.svg)
 
 WSL からの呼び出しでは、WSL の実行ファイルが理由を確かめ、呼び手と場所を集め、Windows で新しい `op-reason.exe --run` を
-起こして呼び出しを渡します。`op-reason.exe` は WSL と Windows で共通の lock を取り (承認の画面は一度に 1 つ)、画面の右上に
-窓を出し、あなたの stdin・stdout・stderr のまま `op.exe` を起こし、`op` が終わると `op.exe whoami` を打ち、session があれば
+起こして呼び出しを渡します。`op-reason.exe` は WSL と Windows で共通の lock を取り (承認の画面は一度に 1 つ)、作業している
+画面 (前面の窓のある画面) の右上に窓を出し (窓が閉じると消える Windows の通知も出します)、あなたの stdin・stdout・stderr の
+まま `op.exe` を起こし、`op` が終わると `op.exe whoami` を打ち、session があれば
 `op.exe signout --all` を打ちます。Windows から呼ぶときは、`op-reason.exe` がこれを全部自分のプロセスで行います
 (lock・窓の文・記録は同じです)。
 
 `op-reason.exe` が動かないところ (署名が無いので、Smart App Control に止められることがあります) では、PowerShell の
-launcher `launcher.ps1` が新しい `powershell.exe` で同じ仕事をします。WSL からの呼び出しはひとりでにそちらへ回り、Windows
+launcher `launcher.ps1` が新しい `powershell.exe` で同じ仕事をします (その窓はいつも主画面の右上に出て、通知は通知
+センターに残ります)。WSL からの呼び出しはひとりでにそちらへ回り、Windows
 では PowerShell の入口がそれを使います。詳しくは [docs/architecture/README.md](docs/architecture/README.md) (英語)。
 
 ## 要るもの
@@ -308,8 +310,8 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 
 **呼び出し** は、起点の process・鍵・理由の組です。起点は、Claude Code の tool の呼び出し・端末で打ったコマンド (`git push`・
 `ansible-playbook`・`ssh`)・自分で ssh を起こすプログラムのどれかで、WSL では `op-reason-ssh` が Linux の側で見つけます。
-許可した呼び出しの後の署名は窓なしで通り (ansible の fork は 1 つの答えを待ちます)、拒否した呼び出しの後の署名はすぐに
-断ります。答えは、起点の process が終わるか (WSL の起点は時間切れだけ)、60 分たつか (`--time-limit`)、中継が止まるまで効き、
+許可した呼び出しの後の署名は窓なしで通り、左上のトーストに出ます ([窓・トースト・通知](#窓トースト通知)。ansible の fork は
+1 つの答えを待ちます)。拒否した呼び出しの後の署名はすぐに断ります。答えは、起点の process が終わるか (WSL の起点は時間切れだけ)、60 分たつか (`--time-limit`)、中継が止まるまで効き、
 メモリーにだけ置きます。ターミナルの答えが効くのは、その shell で後から打った ssh の仲間のコマンドで、動き続けるプログラム
 (端末のプログラム・ほかの AI エージェントのコマンドラインの道具) には効きません。リモートのホストから転送で戻ってきた依頼
 (`ssh -A`) は、1 つずつが別の呼び出しです。中継はそれを `session-bind@openssh.com` で見分けます。OpenSSH が送るのは 8.9 から
@@ -324,6 +326,34 @@ repository・branch)、起点の process、理由 (無ければ「理由なし�
 > **per-call では決まりが変わります。** op-reason のほかの所では、決めるのは 1Password の画面で、op-reason の窓は事実を
 > 見せるだけです。per-call では op-reason の窓で決めます。1Password には呼び出しの区別が付かず、署名ごとに聞かせるのは
 > 使えないためです。show-only は前の決まりのままです。
+
+### 窓・トースト・通知
+
+op-reason が画面に出すものは 3 つで、それぞれの場所に出ます
+([設計](docs/superpowers/specs/2026-11-18-pass-toasts-design.md))。
+
+| もの | 場所 | 消えるとき |
+| --- | --- | --- |
+| op-reason の窓: 聞く (per-call)、または 1Password が確認している間に誰が・なぜを出す | 前面の窓のある画面の右上 | 依頼に答えが出たとき |
+| トースト: 窓を出さずに通った署名 (per-call) | その画面の左上 | その呼び出しの最後の署名から 4 秒後 |
+| 窓に付く Windows の通知 | 右下 (Windows の通知) | 窓と一緒に。窓が答えを待ったまま時間切れになったときは残る |
+
+- **トースト**: 前の答え (**この呼び出しを許可**・**このターミナルを 60 分許可**) で通った署名は、カードを 4 秒出して
+  薄れて消えます。中身は `通過 · <呼び手>`、ssh のコマンドと接続先、通った訳 (この呼び出しの許可・ターミナルの許可) と
+  理由です。同じ呼び出しの署名は 1 枚にまとめ、数 (×N) と最後の接続先を出して 4 秒を数え直します。ほかの呼び出しは
+  1 枚ずつ一番上に入り、同時に 3 枚までです。4 枚目が来たら一番古いものをすぐ消し、消したカードはその最後の署名から
+  4 秒まで 3 枚目の下の `+N` が数えます。カードは後ろの字がうっすら透ける濃さ 90% で出します。トーストはフォーカスを
+  取らず、クリックを下の窓へ通し、音を鳴らさず、通知センターにも入りません。Windows のアニメーション効果を切っていれば、
+  ずれたり薄れたりせずに出て消えます。
+- **窓**は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。`op` の呼び出しの
+  窓も、`op-reason.exe` が出すものは同じです。PowerShell の launcher の窓は主画面の右上のままで、その通知も残ります。
+- **通知**は窓と一緒に消えるので、通知センターに溜まりません。per-call の窓が時間切れで閉じたときは、答えなかった依頼の
+  印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は
+  残ります。
+
+![アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を後ろの字がうっすら透ける濃さ 90% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後のホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason の窓で聞き、右下に Windows の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。](docs/images/readme-6-relay-screens.ja.svg)
+
+🌐 [HTML 版: SSH の中継の窓・トースト・通知](docs/html/relay-screens.html#ja)
 
 ### 起こし方
 
@@ -424,14 +454,15 @@ python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/
 
 - README の動く図は `docs/images/make_readme_svgs.py` (標準ライブラリだけの Python) で作ります。文言や配置を
   直すときは SVG ではなく script を直し、devShell の中で流して作り直してください。図の文は op-reason の文 (窓・断り・
-  記録の表) の写しです。CI が流す `--check` は、SVG が script の出力と違うときと、写した文が Rust のソースから
-  消えたときに落ちます。
+  記録の表・中継の窓とトースト) の写しです。CI が流す `--check` は、SVG が script の出力と違うときと、写した文や時間が
+  Rust のソースか中継のトーストの HTML 版 (`docs/html/relay-screens.html`) から消えたときに落ちます。
 - 本物の 1Password で確かめる手順: [docs/manual-verification.ja.md](docs/manual-verification.ja.md)
 - 設計: [docs/superpowers/specs/2026-11-15-op-reason-design.md](docs/superpowers/specs/2026-11-15-op-reason-design.md) (英語)。
   `op-reason.exe` は [docs/superpowers/specs/2026-11-15-windows-exe-design.md](docs/superpowers/specs/2026-11-15-windows-exe-design.md) (英語)、
   WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)、
   窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)、
-  SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)
+  SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)、
+  中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)
 - 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 

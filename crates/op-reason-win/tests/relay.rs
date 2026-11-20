@@ -1028,3 +1028,313 @@ fn an_allowed_call_whose_answer_never_comes_is_recorded() {
     assert_eq!(last["result"], "no-answer", "{last}");
     assert!(last["decision"].is_string(), "{last}");
 }
+
+mod toasts {
+    //! The relay's toast window, found by its class (design `docs/superpowers/specs/2026-11-18-pass-toasts-design.md`
+    //! §4), and the screen it should be on.
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow,
+    };
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+        GetWindowTextW, IsWindowVisible, WindowFromPoint,
+    };
+    use windows::core::{PCWSTR, w};
+
+    /// The visible toast window and its text (the cards' first lines).
+    pub fn window() -> Option<(HWND, String)> {
+        // SAFETY: plain Win32 queries with valid arguments.
+        unsafe {
+            let h = FindWindowW(w!("op-reason-pass-toast"), PCWSTR::null()).ok()?;
+            if !IsWindowVisible(h).as_bool() {
+                return None;
+            }
+            let mut buf = [0u16; 1024];
+            let n = GetWindowTextW(h, &mut buf);
+            Some((h, String::from_utf16_lossy(&buf[..n.max(0) as usize])))
+        }
+    }
+
+    pub fn ex_style(h: HWND) -> u32 {
+        // SAFETY: a window of this desktop.
+        unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 }
+    }
+
+    /// Its rectangle and the window under its first card's middle, in physical pixels.
+    pub fn rect_and_below(h: HWND) -> (RECT, HWND) {
+        // SAFETY: Win32 queries with valid arguments.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let mut r = RECT::default();
+            let _ = GetWindowRect(h, &mut r);
+            let k = GetDpiForWindow(h).max(96) as f32 / 96.0;
+            // the first card: 12 DIPs in, 300 x 70
+            let pt = POINT {
+                x: r.left + ((12.0 + 150.0) * k) as i32,
+                y: r.top + ((12.0 + 35.0) * k) as i32,
+            };
+            (r, WindowFromPoint(pt))
+        }
+    }
+
+    pub fn foreground() -> HWND {
+        // SAFETY: a plain query.
+        unsafe { GetForegroundWindow() }
+    }
+
+    /// The work area of the foreground window's screen (the primary one without a foreground window).
+    pub fn work_area() -> RECT {
+        // SAFETY: Win32 queries with a valid out parameter.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let m = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let _ = GetMonitorInfoW(m, &mut info);
+            info.rcWork
+        }
+    }
+}
+
+/// The relay's notifications in the notification center (its process's tags in the group `op-reason`), read with the
+/// AppUserModelID it borrows; `None` when the history cannot be read.
+fn notices(pid: u32) -> Option<usize> {
+    use windows::UI::Notifications::ToastNotificationManager;
+    use windows::core::HSTRING;
+    let aumid = HSTRING::from(
+        r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
+    );
+    let list = ToastNotificationManager::History()
+        .ok()?
+        .GetHistoryWithId(&aumid)
+        .ok()?;
+    let mine = format!("{pid}-");
+    let mut n = 0;
+    for i in 0..list.Size().ok()? {
+        let t = list.GetAt(i).ok()?;
+        let group = t.Group().map(|g| g.to_string()).unwrap_or_default();
+        let tag = t.Tag().map(|g| g.to_string()).unwrap_or_default();
+        if group == "op-reason" && tag.starts_with(&mine) {
+            n += 1;
+        }
+    }
+    Some(n)
+}
+
+/// Says in the test's output, also when it passes, what the notification center showed (the harness keeps the output of
+/// passing tests to itself; a direct write to stderr goes through).
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+/// Removes the notifications that a test left in the notification center.
+fn clear_notices() {
+    use windows::UI::Notifications::ToastNotificationManager;
+    use windows::core::HSTRING;
+    if let Ok(h) = ToastNotificationManager::History() {
+        let _ = h.RemoveGroupWithId(
+            &HSTRING::from("op-reason"),
+            &HSTRING::from(
+                r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
+            ),
+        );
+    }
+}
+
+#[test]
+fn a_signature_that_passes_without_a_window_shows_a_toast() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    };
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("toast");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let a = sb.client(Some("toast check"), &["sign"]).spawn().unwrap();
+    answer(true);
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 14\n");
+    assert!(
+        toasts::window().is_none(),
+        "no toast for a signature that had a window"
+    );
+    let before = toasts::foreground();
+    let b = sb
+        .client(Some("toast check"), &["sign", "sign", "sign"])
+        .output()
+        .unwrap();
+    assert_eq!(text(&b), "sign 14\nsign 14\nsign 14\n", "{b:?}");
+    assert!(
+        wait_until(Duration::from_secs(3), || toasts::window()
+            .is_some_and(|(_, t)| t.contains("×3"))),
+        "one card for the three signatures of the call (now: {:?})",
+        toasts::window().map(|w| w.1)
+    );
+    let (h, title) = toasts::window().unwrap();
+    assert!(title.starts_with("Passed · "), "{title}");
+    assert_eq!(title.lines().count(), 1, "{title}");
+    let ex = toasts::ex_style(h);
+    for (name, flag) in [
+        ("layered", WS_EX_LAYERED),
+        ("transparent", WS_EX_TRANSPARENT),
+        ("no activate", WS_EX_NOACTIVATE),
+        ("tool window", WS_EX_TOOLWINDOW),
+        ("topmost", WS_EX_TOPMOST),
+    ] {
+        assert_eq!(ex & flag.0, flag.0, "{name}: {ex:#x}");
+    }
+    let (r, below) = toasts::rect_and_below(h);
+    let work = toasts::work_area();
+    report(&format!(
+        "toast: {title:?} at ({}, {})-({}, {}), work area ({}, {})-({}, {}), extended style {ex:#x}",
+        r.left, r.top, r.right, r.bottom, work.left, work.top, work.right, work.bottom
+    ));
+    assert_eq!(
+        (r.left, r.top),
+        (work.left, work.top),
+        "at the top left of the work area"
+    );
+    assert_ne!(below, h, "clicks go through to the window below");
+    assert_eq!(toasts::foreground(), before, "the focus stays");
+    assert!(
+        wait_until(Duration::from_secs(8), || toasts::window().is_none()),
+        "gone after four seconds and the fade"
+    );
+    let results: Vec<String> = sb
+        .signs()
+        .iter()
+        .map(|s| s["result"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(results, ["allowed", "passed", "passed", "passed"]);
+}
+
+#[test]
+fn a_fourth_call_pushes_a_card_out_and_counts_it() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("toast-more");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let reasons = ["first call", "second call", "third call", "fourth call"];
+    for r in reasons {
+        let c = sb.client(Some(r), &["sign"]).spawn().unwrap();
+        answer(true);
+        assert_eq!(text(&c.wait_with_output().unwrap()), "sign 14\n", "{r}");
+    }
+    // each call signs again, without a window and all at once (well within the four seconds of the first): four
+    // cards, one pushed out
+    let again: Vec<Child> = reasons
+        .iter()
+        .map(|r| sb.client(Some(r), &["sign"]).spawn().unwrap())
+        .collect();
+    for (r, c) in reasons.iter().zip(again) {
+        let out = c.wait_with_output().unwrap();
+        assert_eq!(text(&out), "sign 14\n", "{r}: {out:?}");
+    }
+    // the text that showed +1, kept: the four seconds of the card pushed out may end right after
+    let seen = std::cell::RefCell::new(None);
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            let t = toasts::window().map(|w| w.1);
+            let more = t.as_ref().is_some_and(|t| t.lines().last() == Some("+1"));
+            *seen.borrow_mut() = t;
+            more
+        }),
+        "three cards and +1 (now: {:?})",
+        seen.borrow()
+    );
+    let title = seen.into_inner().unwrap_or_default();
+    report(&format!("toasts of four calls: {title:?}"));
+    assert_eq!(
+        title.lines().count(),
+        4,
+        "three first lines and +1: {title}"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || toasts::window().is_none()),
+        "gone after the four seconds and the fade"
+    );
+}
+
+#[test]
+fn the_window_notification_goes_with_the_window() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("notice-goes");
+    let _agent = sb.agent();
+    let relay = sb.relay(&[], &[]);
+    let pid = relay.0.id();
+    let child = sb
+        .client(Some("notification check"), &["sign"])
+        .spawn()
+        .unwrap();
+    assert!(wait_until(Duration::from_secs(15), || screen::titled(ASK).is_some()));
+    let kept = wait_until(Duration::from_secs(5), || {
+        notices(pid).is_some_and(|n| n > 0)
+    });
+    answer(false);
+    assert_eq!(text(&child.wait_with_output().unwrap()), "sign 5\n");
+    if !kept {
+        report(&format!(
+            "relay notification: not checked, the notification center keeps no history here (history: {:?})",
+            notices(pid)
+        ));
+        return;
+    }
+    let gone = wait_until(Duration::from_secs(5), || notices(pid) == Some(0));
+    report(&format!(
+        "relay notification: in the history while the window was open, after Deny {:?}",
+        notices(pid)
+    ));
+    clear_notices();
+    assert!(gone, "removed with its window: {:?}", notices(pid));
+}
+
+#[test]
+fn a_timed_out_window_leaves_its_notification() {
+    let _g = serial();
+    let sb = Sandbox::new("notice-stays");
+    let _agent = sb.agent();
+    let relay = sb.relay(&["--answer-wait", "3s"], &[]);
+    let pid = relay.0.id();
+    let child = sb
+        .client(Some("time-out notification"), &["sign"])
+        .spawn()
+        .unwrap();
+    assert!(wait_until(Duration::from_secs(10), || screen::titled(ASK).is_some()));
+    let kept = wait_until(Duration::from_secs(2), || {
+        notices(pid).is_some_and(|n| n > 0)
+    });
+    assert_eq!(text(&child.wait_with_output().unwrap()), "sign 5\n");
+    if !kept {
+        report(&format!(
+            "relay time-out notification: not checked, the notification center keeps no history here (history: {:?})",
+            notices(pid)
+        ));
+        return;
+    }
+    assert!(wait_until(Duration::from_secs(3), || screen::window().is_none()));
+    std::thread::sleep(Duration::from_secs(1));
+    let left = notices(pid);
+    report(&format!(
+        "relay time-out notification: in the history while the window was open, after the time-out {left:?}"
+    ));
+    clear_notices();
+    assert_eq!(left, Some(1), "the sign of a request that went unanswered");
+}

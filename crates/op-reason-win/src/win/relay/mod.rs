@@ -6,7 +6,8 @@
 //! Threads: the main thread accepts connections; one thread per connection reads its requests, decides and passes them
 //! on, and shows the window when its turn comes ([`ask`]); one forgets decisions once a minute; one watches the relay's
 //! parent process (1Password leaves a relay without one unanswered, §15); one waits for Ctrl+C while a console is
-//! attached.
+//! attached; and, from the first signature that passes without a window, one shows the toasts (design
+//! `2026-11-18-pass-toasts-design.md` §4).
 
 mod ask;
 mod conn;
@@ -18,7 +19,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,7 +36,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::HSTRING;
 
-use super::{app, console, procs, toast};
+use super::{app, console, pass_window, procs, toast};
 use crate::relay_opts::{self, Opts};
 use crate::relay_ui;
 
@@ -81,6 +82,8 @@ pub(super) struct Shared {
     pub parent_gone: AtomicBool,
     pub told_no_prompt: AtomicBool,
     pub told_no_answer: AtomicBool,
+    /// The toasts' thread, started by the first signature that passes without a window (none when it cannot start).
+    toasts: OnceLock<Option<pass_window::Toasts>>,
 }
 
 impl Shared {
@@ -105,7 +108,15 @@ impl Shared {
             parent_gone: AtomicBool::new(false),
             told_no_prompt: AtomicBool::new(false),
             told_no_answer: AtomicBool::new(false),
+            toasts: OnceLock::new(),
         }
+    }
+
+    /// The toasts of signatures that pass without a window; a call's count is kept for the time limit.
+    pub fn toasts(&self) -> Option<&pass_window::Toasts> {
+        self.toasts
+            .get_or_init(|| pass_window::Toasts::start(Duration::from_secs(self.opts.limit_secs)))
+            .as_ref()
     }
 
     pub fn lock(&self) -> MutexGuard<'_, State> {
