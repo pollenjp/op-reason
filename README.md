@@ -351,9 +351,9 @@ op-reason shows three things on the screen, each in its own place
   for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them
   (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top,
   three at most: a fourth pushes the oldest out at once, and `+N` under the third card counts the cards pushed out
-  until four seconds after their last signature. A card is drawn at 70% opacity, so that the text behind it shows
-  through. Toasts never take the focus, let clicks through, make no sound and stay out of the notification center. With
-  Windows' animation effects off they neither slide nor fade.
+  until four seconds after their last signature. A card is drawn at 90% opacity, so that the text behind it shows
+  through faintly. Toasts never take the focus, let clicks through, make no sound and stay out of the notification
+  center. With Windows' animation effects off they neither slide nor fade.
 - **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
   and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
   stays at the top right of the primary screen, and its notifications stay.
@@ -361,7 +361,7 @@ op-reason shows three things on the screen, each in its own place
   timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
   did not ask, 1Password did not answer, the relay has no parent process) stay.
 
-![Animation of a Windows desktop. A signature that passes without a window shows a small light yellow card, a toast, at the top left, at 70% opacity so that the text behind shows through: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
+![Animation of a Windows desktop. A signature that passes without a window shows a small light yellow card, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
 
 🌐 [HTML version: the relay's windows, toasts and notifications](docs/html/relay-screens.html)
 

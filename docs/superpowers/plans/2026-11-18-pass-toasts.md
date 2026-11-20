@@ -259,7 +259,8 @@ share the same constants and texts; a review of the whole branch at the end.
 
 ## After the first checks with the real app (spec §11)
 
-The user asked for two changes after S19 and S20: every card at 70% opacity, and `+N` under the third card for the
+The user asked for two changes after S19 and S20: every card at 70% opacity (90% after the second check, below), and
+`+N` under the third card for the
 cards pushed out. Same execution (inline, one implementer), on the same branch and pull request; the version stays.
 
 ### Review Focus (§11)
@@ -267,19 +268,19 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 6. `+N` never stands under fewer than three cards and is back at 0 before a card shown starts to fade: the card pushed
    out is the one whose last signature is the oldest (Task 10:
    `the_card_pushed_out_is_the_one_whose_last_signature_is_the_oldest`, `the_count_is_gone_before_a_card_shown_fades`).
-7. The text behind a card shows through at 30% everywhere on the card, the fade included: one Direct2D layer per card,
-   never a face, text and lines each at 70% (Task 11; the CI screenshot).
+7. The text behind a card shows through at 10% everywhere on the card, the fade included: one Direct2D layer per card,
+   never a face, text and lines each at 90% (Task 11; the CI screenshot).
 8. Ten calls at once: `+7`, going down as each pushed-out card's four seconds pass; a pushed-out call that signs again
    comes back on top (Task 10: `cards_pushed_out_are_counted_until_their_four_seconds_pass`,
    `a_call_pushed_out_that_signs_again_comes_back_on_top`).
 
-### Task 10: The cards: 70% and `+N` (portable)
+### Task 10: The cards: 90% and `+N` (portable)
 
 **Files:**
 - Modify: `crates/op-reason-win/src/pass_toast.rs`
 
 **Interfaces:**
-- `pub const OPACITY: f32 = 0.7;` (a card shown), `pub const MORE_GAP: f32 = 4.0;`, `pub const MORE_H: f32 = 16.0;`,
+- `pub const OPACITY: f32 = 0.9;` (a card shown), `pub const MORE_GAP: f32 = 4.0;`, `pub const MORE_H: f32 = 16.0;`,
   `pub const fn more_y() -> f32` (the top of the `+N` tag: under the third place).
 - `CardView::opacity` = how far the card has appeared (0 to 1, as before) × `OPACITY`; `CardView::glow` = the glow ×
   how far the card has appeared (its ring, drawn at full strength outside the card's layer).
@@ -288,13 +289,13 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
   again enters at the top as a new card and leaves the count. Without motion, `next_wake` also wakes at the end of a
   pushed-out card's four seconds.
 
-- [ ] **Step 1:** failing tests: `a_card_is_drawn_at_seventy_percent` (in place, halfway through its fade, without
-  motion), `a_bump_rings_a_card_that_stays_at_seventy_percent`,
+- [ ] **Step 1:** failing tests: `a_card_is_drawn_at_ninety_percent` (in place, halfway through its fade, without
+  motion), `a_bump_rings_a_card_that_stays_at_ninety_percent`,
   `cards_pushed_out_are_counted_until_their_four_seconds_pass` (ten calls: +7, then down one by one, cards counted once
   whatever their ×N), `the_card_pushed_out_is_the_one_whose_last_signature_is_the_oldest`,
   `of_cards_that_signed_at_once_the_lowest_is_pushed_out`,
   `a_call_pushed_out_that_signs_again_comes_back_on_top`, `the_count_is_gone_before_a_card_shown_fades`,
-  `without_animation_the_count_goes_down_on_time`; the existing tests read 0.7 where they read 1.
+  `without_animation_the_count_goes_down_on_time`; the existing tests read `OPACITY` where they read 1.
 - [ ] **Step 2:** implement; `cargo test` and `cargo clippy --all-targets -- -D warnings` in `crates/op-reason-win`.
 
 ### Task 11: The toast window: layers and the tag (Windows)
@@ -329,10 +330,10 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 
 - [ ] **Step 1:** the script: copies of `OPACITY`, `MORE_GAP`, `MORE_H` (checked); `simulate_toasts` pushes out the card
   whose last signature is the oldest and keeps the counts of `+N` over time; a card's group fades, an inner group holds
-  it at 0.7 and the ring of its glow is outside that group; the tag under the third place, one per value of N; the
+  it at 0.9 and the ring of its glow is outside that group; the tag under the third place, one per value of N; the
   scene's fourth card at 16.0 s and
   a fifth call at 16.4 s (+1, +2, +1, gone), the caption at 15.8 s; `relay.desc` and the fourth step say `+N`.
-- [ ] **Step 2:** the HTML page: the same rules, the tag, the fifth call, its callouts and scenes; `OPACITY = 0.7` in its
+- [ ] **Step 2:** the HTML page: the same rules, the tag, the fifth call, its callouts and scenes; `OPACITY = 0.9` in its
   constants (checked).
 - [ ] **Step 3:** generate, `--check`; frames of the SVG and the page looked at.
 
@@ -341,6 +342,12 @@ cards pushed out. Same execution (inline, one implementer), on the same branch a
 **Files:**
 - Modify: `README.md`, `README.ja.md`, `docs/manual-verification.md`, `docs/manual-verification.ja.md`, `CHANGELOG.md`
 
-- [ ] **Step 1:** the toasts' bullet (70%, `+N`), the alt equal to the new `<desc>`; S19 (the text behind shows
-  through), S20 (`+1`), ten calls at once (`+7`, going down), S21 (70%, `+N` without motion); the Unreleased section.
+- [ ] **Step 1:** the toasts' bullet (90%, `+N`), the alt equal to the new `<desc>`; S19 (the text behind shows
+  through), S20 (`+1`), ten calls at once (`+7`, going down), S21 (90%, `+N` without motion); the Unreleased section.
 - [ ] **Step 2:** push, CI green, the screenshot looked at, the pull request's body updated; report.
+
+### After the second check of S19 (2026-11-20)
+
+At 70% the cards were too faint on the real screen; the user chose 90%. `OPACITY` is 0.9 in the model, the window,
+the script, the HTML page and the documents (the `+N` tag follows it); the glow is unchanged (the card keeps its
+opacity, the ring is at full strength).

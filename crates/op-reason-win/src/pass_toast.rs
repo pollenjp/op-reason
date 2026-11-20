@@ -12,7 +12,7 @@
 //! - Four seconds after its last signature a card fades out in 0.8 seconds, and the cards below move up.
 //! - The count is that of the call's signatures since its answer, also across cards: it goes on when the call signs
 //!   again after its card has gone.
-//! - A card shown is drawn at 70% opacity (the text behind shows through), also while it glows: the glow is a ring
+//! - A card shown is drawn at 90% opacity (the text behind shows through faintly), also while it glows: the glow is a ring
 //!   around it, drawn at full strength.
 //!
 //! Without motion (Windows' animation effects off) cards neither slide, fade nor glow: they appear and go at once.
@@ -49,7 +49,7 @@ pub const CARD_H: f32 = 70.0;
 /// How far above its place a new card starts.
 pub const DROP: f32 = 12.0;
 /// A card's opacity while it is shown: the text behind it shows through (its glow's ring is not part of it).
-pub const OPACITY: f32 = 0.7;
+pub const OPACITY: f32 = 0.9;
 /// The room between the third place and the count of the cards pushed out (`+N`).
 pub const MORE_GAP: f32 = 4.0;
 /// The height of that count's tag.
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(
             f[0].opacity,
             0.5 * OPACITY,
-            "half way through its 0.8 s, from 70%"
+            "half way through its 0.8 s, from 90%"
         );
         assert_eq!(f[0].left, None, "no line while it fades");
         s.advance(4900);
@@ -596,7 +596,7 @@ mod tests {
         let mut s = Stack::new(false, HOUR);
         s.pass(0, "a", "r1", t("A"));
         let f = s.frame(0);
-        assert_eq!((f[0].y, f[0].opacity), (EDGE, OPACITY), "70% at once");
+        assert_eq!((f[0].y, f[0].opacity), (EDGE, OPACITY), "90% at once");
         assert_eq!(f[0].left, None, "no line");
         s.pass(100, "b", "r2", t("B"));
         let f = s.frame(100);
@@ -622,21 +622,25 @@ mod tests {
     }
 
     #[test]
-    fn a_card_is_drawn_at_seventy_percent() {
+    fn a_card_is_drawn_at_ninety_percent() {
+        assert_eq!(
+            OPACITY, 0.9,
+            "the user's choice after trying 70%, too faint"
+        );
         let mut s = Stack::new(true, HOUR);
         s.pass(0, "a", "r1", t("A"));
         assert_eq!(s.frame(0)[0].opacity, 0.0, "it appears from nothing");
-        assert_eq!(s.frame(APPEAR_MS)[0].opacity, OPACITY, "then 70%");
+        assert_eq!(s.frame(APPEAR_MS)[0].opacity, OPACITY, "then 90%");
         s.advance(SHOW_MS + FADE_MS / 4);
         assert_eq!(
             s.frame(SHOW_MS + FADE_MS / 4)[0].opacity,
             0.75 * OPACITY,
-            "it fades from 70%"
+            "it fades from 90%"
         );
     }
 
     #[test]
-    fn a_bump_rings_a_card_that_stays_at_seventy_percent() {
+    fn a_bump_rings_a_card_that_stays_at_ninety_percent() {
         let mut s = Stack::new(true, HOUR);
         s.pass(0, "a", "r1", t("A"));
         s.pass(1000, "a", "r1", t("A"));
@@ -644,7 +648,7 @@ mod tests {
         assert_eq!(
             (peak[0].opacity, peak[0].glow),
             (OPACITY, 1.0),
-            "the ring at full, the card at 70%: a burst keeps the text behind readable"
+            "the ring at full, the card at 90%: a burst keeps the text behind readable"
         );
         assert_eq!(s.frame(1000 + BUMP_MS)[0].glow, 0.0);
         s.advance(5000 + FADE_MS / 2);

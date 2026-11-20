@@ -192,7 +192,7 @@ without a window, one owns the toasts' window
    window or with 1Password follows it; an answer in the book (or, for a person's command, the terminal's) passes or
    fails the request at once. One that passes and that 1Password signs (without the window without buttons on the way)
    gets a toast at the top left of the screen of the foreground window: a layered, click-through window that never takes
-   the focus, one card per call (×N, the last destination) at 70% opacity, three at most and `+N` under them for the
+   the focus, one card per call (×N, the last destination) at 90% opacity, three at most and `+N` under them for the
    cards pushed out, each gone four seconds after its call's last signature (`crates/op-reason-win/src/pass_toast.rs`
    decides the cards, `src/win/pass_window.rs` draws them, each card in a Direct2D layer at its opacity).
    Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to

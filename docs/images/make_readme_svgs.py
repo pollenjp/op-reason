@@ -248,7 +248,7 @@ SHOW_MS, FADE_MS, ENTER_MS, APPEAR_MS, EVICT_MS, BUMP_MS = 4000, 800, 240, 220, 
 MAX_CARDS = 3
 EDGE, GAP, CARD_W, CARD_H, DROP = 12.0, 8.0, 300.0, 70.0, 12.0
 EVICT_LINGER_MS = 40  # pass_toast.rs: a card pushed out is dropped this long after it has gone transparent
-OPACITY = 0.7  # a card shown (the text behind shows through); the ring of its glow is drawn at full strength
+OPACITY = 0.9  # a card shown (the text behind shows through faintly); the ring of its glow is drawn at full strength
 MORE_GAP, MORE_H = 4.0, 16.0  # the tag +N: this far under the third place, this high
 # A card as crates/op-reason-win/src/win/pass_window.rs draws it
 TOAST_TEXT_X, TOAST_TEXT_W = 36.0, CARD_W - 36.0 - 12.0
@@ -488,9 +488,9 @@ TEXTS = {
         "relay.title": "op-reason's SSH relay: the window, the toasts and the notifications",
         "relay.desc": (
             "Animation of a Windows desktop. A signature that passes without a window shows a small light yellow "
-            "card, a toast, at the top left, at 70% opacity so that the text behind shows through: Passed · Human, the "
-            "ssh command and its destination, allowed for this terminal · no reason given; it fades after four "
-            "seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last "
+            "card, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · "
+            "Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after "
+            "four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last "
             "host and lights up at each. Three other calls each put a card on top and push the others down; a fourth "
             "and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, "
             "+2) until four seconds after their last signature; four seconds after its last signature each card "
@@ -589,7 +589,7 @@ TEXTS = {
         "relay.title": "op-reason の SSH の中継: 窓・トースト・通知",
         "relay.desc": (
             "アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を"
-            "後ろの字が透ける濃さ 70% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で"
+            "後ろの字がうっすら透ける濃さ 90% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で"
             "薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後の"
             "ホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、"
             "4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が"
@@ -1787,8 +1787,8 @@ def glow_value(ms: float) -> float:
 def toast_card(c: Canvas, card: SimCard) -> str:
     """A card of the simulation where pass_window.rs draws it, moving and fading as simulated: shadow, glow, light
     yellow face with a gray border, the green check, its texts over time and the line of its four seconds (in steps of
-    half a second). The card is at 70% (an inner group) times its fade (the outer); the ring of its glow is outside the
-    70%, at full strength, and fades with the card."""
+    half a second). The card is at 90% (an inner group) times its fade (the outer); the ring of its glow is outside the
+    90%, at full strength, and fades with the card."""
     m = c.m
     rest = round(m.rest * 1000)
     shown = card.y[0].t <= rest and (card.gone is None or card.gone > rest)
@@ -1873,7 +1873,7 @@ def toast_card(c: Canvas, card: SimCard) -> str:
 
 
 def more_tag(c: Canvas, steps: list) -> str:
-    """The tag +N where pass_window.rs draws it (under the third place, at 70%), one per value of N while it holds."""
+    """The tag +N where pass_window.rs draws it (under the third place, at 90%), one per value of N while it holds."""
     m = c.m
     x, top = EDGE, toast_more_y()
     out = []

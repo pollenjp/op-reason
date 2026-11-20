@@ -2,7 +2,7 @@
 //! show as cards at the top left of the screen of the foreground window. One layered window holds every card
 //! ([`crate::pass_toast::Stack`] decides them) and is drawn with Direct2D into a bitmap with an alpha channel
 //! (`UpdateLayeredWindow`). Each card is drawn into a Direct2D layer that is put on the bitmap at the card's opacity
-//! (70% once shown), so that the text behind shows through the whole card alike; the ring of a card that glows is drawn
+//! (90% once shown), so that the text behind shows through the whole card alike; the ring of a card that glows is drawn
 //! after it, at full strength. `+N` under the third card counts the cards pushed out. The window never takes the focus, lets clicks and the pointer through (`WS_EX_TRANSPARENT`), is
 //! always on top, stays out of the taskbar and Alt+Tab, and is hidden while no card is shown. Its window text lists the
 //! cards' first lines, newest first, then `+N`.
@@ -841,7 +841,7 @@ unsafe fn draw_more(rt: &ID2D1DCRenderTarget, t: &Text, p: &Paint) {
 }
 
 /// The green ring around the card at `y` whose call signed again (outside its layer: at full strength on a card at
-/// 70%).
+/// 90%).
 ///
 /// # Safety
 ///
