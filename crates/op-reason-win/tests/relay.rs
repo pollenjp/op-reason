@@ -1189,6 +1189,16 @@ fn after_allow_the_window_comes_to_the_front_and_gives_it_back() {
         .map(|s| s["result"].as_str().unwrap_or("").to_owned())
         .collect();
     assert_eq!(results, ["denied", "allowed"]);
+    // the windows appeared at once: the watchdog of the windows said nothing
+    let notes: Vec<Value> = sb
+        .records()
+        .into_iter()
+        .filter(|r| {
+            r["event"] == "ssh-relay"
+                && r["what"].as_str().is_some_and(|w| w.starts_with("window-"))
+        })
+        .collect();
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 #[test]
