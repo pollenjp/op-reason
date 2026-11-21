@@ -37,6 +37,7 @@ use windows::Win32::System::Threading::{
 use windows::core::HSTRING;
 
 use super::{app, console, pass_window, procs, toast};
+use crate::relay_front::Ancestor;
 use crate::relay_opts::{self, Opts};
 use crate::relay_ui;
 
@@ -84,6 +85,9 @@ pub(super) struct Shared {
     pub told_no_answer: AtomicBool,
     /// The toasts' thread, started by the first signature that passes without a window (none when it cannot start).
     toasts: OnceLock<Option<pass_window::Toasts>>,
+    /// The relay's ancestors at start, nearest first: whether the window in front belongs to the program that started
+    /// the relay (design `2026-11-22-front-after-allow-design.md` §5.1).
+    pub ancestors: Vec<Ancestor>,
 }
 
 impl Shared {
@@ -109,6 +113,15 @@ impl Shared {
             told_no_prompt: AtomicBool::new(false),
             told_no_answer: AtomicBool::new(false),
             toasts: OnceLock::new(),
+            ancestors: peer::chain(std::process::id())
+                .into_iter()
+                .skip(1)
+                .map(|l| Ancestor {
+                    pid: l.pid,
+                    start: l.start,
+                    name: l.name,
+                })
+                .collect(),
         }
     }
 

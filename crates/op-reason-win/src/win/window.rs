@@ -11,6 +11,10 @@
 //! button is the answer, which the owner reads with [`Window::answer`]. None of them activates the window, and the
 //! window has no default button: a key typed elsewhere never reaches it.
 //!
+//! Only its owner brings it to the front, after the click on a button that hands an SSH request on to 1Password
+//! ([`Window::come_forward`]; design `2026-11-22-front-after-allow-design.md` §5): the click lets this process set the
+//! foreground window. The window then gives the front back when it closes, unless another window took it meanwhile.
+//!
 //! It opens on the screen of the foreground window, with that screen's DPI, and stays there ([`super::screen`]; design
 //! `2026-11-18-pass-toasts-design.md` §5).
 
@@ -52,6 +56,10 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::WindowsAndMessaging::{
+    AllowSetForegroundWindow, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsWindowVisible, SetForegroundWindow,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
@@ -217,6 +225,9 @@ struct State {
     buttons_since: Instant,
     /// The button pressed and released (the answer).
     answer: Option<Button>,
+    /// Set when the window came to the front ([`Window::come_forward`]): the window that was in front then (null when
+    /// there was none), to give the front back to when this one closes.
+    front_before: Option<HWND>,
 }
 
 impl State {
@@ -876,6 +887,7 @@ impl Window {
                 buttons,
                 buttons_since: Instant::now(),
                 answer: None,
+                front_before: None,
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -956,6 +968,63 @@ impl Window {
     pub fn answer(&self) -> Option<Button> {
         // SAFETY: `state` stays valid until Drop.
         unsafe { (*self.state).answer }
+    }
+
+    /// Brings the window to the front and activates it, right after the click on a button that hands an SSH request on
+    /// to 1Password (design `2026-11-22-front-after-allow-design.md` §5.1). This process received that click, the last
+    /// input, so Windows lets it set the foreground window although the window never activated itself. Remembers the
+    /// window that was in front, to give the front back when this one closes. Returns whether the window is in front
+    /// now.
+    pub fn come_forward(&self) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        // SAFETY: plain queries and a request about our own window, on its thread. No reference into the state is held
+        // across them: activating the window runs its procedure.
+        let (before, now) = unsafe {
+            let before = GetForegroundWindow();
+            if before == self.hwnd {
+                return true;
+            }
+            let _ = SetForegroundWindow(self.hwnd);
+            (before, GetForegroundWindow())
+        };
+        let came = now == self.hwnd;
+        if came {
+            // SAFETY: `state` stays valid until Drop.
+            unsafe { (*self.state).front_before = Some(before) };
+        }
+        came
+    }
+
+    /// The window came to the front ([`Window::come_forward`]).
+    pub fn came_forward(&self) -> bool {
+        // SAFETY: `state` stays valid until Drop.
+        unsafe { (*self.state).front_before.is_some() }
+    }
+
+    /// Gives the front back to the window that had it before [`Window::come_forward`] (design
+    /// `2026-11-22-front-after-allow-design.md` §5.3): only while this window still has the front or no window has it
+    /// (1Password's prompt, or a window the person went to, keeps it), and only to a window that is still there, shown
+    /// and not minimized. The foreground process may set the foreground window.
+    fn give_back(&self) {
+        // SAFETY: `state` stays valid until Drop; the value is taken out before the Win32 calls.
+        let Some(before) = (unsafe { (*self.state).front_before.take() }) else {
+            return;
+        };
+        // SAFETY: plain queries and a request to Windows; `before` may be stale, which IsWindow answers.
+        unsafe {
+            let now = GetForegroundWindow();
+            if before.is_invalid() || !(now == self.hwnd || now.is_invalid()) {
+                return;
+            }
+            if IsWindow(Some(before)).as_bool()
+                && IsWindowVisible(before).as_bool()
+                && !IsIconic(before).as_bool()
+            {
+                let _ = SetForegroundWindow(before);
+            }
+        }
     }
 
     /// Puts new texts in (the same window: a changed count of waiting calls, the buttons gone after an answer) and lays
@@ -1040,6 +1109,8 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // The front goes back first, while this window may still have it.
+        self.give_back();
         // SAFETY: destroy the window first (its procedure reads the state), then free the state.
         let opening = unsafe {
             if !(*self.state).destroyed {
@@ -1059,6 +1130,29 @@ impl Drop for Window {
                 let _ = t.join();
             }
         }
+    }
+}
+
+/// The process of the window in front, 0 when there is none.
+pub fn front_pid() -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: plain queries with an out parameter on the stack; a null window gives no process.
+    unsafe {
+        let fg = GetForegroundWindow();
+        if !fg.is_invalid() {
+            GetWindowThreadProcessId(fg, Some(&mut pid));
+        }
+    }
+    pid
+}
+
+/// Lets the process `pid` set the foreground window until the next input that is not for it (1Password, to bring its
+/// prompt in front of a window that came to the front; design `2026-11-22-front-after-allow-design.md` §5.2). Only the
+/// process that may set the foreground window itself can hand that on.
+pub fn let_come_forward(pid: u32) {
+    // SAFETY: a plain call without pointers.
+    unsafe {
+        let _ = AllowSetForegroundWindow(pid);
     }
 }
 

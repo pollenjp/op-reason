@@ -2,7 +2,9 @@
 //! ticket's turn it is takes op-reason's lock (`Local\op-reason`, shared with `op-reason.exe` and the launcher, so that
 //! op-reason's windows and 1Password's prompts come in pairs), writes `holder.json`, shows the window and its toast,
 //! and passes the turn on when it closes. A request of a call that asks already waits for that answer. The window's
-//! notification goes with it, except after a per-call time-out (design `2026-11-18-pass-toasts-design.md` §6).
+//! notification goes with it, except after a per-call time-out (design `2026-11-18-pass-toasts-design.md` §6). After a
+//! click that allows, the window comes to the front until the request has gone through 1Password, unless the program
+//! that started the relay is in front (design `2026-11-22-front-after-allow-design.md` §5).
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -18,9 +20,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{End, Shared, State, peer, pipe};
+use crate::relay_front;
 use crate::relay_ui::{self, Facts, Phase};
 use crate::ui::Button;
-use crate::win::{app, holder, mutex, toast, window};
+use crate::win::{app, holder, mutex, procs, toast, window};
 
 /// How often a waiting thread looks at its client and the queue.
 const POLL: Duration = Duration::from_millis(250);
@@ -193,6 +196,11 @@ impl<'a> Shown<'a> {
             .set_texts(&relay_ui::both(&self.facts, self.phase));
     }
 
+    /// The window came to the front after the click (it gives the front back when it closes).
+    pub fn came_forward(&self) -> bool {
+        self.window.came_forward()
+    }
+
     /// The language the window was opened in.
     pub fn lang(&self) -> Lang {
         self.lang
@@ -220,6 +228,14 @@ fn wait<'a>(shared: &'a Shared, st: MutexGuard<'a, State>) -> MutexGuard<'a, Sta
 /// Whether a remembered process still runs: WSL roots cannot be seen and only time out.
 fn alive(p: &ProcId) -> bool {
     !p.scope.is_empty() || peer::alive(p.pid, p.start)
+}
+
+/// Whether the window in front belongs to the program that started the relay (a terminal program): 1Password then
+/// sees the application of the relay's requests in front already, and the window stays behind
+/// ([`relay_front::front_is_its_program`]).
+fn its_program_in_front(shared: &Shared) -> bool {
+    let pid = window::front_pid();
+    pid != 0 && relay_front::front_is_its_program(&shared.ancestors, pid, procs::created(pid))
 }
 
 /// op-reason's lock, waiting up to `OPREASON_LOCK_WAIT` seconds (none when the mutex cannot be used at all, as
@@ -352,6 +368,11 @@ fn ask<'a>(
                 Button::AllowTerminal => Answer::AllowTerminal,
                 Button::Deny => Answer::Deny,
             };
+            // At once, while the click is the last input: 1Password shows its prompt only when it sees the application
+            // that asks in front (design `2026-11-22-front-after-allow-design.md` §5.1)
+            if answer.allows() && !its_program_in_front(shared) {
+                shown.window.come_forward();
+            }
             shared
                 .lock()
                 .book
