@@ -4,8 +4,9 @@
 - Status: approved (checks with the real app showed that 1Password keeps its prompt behind its icon for a relay
   started from a scheduled task; of the ways out, the user chose to bring op-reason's window to the front at the click
   on Allow, to be built and checked with the real app, as the better experience than approving from the tray each time;
-  this document records the research behind it, the design and the implementer's decisions). §11 is for the checks with
-  the real app after this pull request.
+  this document records the research behind it, the design and the implementer's decisions). §11–§13 hold the checks
+  with the real app of this pull request: the first build's window hung (§12); the build that draws without the GPU
+  brought 1Password's prompt at once (§13).
 - Builds on: `2026-11-17-ssh-relay-design.md` (§5.5 the windows one at a time, §6 the window, §8 the relay process,
   §15 the checks with the real app), `2026-11-15-language-toggle-design.md` (clicks that never activate the window),
   `2026-11-17-refs-in-window-design.md` §5.4 (handing the right to the foreground on after a click) and
@@ -87,6 +88,11 @@ Anti-goals (a failure even if it works):
   tool window, `WS_EX_TOOLWINDOW`), and whether 1Password compares the process of the window in front with the
   application exactly or through its process tree. The design does not depend on the first beyond the window
   belonging to the process that 1Password names, and does not depend on the second (§5.1).
+- **Answered by the check of §13**: op-reason's tool window in front is enough (a task's relay: 1Password's prompt
+  came half a second after the window came forward, naming op-reason), and so is a window of a process under the
+  application that 1Password names (a relay started in a terminal program, with op-reason's window in front: the
+  prompt came at once, naming the terminal program). 1Password looks at the window in front through the process tree,
+  at least from the application down.
 
 ### 3.2 Windows
 
@@ -184,8 +190,8 @@ Within the chosen approach:
 - README.md and README.ja.md: the window paragraph of "Two modes" (it opens without the focus, comes to the front after
   Allow until 1Password answers, gives the front back, stays behind for its own program; Deny never takes it); the
   "Windows" item; "Starting it": a scheduled task that also repeats every minute (the check of §1 found that the task's
-  "restart on failure" did not start a stopped relay again), and why the window comes to the front, with the tray for
-  the windows that come without a click.
+  "restart on failure" did not start a stopped relay again) and keeps its rule "Do not start a new instance" (§10), and
+  why the window comes to the front, with the tray for the windows that come without a click.
 - `docs/architecture/README.md`: the relay's threads (its ancestors at start, the parent), step 3 of a request (coming
   to the front, `AllowSetForegroundWindow`, giving back), step 5 (the notice), the tests.
 - `docs/manual-verification.md` and `.ja.md`: checks S25–S31, and S15's expectation.
@@ -228,17 +234,23 @@ Within the chosen approach:
 | No plan document | the change is small, and §5 and §8 are its steps |
 | After the first check (§12): the relay's windows draw into their device context at each `WM_PAINT` through a DC render target on Direct2D's software renderer (`CreateDCRenderTarget`, `D2D1_RENDER_TARGET_TYPE_SOFTWARE`, `BindDC`; Direct2D's default HWND target only if that cannot be made); the windows of `op` calls keep Direct2D's default | the relay's window stopped answering at its first frame, with Direct3D and DXGI loaded, where the GPU and the swap chain are the parts that the runner never had; a DC render target has no swap chain and does not wait for the display's refresh (the first build of this fix, an HWND target on the software renderer presenting at once, kept a swap chain); a window this small draws as fast without it; `op` calls show their windows every day without that, and are left as they are |
 | After the first check: a watchdog thread of the relay records `window-stuck` (with the step: `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`) when a window's thread has waited five seconds in one step, and `window-unstuck` (after how long) when it goes on; the steps are process-wide atomics of `window.rs` (when a step ends, the step around it is the one that runs again); the records' `ssh-relay` gets an optional `detail` | the first check could only say that the thread waited; the next one says where, without a debugger; the watchdog is started before any window, so that it runs whatever the window's thread waits for |
+| After the second check (§13): the README names the task's rule for when it runs already, **Do not start a new instance** (the default) | with "Stop the existing instance", the trigger that repeats every minute would stop the relay and start it again every minute; with "Run a new instance in parallel", each start while the relay runs exits with 1 (one relay per logon session), which the task shows as its last result. The `0xFFFFFFFF` that the check reported as the task's last result is most likely the exit code of the relay that the check had killed (`Stop-Process` ends a process with -1), shown three seconds after the kill, before the trigger started the next relay; with the default rule no second relay starts |
+| After the second check: the notifications keep Windows PowerShell's AppUserModelID, and name "Windows PowerShell" as their sender | a name of op-reason's own touches every notification of op-reason (`op` calls and the launcher too) and needs a registration, which `2026-11-15-windows-exe-design.md` §7.4 keeps opt-in: a change of its own |
 
 ## 11. Checks with the real app
 
-With the build of this pull request (`docs/manual-verification.md`, S25–S31, and a run of the same checks by the person
-who asked for this change):
+With the builds of this pull request (`docs/manual-verification.md`, S25–S31), run on 2026-11-22 by the person who
+asked for this change, with a script that did the steps and watched the windows:
 
-- **2026-11-22, the first build (head `f295109`)**: the first window of a relay started from a scheduled task stopped
-  answering before it was drawn, so no click was possible (§12); run again at 04:43 with the same build, the same.
-- The next builds draw the relay's windows without the GPU and record a window that does not appear (§12): first an
-  HWND target on the software renderer (head `3f8f0a0`), then a DC render target (no swap chain at all). The checks
-  are to be run again with the last one.
+- **The first build (head `f295109`, 04:10 and 04:43)**: the first window of a relay started from a scheduled task
+  stopped answering before it was drawn, so no click was possible (§12).
+- The next builds draw the relay's windows without the GPU and record a window that does not appear (§10, §12).
+  **An HWND target on the software renderer (head `3f8f0a0`, 05:06)**: the window waited for a click until its 60
+  seconds ran out; no click came (§13).
+- **A DC render target, without a swap chain (head `14c0724`, 06:45–07:18)**: S25, S26, S28, S29 and S30 as
+  expected. After Allow, 1Password's prompt came at once, without the tray, for a relay started from a task and for
+  a new one (§13). S27 and S31 were not run. `docs/manual-verification.md` has the results too ("Results of
+  2026-11-22").
 
 ## 12. The first check: a window that never drew itself
 
@@ -282,7 +294,7 @@ The three questions, and what is known:
    answer, and its record of the request has no answer. CI checks it: a signature left unanswered in the window never
    reaches the fake agent (`a_signature_waits_for_the_window_and_an_unanswered_one_is_not_remembered`). The relay had
    passed on the key list and `session-bind@openssh.com` (as always, before the window); whether one of those, or
-   another client, made 1Password's prompt that timed out is not known.
+   another client, made 1Password's prompt that timed out is not known (§13 adds what the later runs showed).
 3. **Why the record came only with the next connection.** A record is written when the request ends; its thread waited
    in the opening of the window until 04:15:40. The check's `-Step status` connected to the relay's pipe at that
    moment (with `--status`), but the opening shares nothing with the threads that accept connections, so it is not
@@ -295,3 +307,60 @@ What changed (the next build):
   unchanged.
 - A watchdog records a window that has not appeared within five seconds, with the step, and when it goes on (§10).
   `op-reason.exe --log` shows them ("op-reason's window stuck (draw)").
+
+## 13. The second check: the prompt at once
+
+The build that draws the relay's windows into their device context (head `14c0724`), 2026-11-22, 06:45–07:18, on the
+author's Windows, with 1Password as in §1. The script registered a scheduled task with a logon trigger and a trigger
+that repeats every minute (as the README says) on a pipe of its own, started the relay of S29 and S30 in the terminal
+program, and noted the window in front and op-reason's window every 0.2 seconds. 1Password was locked and unlocked
+before S25, S28, S29 and the second try of S30.
+
+| Check | What happened |
+| --- | --- |
+| S25: a task's relay | op-reason's window appeared 1.5 seconds after ssh started, drawn, and the front stayed with the terminal program. At the click on Allow (25 seconds after ssh started) op-reason's window was in front at once, and half a second later 1Password's prompt, which named op-reason ("Allow op-reason to use SSH key"); nobody opened the tray. After the approval (with Windows Hello) the window closed, and the terminal program had the front again, as before the click |
+| S26: again | No prompt and no dot: 1Password had approved this run of the relay. The window closed right after the click, too soon for the 0.2-second watch to see it in front; the front stayed with the terminal program |
+| S28: a new relay | The script stopped the relay (`Stop-Process`), and the task's trigger that repeats every minute started a new one 48 seconds later. Its first request: in front at the click, 1Password's prompt 0.4 seconds later, naming op-reason; afterwards the front was the terminal program's again |
+| S29: a relay started in the terminal program | The relay's ancestors were processes of the terminal program (four), then Explorer. With the terminal program in front, the window stayed behind at the click (§5.1), and 1Password's prompt came 0.6 seconds later, naming the terminal program. The front stayed with the terminal program |
+| S30: the taskbar in front | First try: 1Password had not been locked since S29 and signed without a prompt; the window closed at once. Second try, with a new relay started in the terminal program and 1Password locked and unlocked: the person clicked the taskbar, then Allow. The window came to the front at the click, and 1Password's prompt came 0.4 seconds later, naming the terminal program. At the end the front went to the window that had it before the taskbar was clicked (another terminal program's): 1Password's prompt had the front when op-reason's window closed, so the window gave nothing back (§5.3), and Windows chose |
+| S27, S31 | Not run |
+
+Before the click, in S26 and S28, the person opened the menu of the hidden icons at the right of the taskbar: the
+1Password icon had no dot, and no prompt had come (in S25 nobody looked). 1Password's log had no line about an
+authorization prompt in any of these runs.
+
+Every window of this check (six) appeared within 1.5 seconds, drew itself and answered until it closed; the relay
+recorded no `window-stuck`. The last line of the window "1Password is asking" could be read (§6). The Windows
+notification that comes with the window names "Windows PowerShell" as its sender, as since 0.1.0: op-reason borrows
+that AppUserModelID and registers nothing (`2026-11-15-windows-exe-design.md` §7.3); a name of op-reason's own would
+be a change of its own. No notice that 1Password did not answer came.
+
+What it answers:
+
+- **The change works as meant.** For a relay started from a task, 1Password's prompt comes at once after Allow,
+  without the tray, also for a new run of the relay; a relay started in a terminal program gets its prompt at once, as
+  before.
+- **§3.1's open questions.** 1Password counts op-reason's tool window in front (S25, S28), and a window of a process
+  under the application that it names (S30). For §5.1 this means that the window could come forward with the relay's
+  own program in front too, and 1Password would still ask at once; the rule keeps the focus in that program, where
+  coming forward helps nothing.
+- **Where the front lands.** With the window that had it before the click (S25, S28: whether the window gave it back
+  or Windows did, the 0.2-second watch cannot tell), or, when 1Password's prompt is in front at the end, where Windows
+  puts it (S30).
+
+Still not known:
+
+- **The prompt that timed out in 1Password's log.** In each of the three runs where nobody clicked (§12, and the run at
+  05:06 below), 1Password's log had the line of an authorization prompt that timed out, 60 seconds after the relay got
+  the request. In this check every click came within 40 seconds of the request; there was no such line, and no prompt
+  or dot before the click. Whether 1Password starts a 60-second wait with the key list or `session-bind@openssh.com`,
+  which a click later than that would meet, is not known; the window waits 60 seconds for a click by default
+  (`--answer-wait`).
+- **Why the first build's window hung** (§12). None of the windows drawn without the GPU hung (six here, one at
+  05:06), but the cause is not proven.
+
+The run before it (05:06, head `3f8f0a0`, an HWND target on the software renderer): the relay's record says that its
+window waited for a click until its 60 seconds ran out (`timeout`), with no `window-stuck`; no click came, and ssh
+failed after 63 seconds. The script never found the window: it passed `$null` for the title to `FindWindow`, which
+PowerShell turns into an empty title (fixed for the run above). 1Password's line of the prompt that timed out came at
+the same moment as the relay's time-out.

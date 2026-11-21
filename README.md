@@ -379,8 +379,11 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
 ```
 
 - **Start it at logon from a scheduled task** (hidden), with a trigger that also repeats every minute: the task's
-  "restart on failure" did not start a relay that had been stopped again, and while a relay runs, a second one exits at
-  once. Without a console of its own (a task, a double click) it shows no console window.
+  "restart on failure" did not start a relay that had been stopped again. Keep the task's rule "If the task is already
+  running" at **Do not start a new instance** (the default; `-MultipleInstances IgnoreNew`): with "Stop the existing
+  instance" the relay would be stopped and started again every minute, and a relay started while another one runs
+  exits at once (exit code 1), which the task would show as its last result. Without a console of its own (a task, a
+  double click) it shows no console window.
 - **1Password shows its prompt only while it sees the application that asks in front.** Otherwise it keeps the prompt
   behind its icon at the right of the taskbar (the icon gets a dot, and its menu has **SSH request waiting**) and
   closes the request after about 60 seconds. For a relay started in a terminal program, that application is the

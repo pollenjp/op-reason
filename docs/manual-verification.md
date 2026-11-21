@@ -232,7 +232,7 @@ Lock 1Password and unlock it before S25, so that it has approved nothing yet. If
 | S27 | S25's command with `check S27: deny`; click **Deny** | The window never takes the focus (its caption stays inactive); ssh fails at once |
 | S28 | Start the task's relay again: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1'); Start-ScheduledTask -TaskName op-reason-ssh-check`. Then S25's command with `check S28: a new relay`; Allow; approve | 1Password asks again (a new process of the relay needs its own approval), and its prompt comes at once, naming op-reason |
 | S29 | Stop the task's relay (`Stop-Process` as in S28) and start the relay in a terminal, as in step 5 of the preparation. In another terminal of the same terminal program, with that program in front: S1's command with `check S29: started in a terminal`; Allow; approve | op-reason's window does not take the focus at the click: the program that started the relay is in front. 1Password's prompt comes at once, naming that terminal program, as in S1 |
-| S30 (optional) | With the relay of S29: S1's command with `check S30: another program in front`. Before clicking Allow, click an empty part of the taskbar (or another program's window); then Allow | op-reason's window comes to the front at the click. Note whether 1Password's prompt comes at once (1Password then counts op-reason, a process under the terminal program it takes for the application) or waits behind its icon (it compares the process in front with that program exactly) |
+| S30 (optional) | With the relay of S29, lock 1Password and unlock it (or the request passes on S29's approval, without a prompt). S1's command with `check S30: another program in front`. Before clicking Allow, click an empty part of the taskbar (or another program's window); then Allow | op-reason's window comes to the front at the click, and 1Password's prompt comes at once, naming the terminal program: 1Password counts op-reason's window, a process under the terminal program that it takes for the application (seen on 2026-11-22). If the prompt waits behind the icon instead, note it |
 | S31 | Stop the relay of S29 (Ctrl+C) and have the task start a show-only relay: `Set-ScheduledTask -TaskName op-reason-ssh-check -Action (New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent --mode show-only') \| Out-Null; Start-ScheduledTask -TaskName op-reason-ssh-check`. Lock 1Password and unlock it. S1's command with `check S31: show-only from a task`; leave it for 60 seconds. Run it again, and this time open the prompt from the 1Password icon and approve | op-reason's window "SSH key: 1Password is asking" never takes the focus; its last line reads "If 1Password's prompt does not come: the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting". The icon has a dot. Left alone, the request closes after about 60 seconds, ssh fails, and the toast "SSH key: 1Password did not answer" says that 1Password keeps such a prompt behind its icon (SSH request waiting), not that the relay needs a task. The second time, the prompt opened from the icon names op-reason, and `Hi <user>!` |
 
 Put everything back: remove the task, stop the relay if it still runs, and lock 1Password once.
@@ -298,6 +298,35 @@ S20 and S21 hold for the third build too: neither `+N` nor the cards without mot
 | S22 | As expected (first build) | op-reason's windows (the relay's and the `op` call's) at the top right of the screen that is not the main one, the toast at its top left |
 | S23 | As expected (first build) | The notification came with the window and went with it at the click; the notification center kept nothing of it, nor of the `op` call's |
 | S24 | As expected (second build) | With no foreground window (the desktop), the window opened at the top right of the primary screen. It closed after 60 seconds and ssh failed; its notification stayed in the notification center |
+
+### Results of 2026-11-22
+
+op-reason 0.5.0 from the pull request that added S25–S31 (Windows: the zip of its Windows exe workflow), with the real
+1Password app at **application and terminal session**, run by the person who asked for the change with a script that
+did the steps and noted the window in front and op-reason's window every 0.2 seconds. The task's relay ran on a pipe of
+its own, from a task with a logon trigger and a trigger that repeats every minute; the relay of S29 and S30 was started
+in a terminal program. Three builds of that pull request:
+
+- the first build (head `f295109`): the first window of the task's relay stopped answering before it was drawn (white
+  inside, "Not Responding"), twice, so no check went on. The relay's windows now draw without the GPU
+  ([design](superpowers/specs/2026-11-22-front-after-allow-design.md) §12);
+- the second build (head `3f8f0a0`): S25's window waited for a click until its 60 seconds ran out, and no click came
+  (the script did not find the window);
+- the third build (head `14c0724`, the relay's windows drawn into their device context): S25, S26, S28, S29 and S30.
+
+| # | Result | What happened |
+| --- | --- | --- |
+| S25 | As expected (third build) | The window opened 1.5 seconds after ssh started, without taking the front from the terminal program. At the click on Allow it was in front at once, and 1Password's prompt came half a second later, naming op-reason, without a trip to the icon. After the approval (Windows Hello) `Hi <user>!`, and the terminal program had the front again |
+| S26 | As expected (third build) | No prompt: the window closed right after the click, too soon to be seen in front, and the terminal program kept the front. Before the click, the 1Password icon had no dot |
+| S27 | Not run | |
+| S28 | As expected (third build) | The relay, stopped with `Stop-Process`, was started again by the task's trigger that repeats every minute, 48 seconds later (not by `Start-ScheduledTask`). 1Password asked again (it had also been locked and unlocked): its prompt came 0.4 seconds after the click, naming op-reason. Before the click, the icon had no dot |
+| S29 | As expected (third build) | With the terminal program in front the window did not come forward at the click; 1Password's prompt came 0.6 seconds later, naming the terminal program, which kept the front |
+| S30 | Prompt at once (third build) | The first try passed without a prompt: 1Password still held S29's approval of that relay (the step now locks 1Password first). With a new relay in the terminal program and 1Password locked and unlocked, the taskbar clicked, then Allow: the window came to the front, and 1Password's prompt came 0.4 seconds later, naming the terminal program. At the end the front went to the window that had it before the taskbar was clicked |
+| S31 | Not run | |
+
+With the third build no window stopped answering (six windows), and 1Password showed no prompt and no dot before a
+click. The notification that comes with the window names "Windows PowerShell" as its sender (op-reason borrows that
+AppUserModelID). At the end the task was removed and the relays stopped.
 
 ## Open question: does plain `signout` close only one process's session?
 

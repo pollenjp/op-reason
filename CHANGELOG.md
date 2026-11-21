@@ -21,7 +21,8 @@
 - **The relay records a window that does not appear**: when a window's thread has waited five seconds in one step
   (making the window, showing it, drawing it, and so on), a `ssh-relay` record `window-stuck` names the step, and
   `window-unstuck` says when it went on. `op-reason.exe --log` shows them. The `ssh-relay` records get a `detail`.
-- The READMEs: why the window comes to the front, and a scheduled task that also repeats every minute.
+- The READMEs: why the window comes to the front, and a scheduled task that also repeats every minute, keeping its
+  rule "Do not start a new instance" while the relay runs.
 
 ## 0.5.0 — 2026-11-20
 
