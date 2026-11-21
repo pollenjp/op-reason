@@ -1,5 +1,5 @@
 //! The approval window, drawn with Direct2D and DirectWrite. Same look and behavior as the A' launcher's WPF window:
-//! top right of the work area, always on top, never takes the focus, not in the taskbar, light yellow,
+//! top right of the work area, always on top, never takes the focus by itself, not in the taskbar, light yellow,
 //! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
 //! red. It asks nothing; the decision is made in the 1Password prompt.
 //!
