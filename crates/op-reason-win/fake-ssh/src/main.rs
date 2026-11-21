@@ -13,6 +13,10 @@
 //!   when set.
 //! - `fake-ssh spawn <program> <args>…`: runs the program and exits with its code; copied as `wsl.exe`, it stands for
 //!   the WSL interop host that starts a WSL call's `ssh.exe`.
+//! - `fake-ssh front <title> [<program> <args>…]`: a plain window titled `<title>` (class `fake-ssh-front`) at the left
+//!   of the screen, until killed: the window in front for the tests of the relay's window coming to the front. With a
+//!   program, it starts it once the window is up, so that the program's parent owns the window (it stands for the
+//!   terminal program the relay was started in).
 //! - With `FAKE_SSH_PIPE` set and any other arguments (copied as `ssh.exe` and started with an ssh command line, such as
 //!   `-T git@github.com`, which the relay reads for the command and the destination): `client` on that pipe with the
 //!   steps of `FAKE_SSH_STEPS` (separated by spaces).
@@ -275,6 +279,95 @@ fn agent(_pipe: &str, _dir: &Path) -> i32 {
     2
 }
 
+#[cfg(windows)]
+fn front(title: &str, program: &[OsString]) -> i32 {
+    use std::process::{Command, Stdio};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{GetStockObject, HBRUSH, WHITE_BRUSH};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PostQuitMessage,
+        RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    };
+    use windows::core::{HSTRING, w};
+
+    unsafe extern "system" fn proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        // SAFETY: the window procedure of our own class.
+        unsafe {
+            if msg == WM_DESTROY {
+                PostQuitMessage(0);
+                return LRESULT(0);
+            }
+            DefWindowProcW(h, msg, wp, lp)
+        }
+    }
+
+    // SAFETY: a class with a static name and a valid procedure, and a window of it; the strings outlive the calls.
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else {
+            return 2;
+        };
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(proc),
+            hInstance: module.into(),
+            lpszClassName: w!("fake-ssh-front"),
+            hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
+            ..Default::default()
+        };
+        if RegisterClassW(&class) == 0 {
+            eprintln!("fake-ssh: cannot register the window class");
+            return 2;
+        }
+        // at the left of the screen, below the toasts (top left) and away from op-reason's window (top right)
+        if CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("fake-ssh-front"),
+            &HSTRING::from(title),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            40,
+            360,
+            360,
+            200,
+            None,
+            None,
+            Some(module.into()),
+            None,
+        )
+        .is_err()
+        {
+            eprintln!("fake-ssh: cannot create the window");
+            return 2;
+        }
+    }
+    if let Some((p, rest)) = program.split_first()
+        && let Err(e) = Command::new(p)
+            .args(rest)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    {
+        eprintln!("fake-ssh: cannot start {}: {e}", p.to_string_lossy());
+        return 127;
+    }
+    let mut msg = MSG::default();
+    // SAFETY: the message loop of this thread, whose window lives until the process is killed.
+    unsafe {
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    0
+}
+
+#[cfg(not(windows))]
+fn front(_title: &str, _program: &[OsString]) -> i32 {
+    eprintln!("fake-ssh: the window is a Windows window");
+    2
+}
+
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let text = |i: usize| {
@@ -293,6 +386,7 @@ fn main() {
                 .collect::<Vec<_>>(),
         ),
         "spawn" => spawn(&args[1..]),
+        "front" => front(&text(1), args.get(2..).unwrap_or_default()),
         _ => match std::env::var("FAKE_SSH_PIPE") {
             Ok(pipe) if !pipe.is_empty() => {
                 let steps = std::env::var("FAKE_SSH_STEPS").unwrap_or_default();
@@ -307,6 +401,7 @@ fn main() {
             _ => {
                 eprintln!(
                     "usage: fake-ssh agent <pipe> <dir> | client <pipe> <step>… | spawn <program> <args>… \
+                     | front <title> [<program> <args>…] \
                      (or FAKE_SSH_PIPE and FAKE_SSH_STEPS with an ssh command line)"
                 );
                 2

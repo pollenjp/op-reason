@@ -212,6 +212,38 @@ impl Sandbox {
         )
     }
 
+    /// A plain window of another process (`fake-ssh front`) at the left of the screen, to be the window in front (design
+    /// `docs/superpowers/specs/2026-11-22-front-after-allow-design.md` §8). With `relay`, that process starts this
+    /// sandbox's relay too, and stands for the terminal program the relay was started in.
+    fn front(&self, title: &str, relay: bool) -> (Proc, screen::Hwnd) {
+        let mut c = Command::new(fake_ssh());
+        c.arg("front").arg(title);
+        if relay {
+            c.arg(exe())
+                .arg("--ssh-agent")
+                .arg("--pipe")
+                .arg(self.pipe())
+                .arg("--upstream")
+                .arg(self.upstream())
+                .env("LOCALAPPDATA", self.lad())
+                .env("OPREASON_LANG", "en")
+                .env_remove("OPREASON_LOCK_WAIT");
+        }
+        let child = c
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start fake-ssh front");
+        let p = Proc(child);
+        assert!(
+            wait_until(Duration::from_secs(10), || screen::front_window(title)
+                .is_some()),
+            "the plain window is up"
+        );
+        (p, screen::front_window(title).expect("the plain window"))
+    }
+
     fn client(&self, reason: Option<&str>, steps: &[&str]) -> Command {
         let mut c = Command::new(fake_ssh());
         c.arg("client")
@@ -234,16 +266,19 @@ fn text(out: &Output) -> String {
 }
 
 mod screen {
-    //! The relay's window, found by its class and title; real clicks on its buttons (CI only).
+    //! The relay's window, found by its class and title; real clicks on its buttons (CI only); the window in front.
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetClientRect, GetWindowTextW, IsWindowVisible, SetCursorPos,
+        FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowTextW,
+        IsWindowVisible, SetCursorPos,
     };
-    use windows::core::{PCWSTR, w};
+    use windows::core::{HSTRING, PCWSTR, w};
+
+    pub type Hwnd = HWND;
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -289,6 +324,56 @@ mod screen {
             std::thread::sleep(std::time::Duration::from_millis(60));
             mouse_event(0x0004, 0, 0, 0, 0);
         }
+    }
+
+    /// The visible window of `fake-ssh front` titled `title`.
+    pub fn front_window(title: &str) -> Option<HWND> {
+        // SAFETY: plain Win32 queries with valid arguments.
+        unsafe {
+            let h = FindWindowW(w!("fake-ssh-front"), &HSTRING::from(title)).ok()?;
+            IsWindowVisible(h).as_bool().then_some(h)
+        }
+    }
+
+    /// Clicks the middle of a window's client area with the real mouse: a window that may activate comes to the front.
+    pub fn click_middle(h: HWND) {
+        // SAFETY: Win32 calls with valid arguments; the window belongs to another process of this desktop.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(h, &mut rc);
+            let mut pt = POINT {
+                x: rc.right / 2,
+                y: rc.bottom / 2,
+            };
+            let _ = ClientToScreen(h, &mut pt);
+            let _ = SetCursorPos(pt.x, pt.y);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            mouse_event(0x0002, 0, 0, 0, 0);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            mouse_event(0x0004, 0, 0, 0, 0);
+        }
+    }
+
+    pub fn foreground() -> HWND {
+        // SAFETY: a plain query.
+        unsafe { GetForegroundWindow() }
+    }
+
+    /// A window's class and title, for the messages of failed checks.
+    pub fn describe(h: HWND) -> String {
+        if h.is_invalid() {
+            return "no window".to_owned();
+        }
+        let mut class = [0u16; 256];
+        let mut title = [0u16; 256];
+        // SAFETY: plain queries into buffers on the stack.
+        let (c, t) = unsafe { (GetClassNameW(h, &mut class), GetWindowTextW(h, &mut title)) };
+        format!(
+            "{} {:?}",
+            String::from_utf16_lossy(&class[..c.max(0) as usize]),
+            String::from_utf16_lossy(&title[..t.max(0) as usize])
+        )
     }
 }
 
@@ -1029,6 +1114,129 @@ fn an_allowed_call_whose_answer_never_comes_is_recorded() {
     assert!(last["decision"].is_string(), "{last}");
 }
 
+/// Stops a relay that a test did not start itself (by the PID that `--status` names), also when the test fails: the next
+/// test's relay would find it running.
+struct StopRelay<'a>(&'a Sandbox);
+
+impl Drop for StopRelay<'_> {
+    fn drop(&mut self) {
+        let pid = self
+            .0
+            .status()
+            .1
+            .split("pid ")
+            .nth(1)
+            .and_then(|t| t.trim_end_matches([')', '\n', '\r']).parse::<u32>().ok());
+        if let Some(pid) = pid {
+            let _ = Command::new("taskkill")
+                .args(["/pid", &pid.to_string(), "/f"])
+                .output();
+        }
+        let _ = wait_until(Duration::from_secs(10), || self.0.status().0 == Some(1));
+    }
+}
+
+#[test]
+fn after_allow_the_window_comes_to_the_front_and_gives_it_back() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("front");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let (_front, fw) = sb.front("op-reason front check", false);
+    screen::click_middle(fw);
+    assert!(
+        wait_until(Duration::from_secs(3), || screen::foreground() == fw),
+        "a click brings the plain window to the front (now: {})",
+        screen::describe(screen::foreground())
+    );
+    // Deny: nothing goes to 1Password, and the front stays where it was
+    let a = sb.client(Some("front deny"), &["sign"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(15), || screen::titled(ASK).is_some()));
+    assert_eq!(screen::foreground(), fw, "the window opens behind");
+    answer(false);
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 5\n");
+    assert_eq!(
+        screen::foreground(),
+        fw,
+        "Deny leaves the front where it was (now: {})",
+        screen::describe(screen::foreground())
+    );
+    // Allow: the window comes to the front while 1Password (the fake agent, 2.5 seconds) answers, then gives it back
+    fs::write(sb.agent_dir().join("sign-delay-ms"), "2500").unwrap();
+    let b = sb.client(Some("front allow"), &["sign"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(15), || screen::titled(ASK).is_some()));
+    assert_eq!(screen::foreground(), fw, "the window opens behind");
+    answer(true);
+    assert!(
+        wait_until(Duration::from_secs(2), || screen::titled(ASKING)
+            .is_some_and(|h| screen::foreground() == h)),
+        "after Allow, op-reason's window is in front while 1Password answers (now: {})",
+        screen::describe(screen::foreground())
+    );
+    assert_eq!(text(&b.wait_with_output().unwrap()), "sign 14\n");
+    assert!(
+        wait_until(Duration::from_secs(3), || screen::foreground() == fw),
+        "the front goes back to the window that had it (now: {})",
+        screen::describe(screen::foreground())
+    );
+    let results: Vec<String> = sb
+        .signs()
+        .iter()
+        .map(|s| s["result"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(results, ["denied", "allowed"]);
+}
+
+#[test]
+fn the_window_stays_behind_while_the_program_that_started_the_relay_is_in_front() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("front-parent");
+    let _agent = sb.agent();
+    // the plain window's process starts the relay: the terminal program the relay runs in
+    let (_front, fw) = sb.front("op-reason front parent check", true);
+    let _stop = StopRelay(&sb);
+    assert!(
+        wait_until(Duration::from_secs(10), || sb.status().0 == Some(0)),
+        "the relay answers on its pipe"
+    );
+    screen::click_middle(fw);
+    assert!(
+        wait_until(Duration::from_secs(3), || screen::foreground() == fw),
+        "a click brings the plain window to the front (now: {})",
+        screen::describe(screen::foreground())
+    );
+    fs::write(sb.agent_dir().join("sign-delay-ms"), "1500").unwrap();
+    let a = sb.client(Some("front parent"), &["sign"]).spawn().unwrap();
+    answer(true);
+    // 1Password (the fake agent) answers after 1.5 seconds: the window never came to the front meanwhile
+    let t0 = Instant::now();
+    let mut ahead = None;
+    while t0.elapsed() < Duration::from_millis(1200) {
+        let fg = screen::foreground();
+        if screen::window().is_some_and(|(h, _)| h == fg) {
+            ahead = Some(screen::describe(fg));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(ahead, None, "op-reason's window stays behind");
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 14\n");
+    assert_eq!(
+        screen::foreground(),
+        fw,
+        "the program that started the relay keeps the front (now: {})",
+        screen::describe(screen::foreground())
+    );
+    assert_eq!(sb.signs()[0]["result"], "allowed");
+}
+
 mod toasts {
     //! The relay's toast window, found by its class (design `docs/superpowers/specs/2026-11-18-pass-toasts-design.md`
     //! §4), and the screen it should be on.
@@ -1168,6 +1376,8 @@ fn a_signature_that_passes_without_a_window_shows_a_toast() {
         toasts::window().is_none(),
         "no toast for a signature that had a window"
     );
+    // that window came to the front after Allow and gave it back as it closed: let the front settle
+    std::thread::sleep(Duration::from_millis(300));
     let before = toasts::foreground();
     let b = sb
         .client(Some("toast check"), &["sign", "sign", "sign"])
