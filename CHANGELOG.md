@@ -15,6 +15,12 @@
   waiting**.
 - The notices "1Password did not answer" and "the relay has no parent process" no longer say that 1Password leaves a
   relay without a parent unanswered and that a scheduled task helps: they say where 1Password keeps its prompt.
+- **The relay's windows draw without the GPU** (Direct2D's software renderer, presenting at once). In a check with the
+  real app, the first window of a relay started from a scheduled task stopped answering before it drew itself; the
+  windows of `op` calls are unchanged.
+- **The relay records a window that does not appear**: when a window's thread has waited five seconds in one step
+  (making the window, showing it, drawing it, and so on), a `ssh-relay` record `window-stuck` names the step, and
+  `window-unstuck` says when it went on. `op-reason.exe --log` shows them. The `ssh-relay` records get a `detail`.
 - The READMEs: why the window comes to the front, and a scheduled task that also repeats every minute.
 
 ## 0.5.0 — 2026-11-20

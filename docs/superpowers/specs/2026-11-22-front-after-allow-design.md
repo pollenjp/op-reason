@@ -226,7 +226,62 @@ Within the chosen approach:
 | `fake-ssh front` makes the plain window of the Windows tests (and, with a program, starts it as its child) | the window in front must belong to another process than the test's, which is the relay's parent; with a program, it stands for the terminal program the relay was started in |
 | The toast test waits 300 ms before it reads the window in front | its first call now takes the front and gives it back |
 | No plan document | the change is small, and §5 and §8 are its steps |
+| After the first check (§12): the relay's windows are drawn with Direct2D's software renderer and present at once (`D2D1_RENDER_TARGET_TYPE_SOFTWARE`, `D2D1_PRESENT_OPTIONS_IMMEDIATELY`; Direct2D's default only if that cannot be made); the windows of `op` calls keep Direct2D's default | the relay's window stopped answering before its first frame, where the GPU is the part that the runner never had; a window this small draws as fast without it; `op` calls show their windows every day without that, and are left as they are |
+| After the first check: a watchdog thread of the relay records `window-stuck` (with the step: `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`) when a window's thread has waited five seconds in one step, and `window-unstuck` (after how long) when it goes on; the steps are process-wide atomics of `window.rs` (when a step ends, the step around it is the one that runs again); the records' `ssh-relay` gets an optional `detail` | the first check could only say that the thread waited; the next one says where, without a debugger; the watchdog is started before any window, so that it runs whatever the window's thread waits for |
 
 ## 11. Checks with the real app
 
-To be run with the build of this pull request (`docs/manual-verification.md`, S25–S31). Not run yet.
+With the build of this pull request (`docs/manual-verification.md`, S25–S31, and a run of the same checks by the person who
+asked for this change):
+
+- **2026-11-22, the first build (head `f295109`)**: the first window of a relay started from a scheduled task stopped
+  answering before it was drawn, so no click was possible (§12). Fixed in the next build; the checks are to be run again.
+
+## 12. The first check: a window that never drew itself
+
+What happened (2026-11-22, 04:10–04:16, on the author's Windows; the relay started from a scheduled task, its parent
+the Task Scheduler's host in session 0; 1Password locked and unlocked just before):
+
+- op-reason's window "SSH key: allow this call?" appeared at the top right. Nobody saw it appear (the person was away
+  then); when it was seen (a screenshot at 04:13:35, and the checks until 04:15) it was white inside, without any text,
+  and its caption said "(Not Responding)". Nobody pressed a button. The window in front stayed the terminal program all
+  along: the window never came to the front, as no click reached it.
+- The relay's record of the signature came 321.8 seconds after the request (`gone`, no answer): its window's thread was
+  waiting from 04:10:18 to 04:15:40, and then found the client gone (the check had stopped ssh after 150 seconds).
+- Between, the relay's threads were all waiting (0.34 s of CPU in all); its window was the only top-level window besides
+  the thread's IME window, and Windows called it hung (`IsHungAppWindow`).
+- 1Password's log had one line about SSH: an authorization prompt that timed out at 04:11:18, 60 seconds after the
+  relay got the request. No line said that a prompt waited behind the tray icon (as in the check before this change),
+  and nobody saw a prompt of 1Password.
+
+The three questions, and what is known:
+
+1. **Where the window's thread waited.** Not in the code of this change: nothing of it runs before a click (§5), and
+   the click never came. The thread was in the opening of the window, before the loop that waits for the click: in
+   that loop it would have ended at the 60-second answer wait (`timeout`), while it ended as `gone`, which it finds
+   first only when it comes out of the opening after the client has gone. The opening (make the window, show it, draw
+   it with Direct2D, write `holder.json`, start the notification) is the relay's since 0.4.0, and it has drawn every
+   window of the checks before this one (S1–S24, and the check of the scheduled task a day before, with 0.5.0). Which
+   part of it waited is not known: the window shown without any text points at its first frame, but nobody saw the
+   window before it was hung; CI never stopped there (its runner draws without a GPU driver, and has no 1Password); and
+   the thread's stack was not taken. The likeliest part is the first frame on the GPU (the first Direct2D drawing of a
+   build that this machine had never run, presented at the display's refresh), so the relay's windows now draw without
+   the GPU (§10). If a window stops again, the relay records the step (`window-stuck`), and the check takes the
+   thread's states (`-Step stuck` of the check's script).
+2. **Whether a request reached 1Password before Allow.** No. In per-call mode the relay sends a signature on only after
+   a click that allows, or for a call that an earlier answer allowed; this relay had just started and remembered no
+   answer, and its record of the request has no answer. CI checks it: a signature left unanswered in the window never
+   reaches the fake agent (`a_signature_waits_for_the_window_and_an_unanswered_one_is_not_remembered`). The relay had
+   passed on the key list and `session-bind@openssh.com` (as always, before the window); whether one of those, or
+   another client, made 1Password's prompt that timed out is not known.
+3. **Why the record came only with the next connection.** A record is written when the request ends; its thread waited
+   in the opening of the window until 04:15:40. The check's `-Step status` connected to the relay's pipe at that
+   moment (with `--status`), but the opening shares nothing with the threads that accept connections, so it is not
+   known whether that connection (or something else then) ended the wait.
+
+What changed (the next build):
+
+- The relay's windows draw with Direct2D's software renderer and present at once, without the GPU and without waiting
+  for the display's refresh (§10). The windows of `op` calls are unchanged.
+- A watchdog records a window that has not appeared within five seconds, with the step, and when it goes on (§10).
+  `op-reason.exe --log` shows them ("op-reason's window stuck (draw)").

@@ -221,7 +221,9 @@ Start-ScheduledTask -TaskName op-reason-ssh-check
 & $exe --ssh-agent --status
 ```
 
-Lock 1Password and unlock it before S25, so that it has approved nothing yet.
+Lock 1Password and unlock it before S25, so that it has approved nothing yet. If op-reason's window stops answering
+(white inside, "Not Responding" in its caption), run `& $exe --log --since 10m` before anything else and note the line
+"SSH: op-reason's window stuck (<step>)": the step its thread waits in.
 
 | # | Do | Expect |
 | --- | --- | --- |

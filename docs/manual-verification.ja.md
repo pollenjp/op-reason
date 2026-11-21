@@ -217,7 +217,9 @@ Start-ScheduledTask -TaskName op-reason-ssh-check
 & $exe --ssh-agent --status
 ```
 
-S25 の前に 1Password をロックして解き、まだ何も承認していない状態にします。
+S25 の前に 1Password をロックして解き、まだ何も承認していない状態にします。op-reason の窓が応答しなくなったら (中が白く、
+題に「応答なし」)、ほかの何より先に `& $exe --log --since 10m` を打ち、「SSH: op-reason の窓が止まっている (<段>)」の行を
+書き留めます。窓のスレッドが止まっている段です。
 
 | # | すること | 期待 |
 | --- | --- | --- |
