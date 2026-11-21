@@ -134,6 +134,7 @@ impl<'a> Shown<'a> {
         let texts = relay_ui::both(&facts, phase);
         let w = window::Window::create(&texts, lang, false, Box::new(app::remember))
             .map_err(|e| e.message())?;
+        w.draw_without_gpu();
         w.show();
         let t0 = Instant::now();
         while !w.painted() && t0.elapsed() < Duration::from_millis(500) {
@@ -141,6 +142,9 @@ impl<'a> Shown<'a> {
             std::thread::sleep(Duration::from_millis(2));
         }
         let holder_dir = held.as_ref().and(shared.state_dir.clone());
+        // the steps that may wait on Windows, for the watchdog of the windows (design
+        // `2026-11-22-front-after-allow-design.md` §12)
+        let busy = window::Busy::enter(window::Step::Holder);
         if let Some(dir) = &holder_dir {
             holder::write(
                 dir,
@@ -150,7 +154,9 @@ impl<'a> Shown<'a> {
                 &facts.command,
             );
         }
+        busy.next(window::Step::Toast);
         let toast = Some(toast::start_for_window(texts.get(lang).toast.clone()));
+        drop(busy);
         Ok(Shown {
             window: w,
             _held: held,

@@ -17,9 +17,15 @@
 //!
 //! It opens on the screen of the foreground window, with that screen's DPI, and stays there ([`super::screen`]; design
 //! `2026-11-18-pass-toasts-design.md` §5).
+//!
+//! The steps in which a window's thread waits on Windows (making the window, showing it, drawing it) are noted in
+//! process-wide atomics ([`busy`]), so that the SSH relay's watchdog can say where a window that does not appear waits
+//! (design `2026-11-22-front-after-allow-design.md` §12). The relay's windows are drawn without the GPU
+//! ([`Window::draw_without_gpu`]).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -34,8 +40,9 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
+    D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
     D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -128,6 +135,93 @@ const fn rgb(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
         a: 1.0,
     }
 }
+
+/// A step in which the thread of a window waits on Windows ([`busy`]): the window's own, and those of the relay's
+/// opening of a window around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Step {
+    /// The Direct2D and DirectWrite factories.
+    Factories = 1,
+    /// The texts laid out, and the screen.
+    Layout,
+    /// `CreateWindowExW`.
+    Create,
+    /// `ShowWindow` and topmost.
+    Show,
+    /// Making the render target.
+    Target,
+    /// Drawing and presenting a frame.
+    Draw,
+    /// Writing `holder.json` (the relay).
+    Holder,
+    /// Starting the window's Windows notification (the relay).
+    Toast,
+}
+
+impl Step {
+    fn name(code: u8) -> &'static str {
+        match code {
+            1 => "factories",
+            2 => "layout",
+            3 => "create",
+            4 => "show",
+            5 => "target",
+            6 => "draw",
+            7 => "holder",
+            8 => "toast",
+            _ => "?",
+        }
+    }
+}
+
+/// When the step that runs began, in milliseconds on [`clock_ms`] (0: none runs).
+static BUSY_SINCE: AtomicU64 = AtomicU64::new(0);
+static BUSY_STEP: AtomicU8 = AtomicU8::new(0);
+
+/// Milliseconds since the first window step of this process (at least 1).
+pub fn clock_ms() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// The window step that runs now: when it began ([`clock_ms`]) and its name.
+pub fn busy() -> Option<(u64, &'static str)> {
+    let since = BUSY_SINCE.load(Ordering::SeqCst);
+    (since != 0).then(|| (since, Step::name(BUSY_STEP.load(Ordering::SeqCst))))
+}
+
+/// A step running; when dropped, the step that ran before it (if any) is the one that runs again. Process-wide: the
+/// relay shows one window at a time.
+pub(crate) struct Busy {
+    before: (u64, u8),
+}
+
+impl Busy {
+    pub(crate) fn enter(step: Step) -> Busy {
+        let before = (
+            BUSY_SINCE.load(Ordering::SeqCst),
+            BUSY_STEP.load(Ordering::SeqCst),
+        );
+        let busy = Busy { before };
+        busy.next(step);
+        busy
+    }
+
+    /// The next step of the same run (its clock starts again).
+    pub(crate) fn next(&self, step: Step) {
+        BUSY_STEP.store(step as u8, Ordering::SeqCst);
+        BUSY_SINCE.store(clock_ms(), Ordering::SeqCst);
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY_STEP.store(self.before.1, Ordering::SeqCst);
+        BUSY_SINCE.store(self.before.0, Ordering::SeqCst);
+    }
+}
+
 const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);
 const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);
 const DARK_ORANGE: D2D1_COLOR_F = rgb(0xFF, 0x8C, 0x00);
@@ -228,6 +322,8 @@ struct State {
     /// Set when the window came to the front ([`Window::come_forward`]): the window that was in front then (null when
     /// there was none), to give the front back to when this one closes.
     front_before: Option<HWND>,
+    /// Draw with Direct2D's software renderer and present at once ([`Window::draw_without_gpu`]).
+    software: bool,
 }
 
 impl State {
@@ -368,13 +464,20 @@ impl State {
         Ok(())
     }
 
-    fn render(&mut self, hwnd: HWND) -> Result<()> {
-        if self.target.is_none() {
-            let mut rc = RECT::default();
-            // SAFETY: valid window handle and out parameter.
-            unsafe { GetClientRect(hwnd, &mut rc)? };
+    /// The window's render target: by default Direct2D's choice (the GPU when there is one) presenting at the display's
+    /// refresh; for the relay's windows ([`Window::draw_without_gpu`]) the software renderer presenting at once, and the
+    /// default only if that cannot be made.
+    fn make_target(&self, hwnd: HWND) -> Result<ID2D1HwndRenderTarget> {
+        let mut rc = RECT::default();
+        // SAFETY: valid window handle and out parameter.
+        unsafe { GetClientRect(hwnd, &mut rc)? };
+        let make = |software: bool| {
             let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                r#type: if software {
+                    D2D1_RENDER_TARGET_TYPE_SOFTWARE
+                } else {
+                    D2D1_RENDER_TARGET_TYPE_DEFAULT
+                },
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_UNKNOWN,
                     alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
@@ -390,11 +493,28 @@ impl State {
                     width: (rc.right - rc.left).max(1) as u32,
                     height: (rc.bottom - rc.top).max(1) as u32,
                 },
-                presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+                presentOptions: if software {
+                    D2D1_PRESENT_OPTIONS_IMMEDIATELY
+                } else {
+                    D2D1_PRESENT_OPTIONS_NONE
+                },
             };
             // SAFETY: properties live across the call.
-            self.target = Some(unsafe { self.d2d.CreateHwndRenderTarget(&props, &hprops)? });
+            unsafe { self.d2d.CreateHwndRenderTarget(&props, &hprops) }
+        };
+        if self.software {
+            make(true).or_else(|_| make(false))
+        } else {
+            make(false)
         }
+    }
+
+    fn render(&mut self, hwnd: HWND) -> Result<()> {
+        let busy = Busy::enter(Step::Target);
+        if self.target.is_none() {
+            self.target = Some(self.make_target(hwnd)?);
+        }
+        busy.next(Step::Draw);
         let Some(t) = self.target.as_ref() else {
             return Ok(());
         };
@@ -835,12 +955,14 @@ impl Window {
         others: bool,
         on_choose: Box<dyn FnMut(Lang)>,
     ) -> Result<Window> {
+        let busy = Busy::enter(Step::Factories);
         register_class()?;
         // SAFETY: factory creation and layout calls with valid arguments; the state pointer is handed to the
         // window and freed in Drop after the window is destroyed.
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            busy.next(Step::Layout);
             let loc = locale();
             let fonts = Fonts {
                 title: format(&dw, DWRITE_FONT_WEIGHT_BOLD, TITLE_SIZE, &loc)?,
@@ -888,6 +1010,7 @@ impl Window {
                 buttons_since: Instant::now(),
                 answer: None,
                 front_before: None,
+                software: false,
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -900,6 +1023,7 @@ impl Window {
             let margin = scale(SCREEN_MARGIN, dpi);
             let x = area.right - w - margin;
             let y = area.top + margin;
+            busy.next(Step::Create);
             let hwnd = match CreateWindowExW(
                 EX_STYLE,
                 CLASS_NAME,
@@ -926,6 +1050,7 @@ impl Window {
 
     /// Shows the window without activating it, then puts it on top (topmost has to be applied after showing).
     pub fn show(&self) {
+        let _busy = Busy::enter(Step::Show);
         // SAFETY: valid window handle on its own thread.
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -962,6 +1087,19 @@ impl Window {
     pub fn is_open(&self) -> bool {
         // SAFETY: `state` stays valid until Drop.
         unsafe { !(*self.state).destroyed }
+    }
+
+    /// Draws the window with Direct2D's software renderer, presenting each frame at once (before [`Window::show`]): no
+    /// GPU and no wait for the display's refresh. The SSH relay's window stopped answering before its first frame once,
+    /// on a real desktop with a build it had never run (design `2026-11-22-front-after-allow-design.md` §12); a window
+    /// this small draws as fast without the GPU.
+    pub fn draw_without_gpu(&self) {
+        // SAFETY: `state` stays valid until Drop; no Win32 call while the reference lives.
+        unsafe {
+            let st = &mut *self.state;
+            st.software = true;
+            st.target = None;
+        }
     }
 
     /// The button that was pressed and released, once one was.
