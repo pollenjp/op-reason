@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-22
 
 - **After Allow, the SSH relay's window comes to the front until 1Password has answered**, so that 1Password's prompt
   comes at once. 1Password keeps the prompt of an application that it does not see in front behind its icon in the
