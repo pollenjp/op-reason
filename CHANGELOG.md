@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **After Allow, the SSH relay's window comes to the front until 1Password has answered**, so that 1Password's prompt
+  comes at once. 1Password keeps the prompt of an application that it does not see in front behind its icon in the
+  taskbar (**SSH request waiting**), and for a relay started from a scheduled task that application is op-reason
+  itself: until now its prompt waited there unseen, and the request went unanswered after about 60 seconds. The window
+  still opens without taking the focus, **Deny** never takes it, and the window stays behind when the window in front
+  belongs to the program the relay was started from (a terminal program). When the request is through, the window that
+  had the front gets it back, unless another window took it meanwhile; the relay lets the 1Password app come in front of
+  op-reason's window.
+- While 1Password asks (after Allow, in show-only mode, or when 1Password is slow to answer), op-reason's window ends
+  with where 1Password keeps a prompt it did not show: the 1Password icon at the right of the taskbar → **SSH request
+  waiting**.
+- The notices "1Password did not answer" and "the relay has no parent process" no longer say that 1Password leaves a
+  relay without a parent unanswered and that a scheduled task helps: they say where 1Password keeps its prompt.
+- The READMEs: why the window comes to the front, and a scheduled task that also repeats every minute.
+
 ## 0.5.0 — 2026-11-20
 
 - **The SSH relay shows a toast for a signature that passes without a window.** In per-call mode, a later signature of

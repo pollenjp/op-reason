@@ -327,9 +327,13 @@ tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with 
 The window shows who asks (Claude Code, a person, a program; for WSL calls also herdr's workspace and pane, the
 distribution, the repository and the branch), the root process, the reason (or "no reason given"), the ssh command, the
 destination with its host key, what the signature is for (logging in as which user, or an SSHSIG namespace such as
-`git`) and the key's name in 1Password. Only a click answers it (a press and a release on a button): it never takes the
-focus and has no default button, so a key typed elsewhere never answers it. No answer within 60 seconds fails that
-signature without remembering anything.
+`git`) and the key's name in 1Password. Only a click answers it (a press and a release on a button): it opens without
+taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click on Allow this
+call or Allow this terminal, it comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
+that 1Password shows its prompt at once ([why](#starting-it)); then the window that had the front gets it back, unless
+another window took it meanwhile. It stays behind when the window in front belongs to the program the relay was
+started from (a terminal program, which 1Password sees in front already), and **Deny** never takes the front. No
+answer within 60 seconds fails that signature without remembering anything.
 
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
@@ -356,7 +360,8 @@ op-reason shows three things on the screen, each in its own place
   center. With Windows' animation effects off they neither slide nor fade.
 - **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
   and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
-  stays at the top right of the primary screen, and its notifications stay.
+  stays at the top right of the primary screen, and its notifications stay. They open without taking the focus; only
+  the relay's window comes to the front, after a click on Allow, until 1Password has answered.
 - **Notifications** go with their window, so they do not pile up in the notification center; a per-call window that
   timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
   did not ask, 1Password did not answer, the relay has no parent process) stay.
@@ -373,10 +378,19 @@ op-reason.exe --ssh-agent --mode show-only
 op-reason.exe --ssh-agent --status             # exit 0 (and its process id) when a relay answers on the pipe
 ```
 
-- **Start it at logon from a scheduled task** (hidden, restarted on failure), not from a script that exits: 1Password
-  leaves the requests of a relay whose parent process has ended unanswered for 60 seconds. The relay says so in a toast
-  and a record when its parent is missing or ends. Without a console of its own (a task, a double click) it shows no
-  console window.
+- **Start it at logon from a scheduled task** (hidden), with a trigger that also repeats every minute: the task's
+  "restart on failure" did not start a relay that had been stopped again, and while a relay runs, a second one exits at
+  once. Without a console of its own (a task, a double click) it shows no console window.
+- **1Password shows its prompt only while it sees the application that asks in front.** Otherwise it keeps the prompt
+  behind its icon at the right of the taskbar (the icon gets a dot, and its menu has **SSH request waiting**) and
+  closes the request after about 60 seconds. For a relay started in a terminal program, that application is the
+  terminal program; for a relay started from a scheduled task, or whose parent process has ended, it is the relay
+  itself, op-reason. So in per-call mode op-reason's window comes to the front at the click on Allow, and 1Password's
+  prompt comes at once, naming op-reason (1Password approves each run of the relay once, until it locks). In show-only
+  mode, and when 1Password asks about a request that an earlier answer let through (to unlock it, for example), nobody
+  clicked: open the prompt from the icon, as the last line of op-reason's window "1Password is asking" says
+  ([design](docs/superpowers/specs/2026-11-22-front-after-allow-design.md)). The relay says in a toast and a record
+  when its parent is missing or ends.
 - One relay per logon session. Options: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
   `--time-limit <n>[s|m|h]` (60m), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s).
 - While its window is open, the relay holds op-reason's lock, so that its windows and 1Password's prompts come in pairs

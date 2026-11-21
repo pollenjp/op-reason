@@ -190,7 +190,7 @@ Preparation:
 | S12 | Stop the relay and start `& $exe --ssh-agent` again. Lock 1Password. Run S1's command (`check S12: locked`); click **Allow this call**; answer 1Password's access request (Windows Hello) | One access request unlocks 1Password and approves the relay at once (no second prompt). Until then op-reason's window stays as "SSH key: 1Password is asking"; it closes when 1Password answers |
 | S13 (optional) | Point a terminal program's own ssh connection at the relay (`IdentityAgent \\\\.\pipe\op-reason-ssh-agent` for its host in `~/.ssh/config`), connect, then make it reconnect | The first connection asks (Caller "Program: <its exe>"); its reconnects pass until the program exits. Note what the program shows while the window waits |
 | S14 (C3) | In WSL, in a scratch repository with commit signing through 1Password (`gpg.format ssh`, `gpg.ssh.program` = `op-ssh-sign-wsl.exe`, `commit.gpgsign true`) and the key set in the repository: `git config user.signingkey "key::$(ssh-add.exe -L \| grep '<the key's name>' \| head -n1)"` (in the shell of the preparation, Linux's `ssh-add` has no agent, so a `gpg.ssh.defaultKeyCommand` that asks it finds no key). Then `git commit --allow-empty -m 'check S14'` | No window of op-reason and no record of the relay: `op-ssh-sign-wsl.exe` does not use `SSH_AUTH_SOCK` and talks to the 1Password app directly, so signing stays outside the relay. Only 1Password's prompt comes, and the commit is signed (`git cat-file -p HEAD` shows `gpgsig -----BEGIN SSH SIGNATURE-----`) |
-| S15 | Stop the relay. In PowerShell: `cmd /c start "" /b $exe --ssh-agent` (cmd exits at once, the relay stays without a parent). Within a few seconds note the toast; then run S1's command (`check S15: no parent`) and Allow | A toast "op-reason's SSH relay has no parent process" or "… lost its parent process". 1Password does not ask: after about 60 seconds the relay records `no-answer`, ssh fails, and a toast says "SSH key: 1Password did not answer …" with the cause. Stop that relay: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` |
+| S15 | Stop the relay. In PowerShell: `cmd /c start "" /b $exe --ssh-agent` (cmd exits at once, the relay stays without a parent). Within a few seconds note the toast; then run S1's command (`check S15: no parent`), Allow and approve 1Password's prompt | A toast "op-reason's SSH relay has no parent process" or "… lost its parent process", which says that 1Password most likely takes the relay itself for the application now, and where it keeps its prompt. After Allow, op-reason's window comes to the front and 1Password's prompt comes at once, naming op-reason (before the window came to the front, 1Password kept that prompt behind its icon, unseen, and the request went unanswered after about 60 seconds: see the results below). Stop that relay: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` |
 | S16 | `& $exe --log --since 2h`, then `& $exe --log --json --since 2h` | One line per signature among the `op` calls ("SSH allowed", "SSH passed", "SSH denied", "SSH timed out", "SSH signed", "SSH no answer from 1Password"), with caller and reason (a passed row shows those of its call); the relay's own lines (started, its parent, 1Password did not ask). The JSON has neither the data signed nor a signature |
 | S17 (optional) | Open WSL through a distribution's own launcher (such as Ubuntu from the Start menu), set `SSH_AUTH_SOCK` and `WSLENV` as in the preparation, and run S3's command (`check S17: launcher`) | Note whether the window has the WSL line. If it does not, note the parent of `ssh.exe` while the window is open: `Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" \| ForEach-Object { (Get-Process -Id $_.ParentProcessId).Path }` |
 | S18 | A client that talks to 1Password directly. Start the relay again as in step 5 of the preparation (the relay, the second PowerShell and a third terminal opened for this check must all be terminals of one terminal program). Lock 1Password. In the second PowerShell run S1's command (`check S18: through the relay`), click **Allow this call** and answer 1Password. Then in the third terminal, straight to 1Password's pipe: `ssh -o 'IdentityAgent=\\\\.\pipe\openssh-ssh-agent' -T git@github.com`; deny the prompt that comes. Then set 1Password's **Ask approval for each new** to **application**, lock 1Password and run both commands again in the same terminals (as in S11, if a request right after the change gets no answer, wait for the timeout and run it again). Finally `& $exe --log --since 30m` | At **application and terminal session**: the direct client gets 1Password's prompt, naming the terminal program, without op-reason's window; denied, ssh says `agent refused operation`. At **application**: once the relay is approved, the direct client passes without a prompt (`Hi <user>!`). The log shows the two calls through the relay and nothing of the direct client. Then set 1Password back to **application and terminal session** |
@@ -202,6 +202,44 @@ Preparation:
 | S24 | In a new PowerShell tab: `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'; $env:OPREASON_SSH_REASON = 'check S24: unanswered'; ssh -T git@github.com`; do not click for 60 seconds; open the notification center | The window closes after 60 seconds and ssh fails; its notification stays in the notification center, the sign of a request that went unanswered |
 
 Put everything back: stop the relay, 1Password's setting at **application and terminal session**, lock 1Password once.
+
+### The window in front after Allow (S25–S31)
+
+After **Allow this call** or **Allow this terminal**, op-reason's window comes to the front until 1Password answers,
+so that 1Password shows its prompt at once
+([2026-11-22-front-after-allow-design.md](superpowers/specs/2026-11-22-front-after-allow-design.md)). 1Password keeps
+the prompt of an application that it does not see in front behind its icon at the right of the taskbar (a dot on the
+icon, **SSH request waiting** in its menu), and for a relay started from a scheduled task that application is
+op-reason. S25–S28 and S31 need such a relay: stop the relay of the preparation (Ctrl+C), then in PowerShell register a
+task without a trigger (it runs when started) and start it:
+
+```powershell
+$a = New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent'
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
+Register-ScheduledTask -TaskName op-reason-ssh-check -Action $a -Settings $s | Out-Null
+Start-ScheduledTask -TaskName op-reason-ssh-check
+& $exe --ssh-agent --status
+```
+
+Lock 1Password and unlock it before S25, so that it has approved nothing yet.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| S25 | In the second PowerShell, with that terminal in front: `$env:OPREASON_SSH_REASON = 'check S25: from a task'; ssh -T git@github.com`. While op-reason's window is open, type a few letters (no Enter); click **Allow this call**; approve 1Password's prompt | The window opens without taking the focus: the letters go to the terminal. At the click its caption turns active (it has the focus), and 1Password's prompt comes at once, without a dot on the 1Password icon, naming op-reason, not the terminal program. After the approval `Hi <user>!`, and the terminal has the focus again (type to see it). If it does not, note which window has it |
+| S26 | S25's command with `check S26: again`; Allow | The window again (a new call), which comes to the front at the click; no 1Password prompt: it passes at once, and the terminal has the focus again right after |
+| S27 | S25's command with `check S27: deny`; click **Deny** | The window never takes the focus (its caption stays inactive); ssh fails at once |
+| S28 | Start the task's relay again: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1'); Start-ScheduledTask -TaskName op-reason-ssh-check`. Then S25's command with `check S28: a new relay`; Allow; approve | 1Password asks again (a new process of the relay needs its own approval), and its prompt comes at once, naming op-reason |
+| S29 | Stop the task's relay (`Stop-Process` as in S28) and start the relay in a terminal, as in step 5 of the preparation. In another terminal of the same terminal program, with that program in front: S1's command with `check S29: started in a terminal`; Allow; approve | op-reason's window does not take the focus at the click: the program that started the relay is in front. 1Password's prompt comes at once, naming that terminal program, as in S1 |
+| S30 (optional) | With the relay of S29: S1's command with `check S30: another program in front`. Before clicking Allow, click an empty part of the taskbar (or another program's window); then Allow | op-reason's window comes to the front at the click. Note whether 1Password's prompt comes at once (1Password then counts op-reason, a process under the terminal program it takes for the application) or waits behind its icon (it compares the process in front with that program exactly) |
+| S31 | Stop the relay of S29 (Ctrl+C) and have the task start a show-only relay: `Set-ScheduledTask -TaskName op-reason-ssh-check -Action (New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent --mode show-only') \| Out-Null; Start-ScheduledTask -TaskName op-reason-ssh-check`. Lock 1Password and unlock it. S1's command with `check S31: show-only from a task`; leave it for 60 seconds. Run it again, and this time open the prompt from the 1Password icon and approve | op-reason's window "SSH key: 1Password is asking" never takes the focus; its last line reads "If 1Password's prompt does not come: the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting". The icon has a dot. Left alone, the request closes after about 60 seconds, ssh fails, and the toast "SSH key: 1Password did not answer" says that 1Password keeps such a prompt behind its icon (SSH request waiting), not that the relay needs a task. The second time, the prompt opened from the icon names op-reason, and `Hi <user>!` |
+
+Put everything back: remove the task, stop the relay if it still runs, and lock 1Password once.
+
+```powershell
+Stop-ScheduledTask -TaskName op-reason-ssh-check
+Unregister-ScheduledTask -TaskName op-reason-ssh-check -Confirm:$false
+if ((& $exe --ssh-agent --status) -match 'pid (\d+)') { Stop-Process -Id $Matches[1] }
+```
 
 ### Results of 2026-11-18
 

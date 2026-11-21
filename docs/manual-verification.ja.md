@@ -186,7 +186,7 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 | S12 | 中継を止めて `& $exe --ssh-agent` を起こし直す。1Password をロックする。S1 のコマンドを `check S12: locked` で打ち、**この呼び出しを許可** を押し、1Password のアクセスリクエストに答える (Windows Hello) | アクセスリクエスト 1 つで、1Password のロックの解除と中継の承認が済む (2 つ目の画面は出ない)。それまで op-reason の窓は「SSH key: 1Password is asking」のまま残り、1Password が答えると閉じる |
 | S13 (任意) | 端末のプログラム自身の ssh の接続を中継に向け (`~/.ssh/config` のそのホストに `IdentityAgent \\\\.\pipe\op-reason-ssh-agent`)、つないでから、つなぎ直させる | 最初の接続は窓が出る (呼び手「Program: <その exe>」)。つなぎ直しは、そのプログラムが終わるまで窓なしで通る。窓を待つ間にプログラムが何を出すかを書き留める |
 | S14 (C3) | WSL の使い捨ての repository で、1Password で commit に署名する設定 (`gpg.format ssh`、`gpg.ssh.program` を `op-ssh-sign-wsl.exe`、`commit.gpgsign true`) にし、鍵を repository に置く: `git config user.signingkey "key::$(ssh-add.exe -L \| grep '<鍵の名前>' \| head -n1)"` (用意の shell では Linux の `ssh-add` に agent が無いので、それに聞く `gpg.ssh.defaultKeyCommand` は鍵を取れない)。続けて `git commit --allow-empty -m 'check S14'` | op-reason の窓は出ず、中継の記録も無い: `op-ssh-sign-wsl.exe` は `SSH_AUTH_SOCK` を使わずに 1Password のアプリと直に話すので、署名は中継の外にある。1Password の画面だけが出て、commit には署名が付く (`git cat-file -p HEAD` に `gpgsig -----BEGIN SSH SIGNATURE-----`) |
-| S15 | 中継を止める。PowerShell で `cmd /c start "" /b $exe --ssh-agent` (cmd はすぐ終わり、中継は親なしで残る)。数秒のうちの toast を書き留め、S1 のコマンドを `check S15: no parent` で打って許可する | toast「op-reason's SSH relay has no parent process」か「… lost its parent process」。1Password は画面を出さない: 60 秒ほどで中継が `no-answer` を記録し、ssh は失敗し、toast「SSH key: 1Password did not answer …」が原因つきで出る。この中継は `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` で止める |
+| S15 | 中継を止める。PowerShell で `cmd /c start "" /b $exe --ssh-agent` (cmd はすぐ終わり、中継は親なしで残る)。数秒のうちの toast を書き留め、S1 のコマンドを `check S15: no parent` で打って許可し、1Password の画面で承認する | toast「op-reason's SSH relay has no parent process」か「… lost its parent process」。1Password がこれからはおそらく中継そのものをアプリと見ること、確認の画面をどこで待たせるかを書いている。許可すると op-reason の窓が前面に出て、1Password の画面がすぐ出る。名前は op-reason (窓が前面に出るまでは、1Password はこの画面をアイコンに伏せたまま見せず、依頼は 60 秒ほどで答えなしに終わっていた: 下の結果)。この中継は `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1')` で止める |
 | S16 | `& $exe --log --since 2h`、続けて `& $exe --log --json --since 2h` | `op` の呼び出しの間に、署名 1 つにつき 1 行 (「SSH allowed」「SSH passed」「SSH denied」「SSH timed out」「SSH signed」「SSH no answer from 1Password」)。呼び手と理由つき (passed の行には、その呼び出しの呼び手と理由)。中継そのものの行 (起動・親・1Password が確認しなかった) も出る。JSON には署名した中身も署名そのものも無い |
 | S17 (任意) | ディストリビューション自身の起動プログラム (スタートメニューの Ubuntu など) で WSL を開き、用意のとおりに `SSH_AUTH_SOCK` と `WSLENV` を置いて、S3 のコマンドを `check S17: launcher` で打つ | 窓に WSL の行があるかを書き留める。無ければ、窓が出ている間に `ssh.exe` の親を書き留める: `Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" \| ForEach-Object { (Get-Process -Id $_.ParentProcessId).Path }` |
 | S18 | 1Password に直につなぐ client。用意の 5 のとおりに中継を起こし直す (中継・2 つ目の PowerShell・この確かめで開く 3 つ目の端末は、どれも 1 つの端末のプログラムの中の端末にする)。1Password をロックする。2 つ目の PowerShell で S1 のコマンドを `check S18: through the relay` で打ち、**この呼び出しを許可** を押して 1Password に答える。続けて 3 つ目の端末で、1Password のパイプに直に `ssh -o 'IdentityAgent=\\\\.\pipe\openssh-ssh-agent' -T git@github.com` を打ち、出た画面は拒否する。次に 1Password の **新しいものごとに承認を求める** を **アプリケーション** にし、1Password をロックして、同じ端末で 2 つのコマンドをもう一度打つ (S11 のように、切り替えた直後の依頼に答えが来なければ、時間切れを待って打ち直す)。最後に `& $exe --log --since 30m` | **アプリケーションおよびターミナルセッション** では、直につなぐ client に、op-reason の窓なしで 1Password の画面が出る (名前は端末のプログラム)。拒否すると ssh は `agent refused operation`。**アプリケーション** では、中継を承認したあと、直につなぐ client は画面なしで通る (`Hi <ユーザー>!`)。記録には中継を通した呼び出し 2 つが出て、直につないだ client の行は無い。終わったら 1Password を **アプリケーションおよびターミナルセッション** に戻す |
@@ -199,6 +199,43 @@ zip の `powershell-entry` フォルダーを、`PATH` の `op-reason.exe` の�
 
 終わったら元に戻します: 中継を止め、1Password の設定を **アプリケーションおよびターミナルセッション** にし、1Password を 1 回
 ロックします。
+
+### 許可の後に前面に出る窓 (S25〜S31)
+
+**この呼び出しを許可**・**このターミナルを許可** を押すと、op-reason の窓は 1Password が答えるまで前面に出て、1Password が
+確認の画面をすぐ出せるようにします
+([2026-11-22-front-after-allow-design.md](superpowers/specs/2026-11-22-front-after-allow-design.md))。1Password は、前面に
+見えないアプリの確認の画面を、タスクバーの右のアイコンに伏せます (アイコンに点が付き、メニューに **SSHリクエストを待機中**
+が出る)。タスクから起こした中継では、そのアプリは op-reason です。S25〜S28 と S31 はその中継で確かめます。用意の中継を
+止め (Ctrl+C)、PowerShell で trigger の無いタスク (起こしたときだけ動く) を置いて起こします:
+
+```powershell
+$a = New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent'
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
+Register-ScheduledTask -TaskName op-reason-ssh-check -Action $a -Settings $s | Out-Null
+Start-ScheduledTask -TaskName op-reason-ssh-check
+& $exe --ssh-agent --status
+```
+
+S25 の前に 1Password をロックして解き、まだ何も承認していない状態にします。
+
+| # | すること | 期待 |
+| --- | --- | --- |
+| S25 | 2 つ目の PowerShell を前面にしたまま `$env:OPREASON_SSH_REASON = 'check S25: from a task'; ssh -T git@github.com`。op-reason の窓が出ている間に字をいくつか打ち (Enter は押さない)、**この呼び出しを許可** を押し、1Password の画面で承認する | 窓はフォーカスを取らずに出る: 打った字は端末に入る。押すと窓の題の帯が前面の色になり (フォーカスを持つ)、1Password の画面がすぐ出る。アイコンの点は要らない。名前は端末のプログラムでなく op-reason。承認すると `Hi <ユーザー>!` が出て、端末にフォーカスが戻る (打って確かめる)。戻らなければ、どの窓が持っているかを書き留める |
+| S26 | S25 のコマンドを `check S26: again` で打ち、許可する | 窓がまた出て (新しい呼び出し)、押すと前面に出る。1Password の画面は出ずにすぐ通り、端末にフォーカスがすぐ戻る |
+| S27 | S25 のコマンドを `check S27: deny` で打ち、**拒否** を押す | 窓はフォーカスを取らない (題の帯は前面でない色のまま)。ssh はすぐ失敗する |
+| S28 | タスクの中継を起こし直す: `Stop-Process -Id ((& $exe --ssh-agent --status) -replace '.*pid (\d+).*', '$1'); Start-ScheduledTask -TaskName op-reason-ssh-check`。S25 のコマンドを `check S28: a new relay` で打ち、許可して承認する | 1Password がもう一度聞く (中継の新しい process は承認し直しが要る)。画面はすぐ出て、名前は op-reason |
+| S29 | タスクの中継を止め (S28 の `Stop-Process`)、用意の 5 のように端末で中継を起こす。同じ端末のプログラムの別の端末で、そのプログラムを前面にしたまま、S1 のコマンドを `check S29: started in a terminal` で打ち、許可して承認する | 押しても op-reason の窓はフォーカスを取らない (中継を起こしたプログラムが前面にある)。1Password の画面はすぐ出て、名前は S1 と同じくその端末のプログラム |
+| S30 (任意) | S29 の中継のまま、S1 のコマンドを `check S30: another program in front` で打つ。許可を押す前に、タスクバーの何もない所 (かほかのプログラムの窓) を 1 回押してから、許可を押す | 押すと op-reason の窓が前面に出る。1Password の画面がすぐ出るか (1Password は、アプリと見る端末のプログラムの下の process である op-reason を数える)、アイコンに伏せるか (前面の process とそのプログラムを字のとおりに比べる) を書き留める |
+| S31 | S29 の中継を止め (Ctrl+C)、タスクに show-only の中継を起こさせる: `Set-ScheduledTask -TaskName op-reason-ssh-check -Action (New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent --mode show-only') \| Out-Null; Start-ScheduledTask -TaskName op-reason-ssh-check`。1Password をロックして解く。S1 のコマンドを `check S31: show-only from a task` で打ち、60 秒そのままにする。もう一度打ち、今度は 1Password のアイコンから画面を開いて承認する | op-reason の窓「SSH の鍵: 1Password が確認しています」はフォーカスを取らず、最後の行は「1Password の画面が出ないとき: タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」」。アイコンに点が付く。そのままにすると 60 秒ほどで依頼が閉じて ssh が失敗し、toast「SSH の鍵: 1Password が答えませんでした」は、1Password がそういう画面をアイコン (SSHリクエストを待機中) に伏せることを書く (中継にタスクが要る、とは書かない)。2 回目はアイコンから開いた画面の名前が op-reason で、`Hi <ユーザー>!` が出る |
+
+終わったら元に戻します: タスクを消し、まだ動いていれば中継を止め、1Password を 1 回ロックします。
+
+```powershell
+Stop-ScheduledTask -TaskName op-reason-ssh-check
+Unregister-ScheduledTask -TaskName op-reason-ssh-check -Confirm:$false
+if ((& $exe --ssh-agent --status) -match 'pid (\d+)') { Stop-Process -Id $Matches[1] }
+```
 
 ### 2026-11-18 の結果
 
