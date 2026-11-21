@@ -20,8 +20,8 @@
 //!
 //! The steps in which a window's thread waits on Windows (making the window, showing it, drawing it) are noted in
 //! process-wide atomics ([`busy`]), so that the SSH relay's watchdog can say where a window that does not appear waits
-//! (design `2026-11-22-front-after-allow-design.md` §12). The relay's windows are drawn without the GPU
-//! ([`Window::draw_without_gpu`]).
+//! (design `2026-11-22-front-after-allow-design.md` §12). The relay's windows draw into their device context with
+//! Direct2D's software renderer ([`Window::draw_without_gpu`]).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -35,15 +35,16 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F,
+    D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
-    D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1DCRenderTarget,
+    ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -52,9 +53,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
     IDWriteTextLayout,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, ScreenToClient,
+    BeginPaint, EndPaint, HDC, InvalidateRect, PAINTSTRUCT, ScreenToClient,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::WaitForSingleObject;
@@ -287,9 +288,28 @@ struct Fonts {
     switch_bold: IDWriteTextFormat,
 }
 
+/// Where the window draws ([`State::make_surface`]).
+enum Surface {
+    /// A render target of the window: Direct2D's choice (the GPU when there is one), presented at the display's
+    /// refresh.
+    Hwnd(ID2D1HwndRenderTarget),
+    /// A DC render target on Direct2D's software renderer, bound to the window's device context in WM_PAINT: no swap
+    /// chain and no wait for the display's refresh (the relay's windows).
+    Dc(ID2D1DCRenderTarget),
+}
+
+impl Surface {
+    fn rt(&self) -> &ID2D1RenderTarget {
+        match self {
+            Surface::Hwnd(t) => t,
+            Surface::Dc(t) => t,
+        }
+    }
+}
+
 struct State {
     d2d: ID2D1Factory,
-    target: Option<ID2D1HwndRenderTarget>,
+    target: Option<Surface>,
     fonts: Fonts,
     /// The width of the text area (DIPs).
     width: f32,
@@ -322,7 +342,7 @@ struct State {
     /// Set when the window came to the front ([`Window::come_forward`]): the window that was in front then (null when
     /// there was none), to give the front back to when this one closes.
     front_before: Option<HWND>,
-    /// Draw with Direct2D's software renderer and present at once ([`Window::draw_without_gpu`]).
+    /// Draw with Direct2D's software renderer into the window's device context ([`Window::draw_without_gpu`]).
     software: bool,
 }
 
@@ -464,60 +484,79 @@ impl State {
         Ok(())
     }
 
-    /// The window's render target: by default Direct2D's choice (the GPU when there is one) presenting at the display's
-    /// refresh; for the relay's windows ([`Window::draw_without_gpu`]) the software renderer presenting at once, and the
-    /// default only if that cannot be made.
-    fn make_target(&self, hwnd: HWND) -> Result<ID2D1HwndRenderTarget> {
-        let mut rc = RECT::default();
-        // SAFETY: valid window handle and out parameter.
-        unsafe { GetClientRect(hwnd, &mut rc)? };
-        let make = |software: bool| {
+    /// Where the window draws: by default a render target of its own (Direct2D's choice: the GPU when there is one,
+    /// presented at the display's refresh); for the relay's windows ([`Window::draw_without_gpu`]) a DC render target
+    /// on Direct2D's software renderer, and the default only if that cannot be made.
+    fn make_surface(&self, hwnd: HWND) -> Result<Surface> {
+        if self.software {
             let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: if software {
-                    D2D1_RENDER_TARGET_TYPE_SOFTWARE
-                } else {
-                    D2D1_RENDER_TARGET_TYPE_DEFAULT
-                },
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                 pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_UNKNOWN,
-                    alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
                 },
                 dpiX: self.dpi as f32,
                 dpiY: self.dpi as f32,
                 usage: D2D1_RENDER_TARGET_USAGE_NONE,
                 minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
             };
-            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                hwnd,
-                pixelSize: D2D_SIZE_U {
-                    width: (rc.right - rc.left).max(1) as u32,
-                    height: (rc.bottom - rc.top).max(1) as u32,
-                },
-                presentOptions: if software {
-                    D2D1_PRESENT_OPTIONS_IMMEDIATELY
-                } else {
-                    D2D1_PRESENT_OPTIONS_NONE
-                },
-            };
-            // SAFETY: properties live across the call.
-            unsafe { self.d2d.CreateHwndRenderTarget(&props, &hprops) }
-        };
-        if self.software {
-            make(true).or_else(|_| make(false))
-        } else {
-            make(false)
+            // SAFETY: the properties live across the call.
+            if let Ok(t) = unsafe { self.d2d.CreateDCRenderTarget(&props) } {
+                return Ok(Surface::Dc(t));
+            }
         }
+        let mut rc = RECT::default();
+        // SAFETY: valid window handle and out parameter.
+        unsafe { GetClientRect(hwnd, &mut rc)? };
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_UNKNOWN,
+                alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+            },
+            dpiX: self.dpi as f32,
+            dpiY: self.dpi as f32,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: (rc.right - rc.left).max(1) as u32,
+                height: (rc.bottom - rc.top).max(1) as u32,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+        // SAFETY: properties live across the call.
+        Ok(Surface::Hwnd(unsafe {
+            self.d2d.CreateHwndRenderTarget(&props, &hprops)?
+        }))
     }
 
-    fn render(&mut self, hwnd: HWND) -> Result<()> {
+    /// Draws a frame: into the window's device context `hdc` of WM_PAINT for a DC render target.
+    fn render(&mut self, hwnd: HWND, hdc: HDC) -> Result<()> {
         let busy = Busy::enter(Step::Target);
         if self.target.is_none() {
-            self.target = Some(self.make_target(hwnd)?);
+            self.target = Some(self.make_surface(hwnd)?);
         }
         busy.next(Step::Draw);
-        let Some(t) = self.target.as_ref() else {
+        let bound = match self.target.as_ref() {
+            Some(Surface::Dc(dc)) => {
+                let mut rc = RECT::default();
+                // SAFETY: valid window handle, its paint DC and out parameters.
+                unsafe { GetClientRect(hwnd, &mut rc).and_then(|()| dc.BindDC(hdc, &rc)) }.is_ok()
+            }
+            Some(Surface::Hwnd(_)) => true,
+            None => return Ok(()),
+        };
+        if !bound {
+            self.target = None;
+            return Ok(());
+        }
+        let Some(surface) = self.target.as_ref() else {
             return Ok(());
         };
+        let t = surface.rt();
         // Brushes and positions first, so that nothing can return between BeginDraw and EndDraw.
         let mut brushes = Vec::with_capacity(self.paras.len());
         for p in &self.paras {
@@ -1089,10 +1128,10 @@ impl Window {
         unsafe { !(*self.state).destroyed }
     }
 
-    /// Draws the window with Direct2D's software renderer, presenting each frame at once (before [`Window::show`]): no
-    /// GPU and no wait for the display's refresh. The SSH relay's window stopped answering before its first frame once,
-    /// on a real desktop with a build it had never run (design `2026-11-22-front-after-allow-design.md` §12); a window
-    /// this small draws as fast without the GPU.
+    /// Draws the window with Direct2D's software renderer into its device context at each WM_PAINT (before
+    /// [`Window::show`]): no GPU, no swap chain and no wait for the display's refresh. The SSH relay's window stopped
+    /// answering at its first frame on a real desktop, with a build that the machine had never run (design
+    /// `2026-11-22-front-after-allow-design.md` §12); a window this small draws as fast without the GPU.
     pub fn draw_without_gpu(&self) {
         // SAFETY: `state` stays valid until Drop; no Win32 call while the reference lives.
         unsafe {
@@ -1395,13 +1434,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = (*ptr).render(hwnd);
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let _ = (*ptr).render(hwnd, hdc);
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_SIZE => {
-                if let Some(t) = (*ptr).target.as_ref() {
+                // a DC render target is bound to the client area at each paint
+                if let Some(Surface::Hwnd(t)) = (*ptr).target.as_ref() {
                     let mut rc = RECT::default();
                     if GetClientRect(hwnd, &mut rc).is_ok() {
                         let _ = t.Resize(&D2D_SIZE_U {
@@ -1418,7 +1458,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let st = &mut *ptr;
                     st.dpi = dpi;
                     if let Some(t) = st.target.as_ref() {
-                        t.SetDpi(dpi as f32, dpi as f32);
+                        t.rt().SetDpi(dpi as f32, dpi as f32);
                     }
                 }
                 let r = &*(lparam.0 as *const RECT);
