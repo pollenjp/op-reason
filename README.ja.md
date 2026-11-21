@@ -475,7 +475,8 @@ python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/
   WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)、
   窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)、
   SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)、
-  中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)
+  中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)、
+  許可の後に前面に出る中継の窓と、伏せた画面の待つ所は [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md) (英語)
 - 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 

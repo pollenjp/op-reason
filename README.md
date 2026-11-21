@@ -495,7 +495,9 @@ python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (do
   the window's language: [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md);
   the SSH relay: [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md);
   its toasts, the screen of the windows and the notifications:
-  [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md).
+  [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md);
+  its window in front after Allow, and where a hidden prompt waits:
+  [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md).
 - What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 - Where to read what: [docs/README.md](docs/README.md).
 
