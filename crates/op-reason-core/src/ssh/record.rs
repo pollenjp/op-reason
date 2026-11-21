@@ -168,7 +168,8 @@ pub struct HostRec {
 }
 
 /// The relay itself: a `ssh-relay` record. `what`: `start`, `exit`, `no-prompt` (show-only: a signature passed too
-/// fast for a prompt), `no-parent`, `parent-ended`.
+/// fast for a prompt), `no-parent`, `parent-ended`, `window-stuck` (a window has not appeared within five seconds;
+/// `detail` names the step it waits in) and `window-unstuck` (it went on; `detail` says after how long).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Relay {
     pub v: u32,
@@ -186,6 +187,9 @@ pub struct Relay {
     /// The relay's parent process, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ProcRec>,
+    /// More about `what`, when it has more (the step of a window that does not appear).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[cfg(test)]
@@ -269,10 +273,22 @@ mod tests {
                 name: "svchost.exe".into(),
                 cmd: String::new(),
             }),
+            detail: None,
         };
         assert_eq!(
             log::line(&relay),
             r#"{"v":1,"id":"r1","event":"ssh-relay","time":"t","epoch":6,"what":"start","mode":"show-only","pipe":"\\\\.\\pipe\\p","upstream":"\\\\.\\pipe\\u","limit":3600,"pid":42,"parent":{"pid":41,"start":1,"name":"svchost.exe","cmd":""}}"#
+        );
+        let stuck = Relay {
+            what: "window-stuck".into(),
+            parent: None,
+            detail: Some("draw".into()),
+            ..relay
+        };
+        assert!(
+            log::line(&stuck).ends_with(r#""pid":42,"detail":"draw"}"#),
+            "{}",
+            log::line(&stuck)
         );
     }
 

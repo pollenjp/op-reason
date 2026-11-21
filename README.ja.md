@@ -320,8 +320,12 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 窓には、誰が (Claude Code・人・プログラム。WSL からならあわせて herdr の workspace と pane・ディストリビューション・
 repository・branch)、起点の process、理由 (無ければ「理由なし」)、ssh のコマンド、行き先とそのホストの鍵、署名の用途
 (どのユーザーとしてのログインか、`git` のような SSHSIG の namespace か)、1Password での鍵の名前が出ます。答えるのはクリック
-(ボタンの上で押して離す) だけです。窓はフォーカスを取らず、既定のボタンもないので、ほかで打ったキーが窓に答えることは
-ありません。60 秒答えが無ければ、その署名を断り、何も覚えません。
+(ボタンの上で押して離す) だけです。窓はフォーカスを取らずに出て、既定のボタンもないので、ほかで打ったキーが窓に答えることは
+ありません。**この呼び出しを許可・このターミナルを許可を押すと、窓は前面に出ます。** 1Password が答えるまで
+(「SSH の鍵: 1Password が確認しています」) 前面にいて、1Password が確認の画面をすぐ出せるようにします
+([わけ](#起こし方))。答えが出たら、押す前に前面にいた窓へ前面を返します (その間にほかの窓が前面を取っていれば返しません)。
+前面の窓が中継を起こしたプログラム (端末のプログラム。1Password からはそれがもう前面に見えています) のものなら、窓は
+後ろのままです。**拒否** では前面に出ません。60 秒答えが無ければ、その署名を断り、何も覚えません。
 
 > **per-call では決まりが変わります。** op-reason のほかの所では、決めるのは 1Password の画面で、op-reason の窓は事実を
 > 見せるだけです。per-call では op-reason の窓で決めます。1Password には呼び出しの区別が付かず、署名ごとに聞かせるのは
@@ -347,6 +351,7 @@ op-reason が画面に出すものは 3 つで、それぞれの場所に出ま�
   ずれたり薄れたりせずに出て消えます。
 - **窓**は、作業している画面 (前面の窓のある画面。前面の窓が無ければ主画面) に出て、出た後は動きません。`op` の呼び出しの
   窓も、`op-reason.exe` が出すものは同じです。PowerShell の launcher の窓は主画面の右上のままで、その通知も残ります。
+  どの窓もフォーカスを取らずに出ます。前面に出るのは中継の窓だけで、許可を押した後、1Password が答えるまでです。
 - **通知**は窓と一緒に消えるので、通知センターに溜まりません。per-call の窓が時間切れで閉じたときは、答えなかった依頼の
   印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は
   残ります。
@@ -363,9 +368,19 @@ op-reason.exe --ssh-agent --mode show-only
 op-reason.exe --ssh-agent --status             # パイプで中継が答えれば 0 (とその process id)
 ```
 
-- **ログオンのときにタスク スケジューラーのタスクから起こしてください** (隠して、落ちたら起こし直す)。すぐ終わる script から
-  起こさないでください。1Password は、親の process が終わった中継の依頼に 60 秒答えません。中継は、親が無いとき・
-  終わったときに toast と記録でそう知らせます。自分だけのコンソール (タスク・ダブルクリック) ではコンソールの窓を残しません。
+- **ログオンのときにタスク スケジューラーのタスクから起こしてください** (隠して、1 分ごとに繰り返す trigger も付ける)。
+  タスクの「失敗したら起こし直す」では、止まった中継は起き直りませんでした。タスクが既に実行中の場合の規則は
+  **新しいインスタンスを開始しない** (既定。`-MultipleInstances IgnoreNew`) のままにします:「既存のインスタンスの停止」では
+  中継が 1 分ごとに止められて起こし直され、中継が動いている間に起こした 2 つ目はすぐに終了コード 1 で終わって、タスクは
+  それを最後の結果に出します。自分だけのコンソール (タスク・ダブルクリック) ではコンソールの窓を残しません。
+- **1Password が確認の画面を出すのは、求めたアプリが前面に見えている間だけです。** そうでないと、画面をタスクバーの右の
+  アイコンに伏せ (アイコンに点が付き、メニューに **SSHリクエストを待機中** が出ます)、約 60 秒で依頼を閉じます。そのアプリは、
+  端末のプログラムで起こした中継なら端末のプログラム、タスクから起こした中継 (親の process が終わった中継も) なら中継そのもの
+  (op-reason) です。そのため per-call では、許可を押したときに op-reason の窓が前面に出て、1Password の画面がすぐ出ます
+  (名前は op-reason。1Password は、ロックするまでに中継の 1 回の起動ごとに 1 回承認します)。show-only のときと、前の答えで
+  通した依頼に 1Password が確認するとき (ロックの解除など) は、だれも押していないので、アイコンから開きます。op-reason の窓
+  「1Password が確認しています」の最後の行にもそう出ます ([設計](docs/superpowers/specs/2026-11-22-front-after-allow-design.md))。
+  中継は、親が無いとき・終わったときに toast と記録でそう知らせます。
 - 中継はログオン セッションに 1 つです。option: `--mode per-call|show-only`・`--pipe <名前>`・`--upstream <名前>`・
   `--time-limit <数>[s|m|h]` (既定 60m)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s)。
 - 窓を出している間、中継は op-reason の lock を持ちます。中継の窓と 1Password の画面は、`op` の呼び出しのものと混ざらずに
@@ -462,7 +477,8 @@ python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/
   WSL からの呼び出しを exe に通す形は [docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md](docs/superpowers/specs/2026-11-15-wsl-through-exe-design.md) (英語)、
   窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)、
   SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)、
-  中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)
+  中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)、
+  許可の後に前面に出る中継の窓と、伏せた画面の待つ所は [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md) (英語)
 - 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 

@@ -3,7 +3,8 @@
 //!
 //! - [`Phase::Ask`] (per-call): "SSH key: allow this call?" with who, what and why, and the buttons.
 //! - [`Phase::Asking`]: the same facts without buttons while 1Password's prompt may be open (show-only, after a click on
-//!   Allow, or a request that 1Password is slow to answer).
+//!   Allow, or a request that 1Password is slow to answer), and a last line that says where 1Password keeps a prompt it
+//!   did not show (design `2026-11-22-front-after-allow-design.md` §6).
 //!
 //! And the toast of a signature that an earlier answer let through without a window ([`pass_texts`]; design
 //! `2026-11-18-pass-toasts-design.md` §4.3).
@@ -144,6 +145,9 @@ struct Table {
     footer_asking_per_call: &'static str,
     footer_asking_slow: &'static str,
     footer_asking_show_only: &'static str,
+    /// The last line while 1Password asks: where it keeps a prompt that it did not show (its label and value).
+    tray: &'static str,
+    tray_how: &'static str,
     pass_word: &'static str,
     pass_call: &'static str,
     pass_terminal: &'static str,
@@ -187,6 +191,8 @@ const EN: Table = Table {
     footer_asking_per_call: "per-call mode · allowed here; 1Password itself may ask now. Deny any 1Password prompt that comes without this window",
     footer_asking_slow: "per-call mode · 1Password itself may ask now (to unlock it, for example). Deny any 1Password prompt that comes without this window",
     footer_asking_show_only: "show-only mode: decide in 1Password's prompt. Deny any 1Password prompt that comes without this window",
+    tray: "If 1Password's prompt does not come",
+    tray_how: "the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting",
     pass_word: "Passed",
     pass_call: "allowed for this call",
     pass_terminal: "allowed for this terminal",
@@ -230,6 +236,8 @@ const JA: Table = Table {
     footer_asking_per_call: "呼び出しごとに決めるモード · ここでは許可済み。いまは 1Password 自身が確認することがあります。この窓が出ていない 1Password の確認は拒否してください",
     footer_asking_slow: "呼び出しごとに決めるモード · いまは 1Password 自身が確認することがあります (ロックの解除など)。この窓が出ていない 1Password の確認は拒否してください",
     footer_asking_show_only: "表示だけのモード: 決めるのは 1Password の画面です。この窓が出ていない 1Password の確認は拒否してください",
+    tray: "1Password の画面が出ないとき",
+    tray_how: "タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」",
     pass_word: "通過",
     pass_call: "この呼び出しの許可",
     pass_terminal: "ターミナルの許可",
@@ -313,6 +321,11 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     lines.push((t.purpose.to_owned(), purpose));
     if let Some(k) = key {
         lines.push((t.key.to_owned(), k));
+    }
+    // 1Password keeps the prompt of an application that is not in front behind its icon (design
+    // `2026-11-22-front-after-allow-design.md` §6)
+    if phase == Phase::Asking {
+        lines.push((t.tray.to_owned(), t.tray_how.to_owned()));
     }
     let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
     let mut footer = match (phase, f.mode) {
@@ -489,7 +502,9 @@ pub fn no_prompt_toast(lang: Lang) -> Vec<String> {
     lines.map(str::to_owned).to_vec()
 }
 
-/// The relay's parent process is missing at start (`ended` false) or has ended (true) (§8).
+/// The relay's parent process is missing at start (`ended` false) or has ended (true) (§8). 1Password then most likely
+/// takes the relay itself for the application that asks, which it sees in front only while op-reason's window is (design
+/// `2026-11-22-front-after-allow-design.md` §6).
 pub fn parent_toast(lang: Lang, ended: bool) -> Vec<String> {
     let (title, body) = match (lang, ended) {
         (Lang::En, false) => (
@@ -512,21 +527,23 @@ pub fn parent_toast(lang: Lang, ended: bool) -> Vec<String> {
     vec![title.to_owned(), body.to_owned()]
 }
 
-const PARENT_BODY_EN: &str = "1Password leaves the requests of a relay whose parent process is gone unanswered for 60 seconds. Start the relay from a scheduled task (see the README).";
-const PARENT_BODY_JA: &str = "親の process が無い中継の依頼に、1Password は 60 秒答えません。中継はタスク スケジューラーのタスクから起こしてください (README)。";
+const PARENT_BODY_EN: &str = "1Password now most likely takes the relay itself for the application that asks: its prompt comes while op-reason's window is in front (after Allow), and otherwise waits behind the 1Password icon at the right of the taskbar (SSH request waiting).";
+const PARENT_BODY_JA: &str = "1Password はこれから、おそらく中継そのものを求めたアプリと見ます。確認の画面は op-reason の窓が前面にある間 (許可を押した後) に出て、そうでないときはタスクバーの右の 1Password のアイコン (SSHリクエストを待機中) で待ちます。";
 
-/// 1Password closed a request without an answer; `parent_gone` adds the likely cause (§15).
+/// 1Password closed a request without an answer: most likely its prompt waited behind its icon, unseen, because the
+/// application it sees was not in front (design `2026-11-22-front-after-allow-design.md` §3); `parent_gone` adds why that
+/// application is the relay itself.
 pub fn no_answer_toast(lang: Lang, parent_gone: bool) -> Vec<String> {
     let (title, body, cause) = match lang {
         Lang::En => (
             "SSH key: 1Password did not answer",
-            "1Password closed the request without an answer.",
-            " The relay's parent process has ended, and 1Password does not answer such a relay: start it again from a scheduled task.",
+            "1Password closed the request without an answer. While the application that asks is not in front, 1Password keeps its prompt behind its icon at the right of the taskbar (SSH request waiting) and closes it after about 60 seconds.",
+            " The relay's parent process has ended, so 1Password most likely takes the relay itself for that application.",
         ),
         Lang::Ja => (
             "SSH の鍵: 1Password が答えませんでした",
-            "1Password が答えずに依頼を閉じました。",
-            "中継の親の process が終わっていて、1Password はそういう中継に答えません。タスク スケジューラーのタスクから起こし直してください。",
+            "1Password が答えずに依頼を閉じました。求めたアプリが前面にないと、1Password は確認の画面をタスクバーの右のアイコン (SSHリクエストを待機中) に伏せ、約 60 秒で閉じます。",
+            "中継の親の process が終わったので、1Password はおそらく中継そのものをそのアプリと見ています。",
         ),
     };
     let mut text = body.to_owned();
@@ -605,6 +622,35 @@ mod tests {
             "SSH の鍵: 1Password が確認しています"
         );
         assert_eq!(both(&facts(), Phase::Ask).ja, ja);
+    }
+
+    #[test]
+    fn while_1password_asks_the_last_line_says_where_a_hidden_prompt_waits() {
+        let mut show = facts();
+        show.mode = Mode::ShowOnly;
+        let mut list = facts();
+        list.request = Request::List;
+        for f in [facts(), show, list] {
+            let en = build(&f, Phase::Asking, Lang::En);
+            assert_eq!(
+                en.lines.last().map(|(l, v)| (l.as_str(), v.as_str())),
+                Some((
+                    "If 1Password's prompt does not come",
+                    "the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting"
+                ))
+            );
+            let ja = build(&f, Phase::Asking, Lang::Ja);
+            assert_eq!(
+                ja.lines.last().map(|(l, v)| (l.as_str(), v.as_str())),
+                Some((
+                    "1Password の画面が出ないとき",
+                    "タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」"
+                ))
+            );
+        }
+        // the window that asks has its buttons instead
+        let ask = build(&facts(), Phase::Ask, Lang::En);
+        assert_eq!(ask.lines.last().map(|(l, _)| l.as_str()), Some("Key"));
     }
 
     #[test]
@@ -892,6 +938,20 @@ mod tests {
         assert!(no_answer_toast(Lang::En, true)[1].contains("parent"));
         assert!(!no_answer_toast(Lang::En, false)[1].contains("parent"));
         assert!(parent_toast(Lang::Ja, true)[0].contains("親"));
+        // where 1Password keeps a prompt it did not show, not "start it from a task" (a task's relay is in the same
+        // place: M1b in design 2026-11-22 §3)
+        for parent_gone in [false, true] {
+            let en = &no_answer_toast(Lang::En, parent_gone)[1];
+            assert!(en.contains("(SSH request waiting)"), "{en}");
+            assert!(!en.contains("scheduled task"), "{en}");
+            let ja = &no_answer_toast(Lang::Ja, parent_gone)[1];
+            assert!(ja.contains("(SSHリクエストを待機中)"), "{ja}");
+            assert!(!ja.contains("タスク スケジューラー"), "{ja}");
+        }
+        for ended in [false, true] {
+            assert!(parent_toast(Lang::En, ended)[1].contains("(SSH request waiting)"));
+            assert!(parent_toast(Lang::Ja, ended)[1].contains("(SSHリクエストを待機中)"));
+        }
         assert_eq!(
             caller_short(&Caller::Claude { pid: None }, Lang::En),
             "Claude Code"

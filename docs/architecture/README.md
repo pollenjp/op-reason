@@ -162,11 +162,18 @@ connection). One relay per logon session (the mutex `Local\op-reason-ssh-relay`)
 names the server's process.
 
 Threads: the main thread accepts connections; one thread per connection reads its requests in turn; the thread whose
-turn it is shows the window; one forgets decisions once a minute; one watches the relay's parent process (1Password
-leaves a relay whose parent has ended unanswered; a toast and a `ssh-relay` record say so); one waits for Ctrl+C while
-a console is attached (without one of its own, the relay calls `FreeConsole`); and, from the first signature that passes
-without a window, one owns the toasts' window
-([2026-11-18-pass-toasts-design.md](../superpowers/specs/2026-11-18-pass-toasts-design.md)).
+turn it is shows the window; one forgets decisions once a minute; one watches the relay's parent process (when it has
+ended, 1Password most likely takes the relay itself for the application that asks; a toast and a `ssh-relay` record say
+so); one waits for Ctrl+C while a console is attached (without one of its own, the relay calls `FreeConsole`); one
+looks once a second at the step a window's thread waits in (making the window, showing it, drawing it, `holder.json`,
+the notification: process-wide atomics of `src/win/window.rs`) and records `window-stuck` with the step when one has
+lasted five seconds, and `window-unstuck` when it ends (`src/relay_watch.rs` decides); and, from the first signature
+that passes without a window, one owns the toasts' window
+([2026-11-18-pass-toasts-design.md](../superpowers/specs/2026-11-18-pass-toasts-design.md)). At start the relay also
+reads its ancestors (PID, creation time, name), to tell whether the window in front belongs to the program that
+started it. The relay's windows draw into their device context with Direct2D's software renderer (a DC render target:
+no GPU, no swap chain, no wait for the display's refresh); the windows of `op` calls keep Direct2D's default
+([2026-11-22-front-after-allow-design.md](../superpowers/specs/2026-11-22-front-after-allow-design.md) §12).
 
 ### One request
 
@@ -200,7 +207,16 @@ without a window, one owns the toasts' window
    and keeps the footer's count of waiting calls current. The toast (the Windows notification) is removed when the
    window closes, except after a time-out (`timeout`), which leaves it. A click (press and release on a button) is
    remembered for the call (Allow this terminal: also for the shell and the key); after Allow the window drops its
-   buttons ("1Password is asking") until 1Password answers, then closes, and the lock and the turn pass on. No click
+   buttons ("1Password is asking", with a last line on where 1Password keeps a prompt it did not show) until 1Password
+   answers, then closes, and the lock and the turn pass on. Right after a click that allows, the window comes to the
+   front (`SetForegroundWindow`: the click was the last input, so Windows lets the relay set the foreground window),
+   unless the window in front belongs to one of the relay's ancestors other than `explorer.exe` (the terminal program a
+   relay started in one runs under, which 1Password takes for the application); then the relay lets the process that
+   serves 1Password's pipe (`GetNamedPipeServerProcessId`) set the foreground window (`AllowSetForegroundWindow`), and
+   sends the request. When the window closes, it gives the front back to the window that had it, if it still has the
+   front or no window has it
+   ([2026-11-22-front-after-allow-design.md](../superpowers/specs/2026-11-22-front-after-allow-design.md);
+   `src/relay_front.rs` decides, `src/win/window.rs` comes forward and gives back). No click
    within `--answer-wait` (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed
    it, without remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a
    press only 400 ms after they appear, and the window captures the mouse from a press on a button until its release.
@@ -209,9 +225,9 @@ without a window, one owns the toasts' window
    a `no-prompt` record (1Password most likely did not ask).
 5. **Answer** the client with 1Password's reply (or `SSH_AGENT_FAILURE`), and **record** the signature. A request that
    1Password closes without an answer, or does not answer within 300 seconds, is `no-answer` (a toast once per run says
-   that a relay without a parent gets none). A connection to 1Password that has closed since is opened again once before
-   a request is sent; it identifies the relay's user to 1Password's pipe but does not let the server act as it
-   (`SECURITY_IDENTIFICATION`). Four instances of the relay's pipe wait for clients at once.
+   where 1Password keeps a prompt it did not show). A connection to 1Password that has closed since is opened again
+   once before a request is sent; it identifies the relay's user to 1Password's pipe but does not let the server act as
+   it (`SECURITY_IDENTIFICATION`). Four instances of the relay's pipe wait for clients at once.
 
 Decisions live in memory only: forgotten when a Windows root ends (checked on lookup and once a minute), after the time
 limit (`--time-limit`, default 60 minutes; WSL roots only time out), or when the relay exits.
@@ -226,7 +242,7 @@ the record with that answer.
 | `event` | Fields |
 | --- | --- |
 | `ssh-sign` | `v`, `id`, `time`, `epoch`, `mode` (`per-call`, `show-only`), `result` (`allowed`, `passed`, `denied`, `timeout`, `dismissed`, `gone`, `signed`, `failed` (1Password refused), `no-answer`, `no-upstream`, `lock-timeout`, `no-window`, `malformed`), `seconds` (to a tenth), `answer` (`allow`, `allow-terminal`, `deny`), `decision` (the `id` of the record whose answer covered it; then the call's facts are there), `call` (`rule`: `claude`, `shell`, `parent`, `alone`, `unbound`; `root` and `shell`: `pid`, `start`, `name`, `cmd`; `distro`), `caller` (as in `start`; `type` also `program`), `session`, `reason` (≤ 500), `client` (`pid`, `exe`, `cmd` masked, ≤ 1000), `key` (`fp`, `comment`, `type`), `purpose` (`kind`: `userauth` with `user`, `sshsig` with `namespace`, `other`), `host` (`name` from the command line, `fp`, and `onward` for a forwarded connection), `forwarded` |
-| `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent` |
+| `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`, `window-stuck`, `window-unstuck`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent`, `detail` (`window-stuck`: the step its thread waits in, one of `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`; `window-unstuck`: `after <seconds> s`) |
 
 Command lines are masked with the rules of `op` calls, word by word inside a remote command, without the rule for what
 follows `--`.
@@ -361,8 +377,8 @@ call holds the mutex, or the SSH relay's window is open), `settings.json` (the l
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the references and the account copy, the window and its screenshots; on CI, a real click on a link with a temporary `onepassword:` handler) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
 | `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
-| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion) |
-| `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends; on CI, the toast of signatures that pass (one card, layered, click-through, at the top left of the work area, gone after four seconds; four calls: three cards and `+1`) and the window's notification in the notification center (removed with its window, left after a time-out; nothing is checked where the runner keeps no notification history) |
+| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages, the last line while 1Password asks) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion), when the window stays behind (the program that started the relay in front), when the watchdog records a window stuck and going on |
+| `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends; on CI, the toast of signatures that pass (one card, layered, click-through, at the top left of the work area, gone after four seconds; four calls: three cards and `+1`), the window's notification in the notification center (removed with its window, left after a time-out; nothing is checked where the runner keeps no notification history), and the front (with a plain window of `fake-ssh front` in front: the window opens behind, Deny leaves the front, after Allow the window is in front while the agent answers and then gives the front back; with that window's process as the relay's parent, the window stays behind; no record of the watchdog of the windows) |
 | `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; a desktop call's notification removed when its window closes (where the runner keeps notification history); on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
 | `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) and toasts |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |

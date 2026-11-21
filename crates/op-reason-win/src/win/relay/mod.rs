@@ -5,9 +5,9 @@
 //!
 //! Threads: the main thread accepts connections; one thread per connection reads its requests, decides and passes them
 //! on, and shows the window when its turn comes ([`ask`]); one forgets decisions once a minute; one watches the relay's
-//! parent process (1Password leaves a relay without one unanswered, §15); one waits for Ctrl+C while a console is
-//! attached; and, from the first signature that passes without a window, one shows the toasts (design
-//! `2026-11-18-pass-toasts-design.md` §4).
+//! parent process (§15); one waits for Ctrl+C while a console is attached; one records a window that does not appear
+//! within five seconds (design `2026-11-22-front-after-allow-design.md` §12); and, from the first signature that passes
+//! without a window, one shows the toasts (design `2026-11-18-pass-toasts-design.md` §4).
 
 mod ask;
 mod conn;
@@ -36,9 +36,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::HSTRING;
 
-use super::{app, console, pass_window, procs, toast};
+use super::{app, console, pass_window, procs, toast, window};
+use crate::relay_front::Ancestor;
 use crate::relay_opts::{self, Opts};
-use crate::relay_ui;
+use crate::{relay_ui, relay_watch};
 
 /// One relay per logon session.
 const SINGLE: &str = r"Local\op-reason-ssh-relay";
@@ -84,6 +85,9 @@ pub(super) struct Shared {
     pub told_no_answer: AtomicBool,
     /// The toasts' thread, started by the first signature that passes without a window (none when it cannot start).
     toasts: OnceLock<Option<pass_window::Toasts>>,
+    /// The relay's ancestors at start, nearest first: whether the window in front belongs to the program that started
+    /// the relay (design `2026-11-22-front-after-allow-design.md` §5.1).
+    pub ancestors: Vec<Ancestor>,
 }
 
 impl Shared {
@@ -109,6 +113,15 @@ impl Shared {
             told_no_prompt: AtomicBool::new(false),
             told_no_answer: AtomicBool::new(false),
             toasts: OnceLock::new(),
+            ancestors: peer::chain(std::process::id())
+                .into_iter()
+                .skip(1)
+                .map(|l| Ancestor {
+                    pid: l.pid,
+                    start: l.start,
+                    name: l.name,
+                })
+                .collect(),
         }
     }
 
@@ -151,6 +164,15 @@ impl Shared {
 
     /// An `ssh-relay` record.
     pub fn relay_record(&self, what: &str, parent: Option<ProcRec>) {
+        self.relay_record_with(what, parent, None);
+    }
+
+    /// An `ssh-relay` record with a detail (the step of a window that does not appear).
+    pub fn relay_note(&self, what: &str, detail: String) {
+        self.relay_record_with(what, None, Some(detail));
+    }
+
+    fn relay_record_with(&self, what: &str, parent: Option<ProcRec>, detail: Option<String>) {
         let now = time::now();
         self.record(log::line(&Relay {
             v: 1,
@@ -165,6 +187,7 @@ impl Shared {
             limit: self.opts.limit_secs,
             pid: std::process::id(),
             parent,
+            detail,
         }));
     }
 }
@@ -217,6 +240,10 @@ pub fn run(args: &[OsString]) -> i32 {
     let parent = Parent::find();
     shared.relay_record("start", parent.as_ref().map(Parent::rec));
     watch_parent(&shared, parent);
+    {
+        let shared = Arc::clone(&shared);
+        let _ = thread::Builder::new().spawn(move || watch_windows(&shared));
+    }
     {
         let shared = Arc::clone(&shared);
         let _ = thread::Builder::new().spawn(move || {
@@ -397,6 +424,27 @@ impl Parent {
             if !there {
                 return;
             }
+        }
+    }
+}
+
+/// Records a window that has not appeared within five seconds, with the step its thread waits in, and when it goes on
+/// ([`relay_watch`]; design `2026-11-22-front-after-allow-design.md` §12). Started before any window, so that it runs
+/// whatever a window's thread waits for.
+fn watch_windows(shared: &Shared) {
+    let mut watch = relay_watch::Watch::default();
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        let busy = window::busy().map(|(since, step)| relay_watch::Busy { since, step });
+        match watch.look(busy, window::clock_ms()) {
+            Some(relay_watch::Note::Stuck(step)) => {
+                shared.relay_note("window-stuck", step.to_owned())
+            }
+            Some(relay_watch::Note::WentOn { after_ms }) => shared.relay_note(
+                "window-unstuck",
+                format!("after {:.1} s", after_ms as f64 / 1000.0),
+            ),
+            None => {}
         }
     }
 }

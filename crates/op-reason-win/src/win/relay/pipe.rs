@@ -217,8 +217,13 @@ pub fn probe(name: &str) -> Option<u32> {
         std::thread::sleep(Duration::from_millis(200));
         connect(name).ok()
     })?;
+    server_pid(&f)
+}
+
+/// The process that serves a pipe we connected to (the 1Password app, for its agent's pipe).
+pub fn server_pid(file: &File) -> Option<u32> {
     let mut pid = 0u32;
-    // SAFETY: a pipe handle owned by `f` and an out parameter on the stack.
-    unsafe { GetNamedPipeServerProcessId(HANDLE(f.as_raw_handle()), &mut pid) }.ok()?;
-    Some(pid)
+    // SAFETY: a pipe handle owned by `file` and an out parameter on the stack.
+    unsafe { GetNamedPipeServerProcessId(HANDLE(file.as_raw_handle()), &mut pid) }.ok()?;
+    (pid != 0).then_some(pid)
 }

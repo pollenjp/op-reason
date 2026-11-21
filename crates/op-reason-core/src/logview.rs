@@ -157,19 +157,23 @@ fn ssh_result_label(lang: Lang, result: &str) -> String {
     format!("SSH {label}")
 }
 
-/// What the SSH relay itself recorded (`ssh-relay`).
-fn relay_label(lang: Lang, what: &str, mode: &str) -> String {
+/// What the SSH relay itself recorded (`ssh-relay`), with its `detail` when it has one.
+fn relay_label(lang: Lang, what: &str, mode: &str, detail: &str) -> String {
     match (lang, what) {
         (Lang::En, "start") => format!("SSH relay started ({mode})"),
         (Lang::En, "exit") => "SSH relay stopped".to_string(),
         (Lang::En, "no-prompt") => format!("SSH: 1Password did not ask ({mode})"),
         (Lang::En, "no-parent") => "SSH relay without a parent process".to_string(),
         (Lang::En, "parent-ended") => "SSH relay's parent process ended".to_string(),
+        (Lang::En, "window-stuck") => format!("SSH: op-reason's window stuck ({detail})"),
+        (Lang::En, "window-unstuck") => format!("SSH: op-reason's window went on ({detail})"),
         (Lang::Ja, "start") => format!("SSH の中継を開始 ({mode})"),
         (Lang::Ja, "exit") => "SSH の中継を終了".to_string(),
         (Lang::Ja, "no-prompt") => format!("SSH: 1Password が確認しなかった ({mode})"),
         (Lang::Ja, "no-parent") => "SSH の中継に親の process が無い".to_string(),
         (Lang::Ja, "parent-ended") => "SSH の中継の親の process が終わった".to_string(),
+        (Lang::Ja, "window-stuck") => format!("SSH: op-reason の窓が止まっている ({detail})"),
+        (Lang::Ja, "window-unstuck") => format!("SSH: op-reason の窓が動き出した ({detail})"),
         _ => format!("SSH relay {what}"),
     }
 }
@@ -368,7 +372,12 @@ fn row(lang: Lang, rec: &Value, today: &str, decisions: &HashMap<String, Value>)
         "ssh-sign" => ssh_row(lang, rec, when, decisions),
         "ssh-relay" => [
             when,
-            relay_label(lang, &text(&rec["what"]), &text(&rec["mode"])),
+            relay_label(
+                lang,
+                &text(&rec["what"]),
+                &text(&rec["mode"]),
+                &text(&rec["detail"]),
+            ),
             "-".into(),
             "-".into(),
             "-".into(),
@@ -778,6 +787,27 @@ mod tests {
         assert_eq!(json.len(), 5);
         assert!(json[1].contains(r#""id":"s1""#) && json[3].contains(r#""decision":"s1""#));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_window_that_does_not_appear_names_its_step() {
+        assert_eq!(
+            relay_label(Lang::En, "window-stuck", "per-call", "draw"),
+            "SSH: op-reason's window stuck (draw)"
+        );
+        assert_eq!(
+            relay_label(Lang::En, "window-unstuck", "per-call", "after 7.0 s"),
+            "SSH: op-reason's window went on (after 7.0 s)"
+        );
+        assert_eq!(
+            relay_label(Lang::Ja, "window-stuck", "per-call", "show"),
+            "SSH: op-reason の窓が止まっている (show)"
+        );
+        assert_eq!(
+            relay_label(Lang::En, "start", "per-call", ""),
+            "SSH relay started (per-call)",
+            "the others have no detail"
+        );
     }
 
     #[test]

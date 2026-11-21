@@ -28,7 +28,7 @@ use super::ask::{self, Outcome, Shown, Ticket};
 use super::{Shared, peer, pipe};
 use crate::relay_opts::Mode;
 use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Unknown};
-use crate::win::{procs, toast};
+use crate::win::{procs, toast, window};
 
 /// How long 1Password may take before the window without buttons comes (§5.5).
 const SLOW: Duration = Duration::from_secs(1);
@@ -442,6 +442,9 @@ impl<'a> Conn<'a> {
             }
             Outcome::Asked(answer, mut shown) => {
                 if answer.allows() {
+                    if shown.came_forward() {
+                        self.let_upstream_come_forward();
+                    }
                     let reply = self.exchange(msg, Watch::Shown(&mut shown)).reply;
                     drop(shown);
                     self.finish(&who, &id, &req, reply, "allowed", Some(answer), None, t0)
@@ -508,6 +511,15 @@ impl<'a> Conn<'a> {
         };
         self.record(who, id, Some(req), result, answer, decision, t0);
         Some(out)
+    }
+
+    /// Lets the process that serves 1Password's pipe (the 1Password app) bring its prompt in front of op-reason's
+    /// window, which came to the front after the click: the relay is the foreground process now, so it may hand that on
+    /// (design `2026-11-22-front-after-allow-design.md` §5.2). Before the request goes, so that the prompt finds it.
+    fn let_upstream_come_forward(&mut self) {
+        if let Some(pid) = self.upstream().and_then(|up| pipe::server_pid(up)) {
+            window::let_come_forward(pid);
+        }
     }
 
     /// Whether a sign request comes from `ssh.exe` on a connection that carried no `session-bind@openssh.com`.

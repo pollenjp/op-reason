@@ -1,5 +1,5 @@
 //! The approval window, drawn with Direct2D and DirectWrite. Same look and behavior as the A' launcher's WPF window:
-//! top right of the work area, always on top, never takes the focus, not in the taskbar, light yellow,
+//! top right of the work area, always on top, never takes the focus by itself, not in the taskbar, light yellow,
 //! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
 //! red. It asks nothing; the decision is made in the 1Password prompt.
 //!
@@ -11,11 +11,21 @@
 //! button is the answer, which the owner reads with [`Window::answer`]. None of them activates the window, and the
 //! window has no default button: a key typed elsewhere never reaches it.
 //!
+//! Only its owner brings it to the front, after the click on a button that hands an SSH request on to 1Password
+//! ([`Window::come_forward`]; design `2026-11-22-front-after-allow-design.md` §5): the click lets this process set the
+//! foreground window. The window then gives the front back when it closes, unless another window took it meanwhile.
+//!
 //! It opens on the screen of the foreground window, with that screen's DPI, and stays there ([`super::screen`]; design
 //! `2026-11-18-pass-toasts-design.md` §5).
+//!
+//! The steps in which a window's thread waits on Windows (making the window, showing it, drawing it) are noted in
+//! process-wide atomics ([`busy`]), so that the SSH relay's watchdog can say where a window that does not appear waits
+//! (design `2026-11-22-front-after-allow-design.md` §12). The relay's windows draw into their device context with
+//! Direct2D's software renderer ([`Window::draw_without_gpu`]).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -25,14 +35,16 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F,
+    D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1DCRenderTarget,
+    ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -41,9 +53,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
     IDWriteTextLayout,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, ScreenToClient,
+    BeginPaint, EndPaint, HDC, InvalidateRect, PAINTSTRUCT, ScreenToClient,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::WaitForSingleObject;
@@ -52,6 +64,10 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::WindowsAndMessaging::{
+    AllowSetForegroundWindow, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsWindowVisible, SetForegroundWindow,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
@@ -120,6 +136,93 @@ const fn rgb(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
         a: 1.0,
     }
 }
+
+/// A step in which the thread of a window waits on Windows ([`busy`]): the window's own, and those of the relay's
+/// opening of a window around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Step {
+    /// The Direct2D and DirectWrite factories.
+    Factories = 1,
+    /// The texts laid out, and the screen.
+    Layout,
+    /// `CreateWindowExW`.
+    Create,
+    /// `ShowWindow` and topmost.
+    Show,
+    /// Making the render target.
+    Target,
+    /// Drawing and presenting a frame.
+    Draw,
+    /// Writing `holder.json` (the relay).
+    Holder,
+    /// Starting the window's Windows notification (the relay).
+    Toast,
+}
+
+impl Step {
+    fn name(code: u8) -> &'static str {
+        match code {
+            1 => "factories",
+            2 => "layout",
+            3 => "create",
+            4 => "show",
+            5 => "target",
+            6 => "draw",
+            7 => "holder",
+            8 => "toast",
+            _ => "?",
+        }
+    }
+}
+
+/// When the step that runs began, in milliseconds on [`clock_ms`] (0: none runs).
+static BUSY_SINCE: AtomicU64 = AtomicU64::new(0);
+static BUSY_STEP: AtomicU8 = AtomicU8::new(0);
+
+/// Milliseconds since the first window step of this process (at least 1).
+pub fn clock_ms() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// The window step that runs now: when it began ([`clock_ms`]) and its name.
+pub fn busy() -> Option<(u64, &'static str)> {
+    let since = BUSY_SINCE.load(Ordering::SeqCst);
+    (since != 0).then(|| (since, Step::name(BUSY_STEP.load(Ordering::SeqCst))))
+}
+
+/// A step running; when dropped, the step that ran before it (if any) is the one that runs again. Process-wide: the
+/// relay shows one window at a time.
+pub(crate) struct Busy {
+    before: (u64, u8),
+}
+
+impl Busy {
+    pub(crate) fn enter(step: Step) -> Busy {
+        let before = (
+            BUSY_SINCE.load(Ordering::SeqCst),
+            BUSY_STEP.load(Ordering::SeqCst),
+        );
+        let busy = Busy { before };
+        busy.next(step);
+        busy
+    }
+
+    /// The next step of the same run (its clock starts again).
+    pub(crate) fn next(&self, step: Step) {
+        BUSY_STEP.store(step as u8, Ordering::SeqCst);
+        BUSY_SINCE.store(clock_ms(), Ordering::SeqCst);
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY_STEP.store(self.before.1, Ordering::SeqCst);
+        BUSY_SINCE.store(self.before.0, Ordering::SeqCst);
+    }
+}
+
 const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);
 const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);
 const DARK_ORANGE: D2D1_COLOR_F = rgb(0xFF, 0x8C, 0x00);
@@ -185,9 +288,28 @@ struct Fonts {
     switch_bold: IDWriteTextFormat,
 }
 
+/// Where the window draws ([`State::make_surface`]).
+enum Surface {
+    /// A render target of the window: Direct2D's choice (the GPU when there is one), presented at the display's
+    /// refresh.
+    Hwnd(ID2D1HwndRenderTarget),
+    /// A DC render target on Direct2D's software renderer, bound to the window's device context in WM_PAINT: no swap
+    /// chain and no wait for the display's refresh (the relay's windows).
+    Dc(ID2D1DCRenderTarget),
+}
+
+impl Surface {
+    fn rt(&self) -> &ID2D1RenderTarget {
+        match self {
+            Surface::Hwnd(t) => t,
+            Surface::Dc(t) => t,
+        }
+    }
+}
+
 struct State {
     d2d: ID2D1Factory,
-    target: Option<ID2D1HwndRenderTarget>,
+    target: Option<Surface>,
     fonts: Fonts,
     /// The width of the text area (DIPs).
     width: f32,
@@ -217,6 +339,11 @@ struct State {
     buttons_since: Instant,
     /// The button pressed and released (the answer).
     answer: Option<Button>,
+    /// Set when the window came to the front ([`Window::come_forward`]): the window that was in front then (null when
+    /// there was none), to give the front back to when this one closes.
+    front_before: Option<HWND>,
+    /// Draw with Direct2D's software renderer into the window's device context ([`Window::draw_without_gpu`]).
+    software: bool,
 }
 
 impl State {
@@ -357,36 +484,79 @@ impl State {
         Ok(())
     }
 
-    fn render(&mut self, hwnd: HWND) -> Result<()> {
-        if self.target.is_none() {
-            let mut rc = RECT::default();
-            // SAFETY: valid window handle and out parameter.
-            unsafe { GetClientRect(hwnd, &mut rc)? };
+    /// Where the window draws: by default a render target of its own (Direct2D's choice: the GPU when there is one,
+    /// presented at the display's refresh); for the relay's windows ([`Window::draw_without_gpu`]) a DC render target
+    /// on Direct2D's software renderer, and the default only if that cannot be made.
+    fn make_surface(&self, hwnd: HWND) -> Result<Surface> {
+        if self.software {
             let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                 pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_UNKNOWN,
-                    alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
                 },
                 dpiX: self.dpi as f32,
                 dpiY: self.dpi as f32,
                 usage: D2D1_RENDER_TARGET_USAGE_NONE,
                 minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
             };
-            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                hwnd,
-                pixelSize: D2D_SIZE_U {
-                    width: (rc.right - rc.left).max(1) as u32,
-                    height: (rc.bottom - rc.top).max(1) as u32,
-                },
-                presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-            };
-            // SAFETY: properties live across the call.
-            self.target = Some(unsafe { self.d2d.CreateHwndRenderTarget(&props, &hprops)? });
+            // SAFETY: the properties live across the call.
+            if let Ok(t) = unsafe { self.d2d.CreateDCRenderTarget(&props) } {
+                return Ok(Surface::Dc(t));
+            }
         }
-        let Some(t) = self.target.as_ref() else {
+        let mut rc = RECT::default();
+        // SAFETY: valid window handle and out parameter.
+        unsafe { GetClientRect(hwnd, &mut rc)? };
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_UNKNOWN,
+                alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+            },
+            dpiX: self.dpi as f32,
+            dpiY: self.dpi as f32,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: (rc.right - rc.left).max(1) as u32,
+                height: (rc.bottom - rc.top).max(1) as u32,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+        // SAFETY: properties live across the call.
+        Ok(Surface::Hwnd(unsafe {
+            self.d2d.CreateHwndRenderTarget(&props, &hprops)?
+        }))
+    }
+
+    /// Draws a frame: into the window's device context `hdc` of WM_PAINT for a DC render target.
+    fn render(&mut self, hwnd: HWND, hdc: HDC) -> Result<()> {
+        let busy = Busy::enter(Step::Target);
+        if self.target.is_none() {
+            self.target = Some(self.make_surface(hwnd)?);
+        }
+        busy.next(Step::Draw);
+        let bound = match self.target.as_ref() {
+            Some(Surface::Dc(dc)) => {
+                let mut rc = RECT::default();
+                // SAFETY: valid window handle, its paint DC and out parameters.
+                unsafe { GetClientRect(hwnd, &mut rc).and_then(|()| dc.BindDC(hdc, &rc)) }.is_ok()
+            }
+            Some(Surface::Hwnd(_)) => true,
+            None => return Ok(()),
+        };
+        if !bound {
+            self.target = None;
+            return Ok(());
+        }
+        let Some(surface) = self.target.as_ref() else {
             return Ok(());
         };
+        let t = surface.rt();
         // Brushes and positions first, so that nothing can return between BeginDraw and EndDraw.
         let mut brushes = Vec::with_capacity(self.paras.len());
         for p in &self.paras {
@@ -824,12 +994,14 @@ impl Window {
         others: bool,
         on_choose: Box<dyn FnMut(Lang)>,
     ) -> Result<Window> {
+        let busy = Busy::enter(Step::Factories);
         register_class()?;
         // SAFETY: factory creation and layout calls with valid arguments; the state pointer is handed to the
         // window and freed in Drop after the window is destroyed.
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            busy.next(Step::Layout);
             let loc = locale();
             let fonts = Fonts {
                 title: format(&dw, DWRITE_FONT_WEIGHT_BOLD, TITLE_SIZE, &loc)?,
@@ -876,6 +1048,8 @@ impl Window {
                 buttons,
                 buttons_since: Instant::now(),
                 answer: None,
+                front_before: None,
+                software: false,
             }));
             let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
                 Ok(s) => s,
@@ -888,6 +1062,7 @@ impl Window {
             let margin = scale(SCREEN_MARGIN, dpi);
             let x = area.right - w - margin;
             let y = area.top + margin;
+            busy.next(Step::Create);
             let hwnd = match CreateWindowExW(
                 EX_STYLE,
                 CLASS_NAME,
@@ -914,6 +1089,7 @@ impl Window {
 
     /// Shows the window without activating it, then puts it on top (topmost has to be applied after showing).
     pub fn show(&self) {
+        let _busy = Busy::enter(Step::Show);
         // SAFETY: valid window handle on its own thread.
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -952,10 +1128,80 @@ impl Window {
         unsafe { !(*self.state).destroyed }
     }
 
+    /// Draws the window with Direct2D's software renderer into its device context at each WM_PAINT (before
+    /// [`Window::show`]): no GPU, no swap chain and no wait for the display's refresh. The SSH relay's window stopped
+    /// answering at its first frame on a real desktop, with a build that the machine had never run (design
+    /// `2026-11-22-front-after-allow-design.md` §12); a window this small draws as fast without the GPU.
+    pub fn draw_without_gpu(&self) {
+        // SAFETY: `state` stays valid until Drop; no Win32 call while the reference lives.
+        unsafe {
+            let st = &mut *self.state;
+            st.software = true;
+            st.target = None;
+        }
+    }
+
     /// The button that was pressed and released, once one was.
     pub fn answer(&self) -> Option<Button> {
         // SAFETY: `state` stays valid until Drop.
         unsafe { (*self.state).answer }
+    }
+
+    /// Brings the window to the front and activates it, right after the click on a button that hands an SSH request on
+    /// to 1Password (design `2026-11-22-front-after-allow-design.md` §5.1). This process received that click, the last
+    /// input, so Windows lets it set the foreground window although the window never activated itself. Remembers the
+    /// window that was in front, to give the front back when this one closes. Returns whether the window is in front
+    /// now.
+    pub fn come_forward(&self) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        // SAFETY: plain queries and a request about our own window, on its thread. No reference into the state is held
+        // across them: activating the window runs its procedure.
+        let (before, now) = unsafe {
+            let before = GetForegroundWindow();
+            if before == self.hwnd {
+                return true;
+            }
+            let _ = SetForegroundWindow(self.hwnd);
+            (before, GetForegroundWindow())
+        };
+        let came = now == self.hwnd;
+        if came {
+            // SAFETY: `state` stays valid until Drop.
+            unsafe { (*self.state).front_before = Some(before) };
+        }
+        came
+    }
+
+    /// The window came to the front ([`Window::come_forward`]).
+    pub fn came_forward(&self) -> bool {
+        // SAFETY: `state` stays valid until Drop.
+        unsafe { (*self.state).front_before.is_some() }
+    }
+
+    /// Gives the front back to the window that had it before [`Window::come_forward`] (design
+    /// `2026-11-22-front-after-allow-design.md` §5.3): only while this window still has the front or no window has it
+    /// (1Password's prompt, or a window the person went to, keeps it), and only to a window that is still there, shown
+    /// and not minimized. The foreground process may set the foreground window.
+    fn give_back(&self) {
+        // SAFETY: `state` stays valid until Drop; the value is taken out before the Win32 calls.
+        let Some(before) = (unsafe { (*self.state).front_before.take() }) else {
+            return;
+        };
+        // SAFETY: plain queries and a request to Windows; `before` may be stale, which IsWindow answers.
+        unsafe {
+            let now = GetForegroundWindow();
+            if before.is_invalid() || !(now == self.hwnd || now.is_invalid()) {
+                return;
+            }
+            if IsWindow(Some(before)).as_bool()
+                && IsWindowVisible(before).as_bool()
+                && !IsIconic(before).as_bool()
+            {
+                let _ = SetForegroundWindow(before);
+            }
+        }
     }
 
     /// Puts new texts in (the same window: a changed count of waiting calls, the buttons gone after an answer) and lays
@@ -1040,6 +1286,8 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // The front goes back first, while this window may still have it.
+        self.give_back();
         // SAFETY: destroy the window first (its procedure reads the state), then free the state.
         let opening = unsafe {
             if !(*self.state).destroyed {
@@ -1059,6 +1307,29 @@ impl Drop for Window {
                 let _ = t.join();
             }
         }
+    }
+}
+
+/// The process of the window in front, 0 when there is none.
+pub fn front_pid() -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: plain queries with an out parameter on the stack; a null window gives no process.
+    unsafe {
+        let fg = GetForegroundWindow();
+        if !fg.is_invalid() {
+            GetWindowThreadProcessId(fg, Some(&mut pid));
+        }
+    }
+    pid
+}
+
+/// Lets the process `pid` set the foreground window until the next input that is not for it (1Password, to bring its
+/// prompt in front of a window that came to the front; design `2026-11-22-front-after-allow-design.md` §5.2). Only the
+/// process that may set the foreground window itself can hand that on.
+pub fn let_come_forward(pid: u32) {
+    // SAFETY: a plain call without pointers.
+    unsafe {
+        let _ = AllowSetForegroundWindow(pid);
     }
 }
 
@@ -1163,13 +1434,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = (*ptr).render(hwnd);
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let _ = (*ptr).render(hwnd, hdc);
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_SIZE => {
-                if let Some(t) = (*ptr).target.as_ref() {
+                // a DC render target is bound to the client area at each paint
+                if let Some(Surface::Hwnd(t)) = (*ptr).target.as_ref() {
                     let mut rc = RECT::default();
                     if GetClientRect(hwnd, &mut rc).is_ok() {
                         let _ = t.Resize(&D2D_SIZE_U {
@@ -1186,7 +1458,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let st = &mut *ptr;
                     st.dpi = dpi;
                     if let Some(t) = st.target.as_ref() {
-                        t.SetDpi(dpi as f32, dpi as f32);
+                        t.rt().SetDpi(dpi as f32, dpi as f32);
                     }
                 }
                 let r = &*(lparam.0 as *const RECT);
