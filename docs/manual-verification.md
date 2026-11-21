@@ -152,7 +152,7 @@ Control blocks op-reason.exe").
 clicks its buttons, but cannot show 1Password's prompts. These take about an hour and show ten to thirteen prompts of
 1Password. They connect to GitHub with `ssh -T git@github.com` (it authenticates with your key and prints
 `Hi <user>!`, then closes: nothing on GitHub changes). Where a step says "note", nobody has seen it yet. The results of
-the first run are below the table.
+the runs so far are below the table.
 
 Preparation:
 
@@ -234,6 +234,30 @@ are corrected where the run showed otherwise.
 | S18 | Not asked at application | Added after the first run, and run in three terminals of the same terminal program (the relay, the call through it, the direct client). At application and terminal session, after the relay had been allowed and approved (from locked), the direct client got 1Password's prompt without op-reason's window and was denied (`agent refused operation`). At application, after the same, it passed without a prompt in 2 seconds, and the relay recorded nothing of it. 1Password's prompts named the terminal program, for the relay's request and for the direct one. The README had said that such a client is a new application for 1Password; it now says when one is asked |
 
 At the end the relay was stopped, 1Password's setting checked and 1Password locked once.
+
+### Results of 2026-11-19 and 2026-11-20
+
+op-reason 0.4.0 from the pull request that added S19–S24 (Windows: the zip of its Windows exe workflow; WSL: a release
+build of the branch), with the real 1Password app, as in the preparation. The checks ran on three builds of that pull
+request:
+
+- 2026-11-19, the first build (head `7bfa01c`: opaque cards, no `+N`): S19, S20, S22 and S23. After S19 the user asked
+  for cards that let the text behind show through (70% opacity), and after S20 for the number of the cards pushed out
+  (`+N`). S21 was left for the build with these two changes.
+- 2026-11-20, the second build (head `d7dd317`: 70% opacity and `+N`): S24, S19 and S20 again, and S21. In S19 the
+  cards were too faint, and the opacity became 90%.
+- 2026-11-20, the third build (head `3e8c62e`: 90% opacity): S19 again.
+
+S20 and S21 hold for the third build too: neither `+N` nor the cards without motion depend on the opacity.
+
+| # | Result | What happened |
+| --- | --- | --- |
+| S19 | As expected (third build) | First build (2026-11-19): one window, at the top right of the screen of the foreground window, which was not the primary one, and 1Password's prompt on the same screen (design 2026-11-18 §5); the later signatures came as one card at the top left of that screen (×4), gone about 4.5 seconds after the last one. As expected, but the text behind the card could not be read: the user asked for 70%. Second build, 70% (2026-11-20): one card at the top left, gone 4.6 seconds after the last signature, but too faint (the step now expects 90%). The relay used 3.7% of one core while the card was shown (0.36 seconds of CPU in 9.8). Third build, 90% (2026-11-20): the five connections passed in 14 seconds; one window, at the top right of the screen of the foreground window, and the first signature passed a second after Allow; the later ones came in one card, ×2 to ×4 with the ring at each. Its text could be read, and the text behind showed through |
+| S20 | As expected (second build) | Four commands at once: three cards and `+1`. Ten at once: `+7` (`+5`, then `+7` as they came). The window of the first command opened at the top right of the screen of the foreground window and was answered with **Allow this terminal for 60 minutes**. The relay used 3.8% of one core while cards were shown. With the first build, four at once had shown three cards, as expected then |
+| S21 | As expected (second build) | With the animation effects off, the cards appeared and went without sliding or fading; the relay used no CPU in the 3.8 seconds they were shown |
+| S22 | As expected (first build) | op-reason's windows (the relay's and the `op` call's) at the top right of the screen that is not the main one, the toast at its top left |
+| S23 | As expected (first build) | The notification came with the window and went with it at the click; the notification center kept nothing of it, nor of the `op` call's |
+| S24 | As expected (second build) | With no foreground window (the desktop), the window opened at the top right of the primary screen. It closed after 60 seconds and ssh failed; its notification stayed in the notification center |
 
 ## Open question: does plain `signout` close only one process's session?
 

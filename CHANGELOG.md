@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-11-20
 
 - **The SSH relay shows a toast for a signature that passes without a window.** In per-call mode, a later signature of
   an allowed call, or a command typed in a terminal that was allowed, shows a small card at the top left of the screen
