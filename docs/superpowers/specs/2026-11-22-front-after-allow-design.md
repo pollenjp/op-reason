@@ -226,16 +226,19 @@ Within the chosen approach:
 | `fake-ssh front` makes the plain window of the Windows tests (and, with a program, starts it as its child) | the window in front must belong to another process than the test's, which is the relay's parent; with a program, it stands for the terminal program the relay was started in |
 | The toast test waits 300 ms before it reads the window in front | its first call now takes the front and gives it back |
 | No plan document | the change is small, and §5 and §8 are its steps |
-| After the first check (§12): the relay's windows are drawn with Direct2D's software renderer and present at once (`D2D1_RENDER_TARGET_TYPE_SOFTWARE`, `D2D1_PRESENT_OPTIONS_IMMEDIATELY`; Direct2D's default only if that cannot be made); the windows of `op` calls keep Direct2D's default | the relay's window stopped answering before its first frame, where the GPU is the part that the runner never had; a window this small draws as fast without it; `op` calls show their windows every day without that, and are left as they are |
+| After the first check (§12): the relay's windows draw into their device context at each `WM_PAINT` through a DC render target on Direct2D's software renderer (`CreateDCRenderTarget`, `D2D1_RENDER_TARGET_TYPE_SOFTWARE`, `BindDC`; Direct2D's default HWND target only if that cannot be made); the windows of `op` calls keep Direct2D's default | the relay's window stopped answering at its first frame, with Direct3D and DXGI loaded, where the GPU and the swap chain are the parts that the runner never had; a DC render target has no swap chain and does not wait for the display's refresh (the first build of this fix, an HWND target on the software renderer presenting at once, kept a swap chain); a window this small draws as fast without it; `op` calls show their windows every day without that, and are left as they are |
 | After the first check: a watchdog thread of the relay records `window-stuck` (with the step: `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`) when a window's thread has waited five seconds in one step, and `window-unstuck` (after how long) when it goes on; the steps are process-wide atomics of `window.rs` (when a step ends, the step around it is the one that runs again); the records' `ssh-relay` gets an optional `detail` | the first check could only say that the thread waited; the next one says where, without a debugger; the watchdog is started before any window, so that it runs whatever the window's thread waits for |
 
 ## 11. Checks with the real app
 
-With the build of this pull request (`docs/manual-verification.md`, S25–S31, and a run of the same checks by the person who
-asked for this change):
+With the build of this pull request (`docs/manual-verification.md`, S25–S31, and a run of the same checks by the person
+who asked for this change):
 
 - **2026-11-22, the first build (head `f295109`)**: the first window of a relay started from a scheduled task stopped
-  answering before it was drawn, so no click was possible (§12). Fixed in the next build; the checks are to be run again.
+  answering before it was drawn, so no click was possible (§12); run again at 04:43 with the same build, the same.
+- The next builds draw the relay's windows without the GPU and record a window that does not appear (§12): first an
+  HWND target on the software renderer (head `3f8f0a0`), then a DC render target (no swap chain at all). The checks
+  are to be run again with the last one.
 
 ## 12. The first check: a window that never drew itself
 
@@ -253,6 +256,11 @@ the Task Scheduler's host in session 0; 1Password locked and unlocked just befor
 - 1Password's log had one line about SSH: an authorization prompt that timed out at 04:11:18, 60 seconds after the
   relay got the request. No line said that a prompt waited behind the tray icon (as in the check before this change),
   and nobody saw a prompt of 1Password.
+- Run again at 04:43 with the same build, watched every quarter of a second by the person and the check: the window
+  appeared at 04:43:25.5 as "SSH key: allow this call?", white from the start, and Windows called it hung at
+  04:43:30.7: it never answered once. 1Password's line came at 04:44:25.0, 60 seconds after the window appeared;
+  nobody had clicked. The relay had loaded Direct2D, DirectWrite, Direct3D 11 and DXGI; its threads all waited, and it
+  had recorded only its start.
 
 The three questions, and what is known:
 
@@ -262,12 +270,13 @@ The three questions, and what is known:
    first only when it comes out of the opening after the client has gone. The opening (make the window, show it, draw
    it with Direct2D, write `holder.json`, start the notification) is the relay's since 0.4.0, and it has drawn every
    window of the checks before this one (S1–S24, and the check of the scheduled task a day before, with 0.5.0). Which
-   part of it waited is not known: the window shown without any text points at its first frame, but nobody saw the
-   window before it was hung; CI never stopped there (its runner draws without a GPU driver, and has no 1Password); and
-   the thread's stack was not taken. The likeliest part is the first frame on the GPU (the first Direct2D drawing of a
-   build that this machine had never run, presented at the display's refresh), so the relay's windows now draw without
-   the GPU (§10). If a window stops again, the relay records the step (`window-stuck`), and the check takes the
-   thread's states (`-Step stuck` of the check's script).
+   part of it waited is not known for sure: the second run saw the window hung from its very first moment, never drawn,
+   with Direct3D and DXGI loaded, which points at the first frame; but CI never stopped there (its runner draws without
+   a GPU driver, and has no 1Password), and the thread's stack was not taken. The likeliest part is the first frame on
+   the GPU (the first Direct2D drawing of a build that this machine had never run, presented through a swap chain at the
+   display's refresh), so the relay's windows now draw into their device context on the software renderer (§10). If a
+   window stops again, the relay records the step (`window-stuck`), and the check takes the thread's states
+   (`-Step stuck` of the check's script).
 2. **Whether a request reached 1Password before Allow.** No. In per-call mode the relay sends a signature on only after
    a click that allows, or for a call that an earlier answer allowed; this relay had just started and remembered no
    answer, and its record of the request has no answer. CI checks it: a signature left unanswered in the window never
@@ -281,7 +290,8 @@ The three questions, and what is known:
 
 What changed (the next build):
 
-- The relay's windows draw with Direct2D's software renderer and present at once, without the GPU and without waiting
-  for the display's refresh (§10). The windows of `op` calls are unchanged.
+- The relay's windows draw into their device context with Direct2D's software renderer (a DC render target), without
+  the GPU, without a swap chain and without waiting for the display's refresh (§10). The windows of `op` calls are
+  unchanged.
 - A watchdog records a window that has not appeared within five seconds, with the step, and when it goes on (§10).
   `op-reason.exe --log` shows them ("op-reason's window stuck (draw)").

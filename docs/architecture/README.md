@@ -171,8 +171,8 @@ lasted five seconds, and `window-unstuck` when it ends (`src/relay_watch.rs` dec
 that passes without a window, one owns the toasts' window
 ([2026-11-18-pass-toasts-design.md](../superpowers/specs/2026-11-18-pass-toasts-design.md)). At start the relay also
 reads its ancestors (PID, creation time, name), to tell whether the window in front belongs to the program that
-started it. The relay's windows draw with Direct2D's software renderer and present at once (no GPU, no wait for the
-display's refresh); the windows of `op` calls keep Direct2D's default
+started it. The relay's windows draw into their device context with Direct2D's software renderer (a DC render target:
+no GPU, no swap chain, no wait for the display's refresh); the windows of `op` calls keep Direct2D's default
 ([2026-11-22-front-after-allow-design.md](../superpowers/specs/2026-11-22-front-after-allow-design.md) §12).
 
 ### One request
