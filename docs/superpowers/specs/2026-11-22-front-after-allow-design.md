@@ -1,0 +1,232 @@
+# op-reason: the SSH relay's window comes to the front after Allow — design
+
+- Date: 2026-11-22
+- Status: approved (checks with the real app showed that 1Password keeps its prompt behind its icon for a relay
+  started from a scheduled task; of the ways out, the user chose to bring op-reason's window to the front at the click
+  on Allow, to be built and checked with the real app, as the better experience than approving from the tray each time;
+  this document records the research behind it, the design and the implementer's decisions). §11 is for the checks with
+  the real app after this pull request.
+- Builds on: `2026-11-17-ssh-relay-design.md` (§5.5 the windows one at a time, §6 the window, §8 the relay process,
+  §15 the checks with the real app), `2026-11-15-language-toggle-design.md` (clicks that never activate the window),
+  `2026-11-17-refs-in-window-design.md` §5.4 (handing the right to the foreground on after a click) and
+  `2026-11-18-pass-toasts-design.md` §5 (the screen of the windows).
+
+## 1. What and why
+
+The relay is meant to run from a scheduled task at logon (README, "Starting it"). Checks with the real app on the
+author's machine (2026-11-21 and 2026-11-22; op-reason 0.5.0, 1Password at "application and terminal session"):
+
+- **A relay started from a scheduled task** (its parent the Task Scheduler's host, `svchost.exe` in session 0): after
+  **Allow this call**, 1Password showed no prompt; after 59.7 seconds it closed the request without an answer, and ssh
+  failed with `agent refused operation`. Twice, and the same for a relay that Explorer started.
+- **The prompt was hidden, not refused.** In the next check the 1Password icon at the right of the taskbar had a dot,
+  and its menu had "SSH request waiting" (in Japanese, SSHリクエストを待機中……). Opened from there, the prompt read
+  "Allow op-reason to use SSH key" (in Japanese: 許可 op-reason 使用 SSHキー): 1Password took op-reason for the
+  application that asks. Once approved, the signature went through. 1Password's log said that it notified the user
+  through the tray icon that a background prompt was waiting.
+- Once approved, the next calls through the same relay passed without a prompt (5.6 seconds, as before: until 1Password
+  locks). A relay started again (a new process) was asked again, and again only through the tray.
+- A relay started in a terminal program got its prompt at once, naming the terminal program (S1, S12 and S18 of
+  `docs/manual-verification.md`, 2026-11-18). A relay whose parent had ended got no answer (S15, and the first try of
+  C1 in `2026-11-17-ssh-relay-design.md` §15): what the relay design took for "1Password does not answer a relay without
+  a parent" was the same hidden prompt.
+
+1Password's documentation of the SSH agent ("Suppressing background requests",
+`https://www.1password.dev/ssh/agent/authorization`) says why: 1Password suppresses a prompt when the app or window the
+request originated from is not in the foreground, puts a dot on its icon, and brings the prompt to the foreground when
+the person selects the icon and then "SSH request waiting". So for a relay started from a task, the application is
+op-reason, and op-reason's window, which never takes the focus (on purpose, the language toggle design), is never in
+front: every first request after 1Password locks, and after the relay starts again, needs a trip to the tray, which is
+easy to miss before the request closes.
+
+The user chose to have op-reason's window come to the front when they click Allow, so that 1Password's prompt comes at
+once (§4).
+
+## 2. Goal and non-goals
+
+Goal:
+
+- After a click on **Allow this call** or **Allow this terminal**, op-reason's window comes to the front before the
+  request goes to 1Password, and stays there, without its buttons, until 1Password has answered: 1Password's prompt
+  comes at once, without the tray.
+- When the request is through, the window that had the front before the click gets it back, unless another window took
+  it meanwhile.
+- The window still opens without taking the focus. Nothing changes for **Deny**.
+- Where 1Password does keep a prompt behind its icon, op-reason says where: in its window while 1Password asks, and in
+  the notices that were written for the parent (§6).
+
+Non-goals:
+
+- The windows that come without a click: show-only mode, and the window without buttons of a request that an earlier
+  answer let through, when 1Password is slow (to unlock, for example). Nothing gives the relay the right to the front
+  then, and taking it uninvited would take keys from the terminal. Their prompts may still wait behind the icon; the
+  window's last line says where.
+- The windows of `op` calls (`op-reason.exe`'s and the launcher's): 1Password's prompt for `op` comes as before.
+- The relay's options and records, the dotfiles' setup (the scheduled task), a version.
+
+Anti-goals (a failure even if it works):
+
+- op-reason's window takes the focus before the person answered: keys typed in the terminal would go to it.
+- The window takes the front back from a window that the person or 1Password brought to the front meanwhile.
+- A relay started in a terminal program no longer gets its prompt at once (it did before).
+
+## 3. What 1Password and Windows do
+
+### 3.1 1Password
+
+- **What it documents**: the suppression above, the dot, and "SSH request waiting". It does not say how it finds the
+  application of a request, whether "in the foreground" means a window or a process, or whether a suppressed prompt
+  comes by itself when the application comes to the front later. Its community forum adds that the suppression came in
+  8.10.4 (2023) and caught another relay too (`winssh-pageant`, a bridge started at logon, whose requests 1Password
+  took for background requests until it fixed that "false positive" for that program).
+- **What the checks showed** (§1): the application it names is the terminal program for a relay started in one (it
+  walks up from the relay to an application it knows; `2026-11-17-ssh-relay-design.md` §15), and op-reason for a relay
+  whose parent is the Task Scheduler's host. A request it does not show waits about 60 seconds, then it closes the
+  request without an answer (the relay's `no-answer`).
+- **Not known before the checks of §11**: whether a window of op-reason in front is enough (op-reason's window is a
+  tool window, `WS_EX_TOOLWINDOW`), and whether 1Password compares the process of the window in front with the
+  application exactly or through its process tree. The design does not depend on the first beyond the window
+  belonging to the process that 1Password names, and does not depend on the second (§5.1).
+
+### 3.2 Windows
+
+- **`SetForegroundWindow`** (Microsoft's documentation, 2025-10): a process may set the foreground window only if it is
+  a desktop application, the foreground process has not locked it (`LockSetForegroundWindow`) and no menu is active,
+  and at least one of: the foreground lock time-out has expired (`SPI_GETFOREGROUNDLOCKTIMEOUT`), it is the foreground
+  process, it was started by the foreground process, there is no foreground window, **it received the last input
+  event**, or a debugger is involved. "It is possible for a process to be denied the right to set the foreground window
+  even if it meets these conditions", and "an application cannot force a window to the foreground while the user is
+  working with another window".
+- Right after the click on its button, the relay received the last input event: the click is input to its window, even
+  though the window does not activate (`WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`). op-reason already relies on this:
+  a click on a reference's link hands the right on with `AllowSetForegroundWindow` so that the 1Password app comes to
+  the front (`2026-11-17-refs-in-window-design.md` §5.4, checked with the real app in F3).
+- **`WS_EX_NOACTIVATE`**: "A top-level window created with this style does not become the foreground window when the
+  user clicks it. The system does not bring this window to the foreground when the user minimizes or closes the
+  foreground window. … To activate the window, use the SetActiveWindow or SetForegroundWindow function." So the window
+  keeps its style, and comes forward only when the relay asks; and when 1Password's prompt closes, Windows does not
+  bring op-reason's window back by itself.
+- **`AllowSetForegroundWindow`**: a process that can set the foreground window can let another process do it, until the
+  next input that is not directed at that process.
+
+## 4. Approaches
+
+| Approach | What it means | Trade-off |
+| --- | --- | --- |
+| Approve from the tray | no change to op-reason; the README and the notices say where the prompt waits | a trip to the icon at each first request after 1Password locks and after the relay starts again; missed, the request fails after 60 seconds (checked: it works) |
+| Start the relay as a child of the terminal program | 1Password names the terminal program, which is in front while the person works in it | the relay lives and dies with one terminal program, not with the logon; other programs in front still hide the prompt |
+| **The window comes to the front after Allow (chosen)** | the click gives the relay the right; 1Password sees op-reason in front | the terminal loses the focus until 1Password answers (it gets it back); depends on 1Password counting op-reason's window (checked in §11) |
+
+Within the chosen approach:
+
+| Decision | Chosen | Not chosen, and why |
+| --- | --- | --- |
+| When | Right after the click on a button that allows, before the request goes to 1Password | When the window opens: it would take keys from the terminal, and Windows may refuse it without input; after the request has gone: 1Password may have decided already (the documentation does not say that it looks again) |
+| How | `SetForegroundWindow` on the click's right; the window keeps `WS_EX_NOACTIVATE` | Dropping `WS_EX_NOACTIVATE`: every click (the language switch, a link) would activate it, against the language toggle design; `AttachThreadInput` or a simulated key to force the front: works around Windows' rules |
+| The program that started the relay in front | The window stays behind | Come forward anyway: if 1Password compares the process in front with the application exactly, a relay started in a terminal program would lose the prompt it gets today (an anti-goal) |
+| 1Password's prompt | The relay lets the process that serves 1Password's pipe set the foreground window, before the request goes | `ASFW_ANY` (any process); nothing (1Password brings its prompt forward today without help, but then the foreground process was not op-reason) |
+| After 1Password answers | The window gives the front back to the window that had it, if nobody else took it | Leave it to Windows: it does not bring op-reason's window back (§3.2), and where the front lands after the prompt is not known |
+
+## 5. The design
+
+### 5.1 When the window comes to the front
+
+- per-call mode, a click on **Allow this call** or **Allow this terminal**: right after the click, before the answer is
+  remembered and the request goes to 1Password, the relay calls `SetForegroundWindow` on its window.
+- Not when the window in front belongs to the program that started the relay: one of the relay's ancestors (read once
+  at start: PID, creation time, image name; a later process with an ancestor's PID does not count), `explorer.exe`
+  excepted. That is the terminal program of a relay started in one, which 1Password takes for the application and sees
+  in front already. A relay started from a task has the Task Scheduler's host above it, which owns no window on the
+  person's desktop; Explorer, which starts programs from the desktop and the taskbar, is not an application for
+  1Password (it named the terminal program above it, not Explorer).
+- Never when the window opens, for **Deny**, in show-only mode, for the window without buttons of a slow answer, for
+  `op` calls.
+- If Windows refuses, nothing else is tried: the window stays where it is, as before, and 1Password may keep its prompt
+  behind its icon (the window's last line says where, §6).
+
+### 5.2 While 1Password answers
+
+- The window stays in front, without its buttons ("SSH key: 1Password is asking"), as before after Allow.
+- Before the request goes, the relay lets the process that serves 1Password's pipe (`GetNamedPipeServerProcessId` on
+  its connection: the 1Password app) set the foreground window (`AllowSetForegroundWindow` with that PID), so that
+  1Password's prompt can come in front of op-reason's window.
+- Keys typed while the window is in front go to it and do nothing: it has no default button, and its buttons are gone.
+
+### 5.3 Giving the front back
+
+- When the window closes (the request is through or failed), it gives the front back to the window that had it before
+  the click: only while op-reason's window still has the front or no window has it, and only to a window that still
+  exists, is shown and is not minimized.
+- A window that took the front meanwhile keeps it: 1Password's prompt, the window of Windows Hello, a window the person
+  went to.
+- When 1Password's prompt closes, Windows does not give the front to op-reason's window (§3.2); where it lands then is
+  part of the checks (§11).
+
+## 6. Where a hidden prompt waits
+
+- The window without buttons ("1Password is asking": after Allow, in show-only mode, and when 1Password is slow to
+  answer) gets a last line: "If 1Password's prompt does not come: the 1Password icon at the right of the taskbar (under
+  ^ when hidden) → SSH request waiting" (「1Password の画面が出ないとき: タスクバーの右の 1Password のアイコン (隠れていれば ^
+  の中) →「SSHリクエストを待機中」」). It is the way out wherever the window cannot come forward (§2), and when Windows
+  refused it the front (§5.1).
+- The notice "SSH key: 1Password did not answer" said that the relay's parent had ended and that 1Password does not
+  answer such a relay, so start it from a scheduled task. A task's relay is in the same place (§1), so it now says that
+  while the application that asks is not in front, 1Password keeps its prompt behind its icon (SSH request waiting) and
+  closes it after about 60 seconds; with a parent that has ended, it adds that 1Password most likely takes the relay
+  itself for that application.
+- The notice "op-reason's SSH relay has no parent process" (or "lost its parent process") said that 1Password leaves
+  the requests of such a relay unanswered. It now says that 1Password most likely takes the relay itself for the
+  application, whose prompt comes while op-reason's window is in front (after Allow) and otherwise waits behind the
+  icon.
+
+## 7. Documents
+
+- README.md and README.ja.md: the window paragraph of "Two modes" (it opens without the focus, comes to the front after
+  Allow until 1Password answers, gives the front back, stays behind for its own program; Deny never takes it); the
+  "Windows" item; "Starting it": a scheduled task that also repeats every minute (the check of §1 found that the task's
+  "restart on failure" did not start a stopped relay again), and why the window comes to the front, with the tray for
+  the windows that come without a click.
+- `docs/architecture/README.md`: the relay's threads (its ancestors at start, the parent), step 3 of a request (coming
+  to the front, `AllowSetForegroundWindow`, giving back), step 5 (the notice), the tests.
+- `docs/manual-verification.md` and `.ja.md`: checks S25–S31, and S15's expectation.
+- `CHANGELOG.md`: the Unreleased section.
+- Unchanged: the README animation and the HTML page of the relay's scene (they show the window at a click, without
+  1Password's prompt, and copy none of the changed texts), the skill (agents do nothing differently).
+
+## 8. Tests
+
+- Linux (`cargo test` in `crates/op-reason-win`): `relay_front` (the program that started the relay in front: its
+  parent, its terminal program, a creation time that cannot be read; not another program, no window in front, a reused
+  PID, Explorer, a task's relay, a relay without a parent); `relay_ui` (the last line while 1Password asks, in both
+  languages and all three cases; none in the window that asks; the notices say where the prompt waits and no longer
+  send the person to a task).
+- Windows CI (`tests/relay.rs`, real clicks), with a plain window of another process in front (`fake-ssh front`):
+  op-reason's window opens behind it; Deny leaves the front where it was; after Allow op-reason's window is in front
+  while the fake agent answers (2.5 seconds), then the front goes back to the plain window. With the plain window's
+  process as the relay's parent (it starts the relay): after Allow op-reason's window never comes to the front.
+- What CI cannot show: 1Password's prompt (there is no 1Password), and a person's own click (CI clicks with injected
+  input, which Windows counts as input too). §11.
+
+## 9. Left to the implementer
+
+- The texts of the last line and of the notices; how the window finds its ancestors and the window in front; the
+  tests' helpers.
+
+## 10. Implementer's decisions
+
+| Decision | Why |
+| --- | --- |
+| The relay's ancestors are read once at start (`peer::chain` of the relay: PID, creation time, name); the window in front counts as the relay's program when its process is one of them (same creation time when both can be read; by PID when one cannot), `explorer.exe` excepted | ancestors never change; the creation time keeps a reused PID out; a task's host (SYSTEM) cannot be opened and owns no window anyway |
+| The check runs between the click and `SetForegroundWindow`; the window comes forward before the answer is remembered and the window loses its buttons | the right holds until the next input elsewhere: the shorter the gap, the safer |
+| `AllowSetForegroundWindow` for the PID of the server of the relay's connection to 1Password's pipe, not `ASFW_ANY` | only 1Password needs it; a failure to read it costs nothing (1Password brings its prompt forward today without it) |
+| The front is given back in the window's `Drop`, before it is destroyed | every way a window that came forward ends (answered, failed, stalled, closed by the person) goes through it; while it still has the front, the relay is the foreground process and may set it |
+| No option to turn it off, no record of it | the user asked for the behavior and will check it; the checks watch the window in front (the manual checks note it) |
+| A refused `SetForegroundWindow` is not tried again | Windows' rules decide (§3.2); the last line of the window says where the prompt waits |
+| The tray's item is named as 1Password names it: "SSH request waiting" in English, 「SSHリクエストを待機中」 in Japanese (seen in the check of §1, without its trailing dots) | so that the person finds the words in the menu |
+| `fake-ssh front` makes the plain window of the Windows tests (and, with a program, starts it as its child) | the window in front must belong to another process than the test's, which is the relay's parent; with a program, it stands for the terminal program the relay was started in |
+| The toast test waits 300 ms before it reads the window in front | its first call now takes the front and gives it back |
+| No plan document | the change is small, and §5 and §8 are its steps |
+
+## 11. Checks with the real app
+
+To be run with the build of this pull request (`docs/manual-verification.md`, S25–S31). Not run yet.
