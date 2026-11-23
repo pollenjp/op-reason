@@ -64,6 +64,22 @@ pub fn duration(text: &str, bare: u64, hours: bool) -> Option<u64> {
         .filter(|s| *s > 0)
 }
 
+/// The longest time limit: a day.
+pub const MAX_TIME_LIMIT: u64 = 24 * 60 * 60;
+/// The longest answer wait: an hour.
+pub const MAX_ANSWER_WAIT: u64 = 60 * 60;
+
+/// A time limit as written (`<n>[s|m|h]`, a bare number is minutes), up to a day: a longer one would overflow the
+/// relay's clocks.
+pub fn time_limit(text: &str) -> Option<u64> {
+    duration(text, 60, true).filter(|s| *s <= MAX_TIME_LIMIT)
+}
+
+/// An answer wait as written (`<n>[s|m]`, a bare number is seconds), up to an hour.
+pub fn answer_wait(text: &str) -> Option<u64> {
+    duration(text, 1, false).filter(|s| *s <= MAX_ANSWER_WAIT)
+}
+
 /// A time limit as `get` prints it: whole minutes as `<n>m`, else `<n>s`.
 pub fn minutes_text(secs: u64) -> String {
     if secs.is_multiple_of(60) {

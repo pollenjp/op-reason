@@ -133,11 +133,11 @@ pub fn parse_with(args: &[String], base: Opts) -> Result<Opts, OptError> {
             "--pipe" => o.pipe = pipe_path(&value),
             "--upstream" => o.upstream = pipe_path(&value),
             "--time-limit" => {
-                o.limit_secs = values::duration(&value, 60, true)
+                o.limit_secs = values::time_limit(&value)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
             _ => {
-                o.answer_secs = values::duration(&value, 1, false)
+                o.answer_secs = values::answer_wait(&value)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
         }
@@ -239,6 +239,16 @@ mod tests {
             p(&["--time-limit", "0m"]),
             Err(OptError::BadDuration(..))
         ));
+        for (opt, bad) in [
+            ("--time-limit", "25h"),
+            ("--answer-wait", "61m"),
+            ("--answer-wait", "99999999999"),
+        ] {
+            assert!(
+                matches!(p(&[opt, bad]), Err(OptError::BadDuration(..))),
+                "{opt} {bad}"
+            );
+        }
         let e = OptError::BadMode("later".into());
         assert!(e.message(Lang::En).contains("later") && e.message(Lang::En).contains("per-call"));
         assert!(e.message(Lang::Ja).contains("later"));

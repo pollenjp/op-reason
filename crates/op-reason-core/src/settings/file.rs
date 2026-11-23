@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use crate::lang::Lang;
-use crate::settings::values::RelayMode;
+use crate::settings::values::{self, RelayMode};
 
 /// The file on Windows, in `%LOCALAPPDATA%\op-reason`.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -27,6 +27,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub const COPY_FILE: &str = "lang.json";
 /// The version of the format.
 pub const VERSION: u64 = 1;
+/// The path of [`Values::ignored`] for a text that is not a JSON object at all.
+pub const WHOLE_FILE: &str = "settings.json";
 
 /// How many times a write tries to put the new file in place (another process may have the old one open).
 const WRITE_TRIES: u32 = 5;
@@ -60,7 +62,15 @@ pub struct Values {
 /// The values in a file's text (a byte order mark is allowed); no file, or a text that is not a JSON object, has none.
 pub fn values(text: Option<&str>) -> Values {
     let Some(root) = text.and_then(object) else {
-        return Values::default();
+        // A text that is not a JSON object counts as no file; it is named, as the next write replaces it
+        let mut v = Values::default();
+        if let Some(t) = text.map(|t| t.trim_start_matches('\u{feff}').trim())
+            && !t.is_empty()
+        {
+            v.ignored
+                .push((WHOLE_FILE.to_owned(), crate::args::clip(t, 40, "…")));
+        }
+        return v;
     };
     let mut ignored = Vec::new();
     let mut ignore = |path: &str, value: &Value| ignored.push((path.to_owned(), value.to_string()));
@@ -83,12 +93,12 @@ pub fn values(text: Option<&str>) -> Values {
                     ignore("relay.mode", m);
                 }
             }
-            for (key, slot) in [
-                ("timeLimit", &mut time_limit),
-                ("answerWait", &mut answer_wait),
+            for (key, slot, max) in [
+                ("timeLimit", &mut time_limit, values::MAX_TIME_LIMIT),
+                ("answerWait", &mut answer_wait, values::MAX_ANSWER_WAIT),
             ] {
                 if let Some(n) = relay.get(key) {
-                    *slot = n.as_u64().filter(|s| *s > 0);
+                    *slot = n.as_u64().filter(|s| *s > 0 && *s <= max);
                     if slot.is_none() {
                         ignore(&format!("relay.{key}"), n);
                     }
@@ -352,7 +362,16 @@ mod tests {
         assert_eq!(v.folders, vec![r"D:\a".to_owned(), r"E:\b".to_owned()]);
         assert!(v.ignored.is_empty());
         assert_eq!(values(None), Values::default());
-        assert_eq!(values(Some("junk")), Values::default());
+        assert_eq!(
+            values(Some("junk")).ignored,
+            [(WHOLE_FILE.to_owned(), "junk".to_owned())],
+            "a broken file is named"
+        );
+        assert_eq!(
+            values(Some("  ")),
+            Values::default(),
+            "an empty file is no file"
+        );
         assert_eq!(
             values(Some("\u{feff}{\"relay\":{\"mode\":\"per-call\"}}")).mode,
             Some(RelayMode::PerCall)
@@ -385,6 +404,18 @@ mod tests {
         );
         assert_eq!(v.ignored[1].1, r#""later""#);
         assert_eq!(values(Some(r#"{"relay":7}"#)).ignored[0].0, "relay");
+    }
+
+    #[test]
+    fn values_beyond_a_day_or_an_hour_are_not_taken() {
+        let huge = values(Some(r#"{"relay":{"timeLimit":86401,"answerWait":3601}}"#));
+        assert_eq!((huge.time_limit, huge.answer_wait), (None, None));
+        assert_eq!(huge.ignored.len(), 2);
+        let most = values(Some(r#"{"relay":{"timeLimit":86400,"answerWait":3600}}"#));
+        assert_eq!(
+            (most.time_limit, most.answer_wait),
+            (Some(86400), Some(3600))
+        );
     }
 
     #[test]

@@ -121,12 +121,13 @@ pub fn distro_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// An absolute folder: `X:\…` or `X:/…`, `\\server\share…`, or `/…`.
+/// An absolute folder: `X:\…` or `X:/…`, `\\server\share…`, and on Linux `/…` (on Windows `/…` is relative to the
+/// current drive).
 pub fn absolute(folder: &str) -> bool {
     let b = folder.as_bytes();
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
         || folder.starts_with(r"\\")
-        || folder.starts_with('/')
+        || (!cfg!(windows) && folder.starts_with('/'))
 }
 
 /// A folder in a WSL distribution's share (`\\\\wsl.localhost\\…`, `\\\\wsl$\\…`): links cannot be told through it
@@ -204,12 +205,8 @@ pub fn want(name: &Name, text: &str) -> Result<Want, Usage> {
         },
         _ if text == "default" && name.is_file() => Ok(Want::Default),
         Name::RelayMode => RelayMode::parse(text).map(Want::Mode).ok_or_else(bad),
-        Name::RelayTimeLimit => values::duration(text, 60, true)
-            .map(Want::Secs)
-            .ok_or_else(bad),
-        Name::RelayAnswerWait => values::duration(text, 1, false)
-            .map(Want::Secs)
-            .ok_or_else(bad),
+        Name::RelayTimeLimit => values::time_limit(text).map(Want::Secs).ok_or_else(bad),
+        Name::RelayAnswerWait => values::answer_wait(text).map(Want::Secs).ok_or_else(bad),
         _ => match text {
             "on" => Ok(Want::On(true)),
             "off" => Ok(Want::On(false)),
@@ -251,7 +248,7 @@ mod tests {
             "skill.windows",
             "skill.wsl.Ubuntu-24.04",
             r"skill.folder.D:\agents\skills",
-            "skill.folder./tmp/skills",
+            r"skill.folder.\\server\share\skills",
         ] {
             assert_eq!(Name::parse(text).unwrap().text(), text, "{text}");
         }
@@ -293,6 +290,16 @@ mod tests {
             Err(Usage::BadDistro("a;b".into()))
         );
         assert_eq!(Name::parse("nope"), Err(Usage::UnknownName("nope".into())));
+        let unix = Name::parse("skill.folder./tmp/skills");
+        if cfg!(windows) {
+            assert_eq!(
+                unix,
+                Err(Usage::RelativeFolder("/tmp/skills".into())),
+                "on Windows /… is relative to the current drive"
+            );
+        } else {
+            assert_eq!(unix, Ok(Name::SkillFolder("/tmp/skills".into())));
+        }
         for share in [
             r"\\wsl.localhost\Ubuntu\home\me\.codex\skills",
             r"\\WSL$\Ubuntu\x",
@@ -336,6 +343,14 @@ mod tests {
             })
         );
         assert_eq!(want(&Name::RelayTimeLimit, "90"), Ok(Want::Secs(5400)));
+        assert_eq!(want(&Name::RelayTimeLimit, "24h"), Ok(Want::Secs(86400)));
+        assert!(want(&Name::RelayTimeLimit, "25h").is_err(), "at most a day");
+        assert_eq!(want(&Name::RelayAnswerWait, "60m"), Ok(Want::Secs(3600)));
+        assert!(
+            want(&Name::RelayAnswerWait, "61m").is_err(),
+            "at most an hour"
+        );
+        assert!(want(&Name::RelayAnswerWait, "18446744073709551615").is_err());
         assert_eq!(want(&Name::RelayAnswerWait, "90"), Ok(Want::Secs(90)));
         assert!(want(&Name::RelayAnswerWait, "1h").is_err());
         assert_eq!(want(&Name::RelayAutostart, "on"), Ok(Want::On(true)));
