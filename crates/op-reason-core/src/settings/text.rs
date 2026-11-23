@@ -220,6 +220,18 @@ pub fn state(lang: Lang, item: &Item, version: &str) -> String {
             }
             s
         }
+        State::OtherTasks(tasks) => {
+            let tasks = tasks.join(", ");
+            if ja {
+                format!(
+                    "ほかにも中継を起こす task があります: {tasks} (logon で中継を起こす task が 2 つあるのは移る前の残りのことが多いので、使わない方を消してください)"
+                )
+            } else {
+                format!(
+                    "other tasks start a relay too: {tasks} (two tasks that each start a relay at logon are likely a leftover: remove the one you do not use)"
+                )
+            }
+        }
         State::NotRunning => {
             if ja {
                 "見ていません: distro が止まっています (get・check・set で名指しすると起こします)"

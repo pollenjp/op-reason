@@ -12,7 +12,7 @@
 mod ask;
 mod conn;
 mod peer;
-mod pipe;
+pub(crate) mod pipe;
 
 use std::collections::HashMap;
 use std::ffi::OsString;

@@ -26,6 +26,11 @@ pub fn names(out: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The output of `wsl.exe` as text: UTF-16LE (with or without a byte order mark) or UTF-8.
+pub fn text(bytes: &[u8]) -> String {
+    decode(bytes)
+}
+
 fn decode(bytes: &[u8]) -> String {
     let zeros = bytes.iter().skip(1).step_by(2).filter(|b| **b == 0).count();
     let utf16 =
@@ -68,6 +73,11 @@ mod tests {
         }
         assert_eq!(names(b"Debian\nDocker-Desktop-Data\n"), ["Debian"]);
         assert_eq!(names(b""), Vec::<String>::new());
+        assert_eq!(
+            text(&utf16("Wsl/Service/ERROR\r\n", false)).trim(),
+            "Wsl/Service/ERROR"
+        );
+        assert_eq!(text(b"plain"), "plain");
         assert_eq!(
             names(&utf16(
                 "Windows Subsystem for Linux has no installed distributions.\r\n",

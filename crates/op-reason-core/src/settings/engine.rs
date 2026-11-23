@@ -149,6 +149,8 @@ pub enum State {
         /// A link on the way.
         link: Option<String>,
     },
+    /// Other tasks start a relay too (`list` only: it walks every task folder).
+    OtherTasks(Vec<String>),
     /// A WSL distribution that does not run: not looked at.
     NotRunning,
     /// The value could not be read.
@@ -501,7 +503,21 @@ pub fn list(ctx: &Ctx) -> Vec<Item> {
             .iter()
             .map(|f| Name::SkillFolder(f.clone())),
     );
-    names.iter().map(|n| now.item(n, Some(&distros))).collect()
+    let mut items: Vec<Item> = names.iter().map(|n| now.item(n, Some(&distros))).collect();
+    if let Some(autostart) = items.iter_mut().find(|i| i.name == Name::RelayAutostart)
+        && autostart.state == State::Ok
+    {
+        let others: Vec<String> = ctx
+            .sys
+            .other_tasks(true)
+            .into_iter()
+            .map(|t| t.path)
+            .collect();
+        if !others.is_empty() {
+            autostart.state = State::OtherTasks(others);
+        }
+    }
+    items
 }
 
 /// One setting now (a named distribution is looked at, which starts it).
@@ -1412,6 +1428,28 @@ mod tests {
         );
         get(&f.ctx(), &Name::RelayMode);
         assert_eq!(f.task_reads.get(), 1);
+    }
+
+    #[test]
+    fn list_names_the_other_tasks_that_start_a_relay() {
+        let f = Fake::new();
+        f.others.borrow_mut().push(OtherTask {
+            path: r"\pjp\op-reason-ssh-relay".into(),
+            running: false,
+            enabled: true,
+        });
+        let items = list(&f.ctx());
+        let autostart = items
+            .iter()
+            .find(|i| i.name == Name::RelayAutostart)
+            .unwrap();
+        assert_eq!(autostart.value.as_deref(), Some("off"));
+        assert_eq!(
+            autostart.state,
+            State::OtherTasks(vec![r"\pjp\op-reason-ssh-relay".into()])
+        );
+        let i = get(&f.ctx(), &Name::RelayAutostart);
+        assert_eq!(i.state, State::Ok, "get does not walk every task folder");
     }
 
     // --- skills (design §10.1)

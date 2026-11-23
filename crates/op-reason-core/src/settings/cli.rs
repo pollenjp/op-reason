@@ -328,6 +328,7 @@ fn item_json(item: &Item, version: &str) -> Value {
             let code = if link.is_some() { "link" } else { file };
             (code, json!({"file": file, "version": placed, "link": link}))
         }
+        State::OtherTasks(tasks) => ("other-tasks", json!({"tasks": tasks})),
         State::NotRunning => ("not-running", json!({})),
         State::Unreadable(e) => ("unreadable", json!({"error": e})),
     };

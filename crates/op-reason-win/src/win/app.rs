@@ -28,7 +28,7 @@ use crate::{cmdline, ui};
 /// The version of op-reason.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The skill file for AI agents (the same file the WSL binary prints).
-const SKILL: &str = include_str!("../../../../skill/SKILL.md");
+pub(super) const SKILL: &str = include_str!("../../../../skill/SKILL.md");
 /// The fish completion; `__OPREASON_CMD__` is the command name.
 const COMPLETION_FISH: &str = include_str!("../../../../completions/op.fish");
 /// How long op.exe gets to exit by itself after Ctrl+C before it is terminated.
