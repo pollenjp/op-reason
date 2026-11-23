@@ -942,6 +942,11 @@ fn the_relay_reads_its_settings_and_a_stop_lets_the_request_with_1password_finis
     let _agent = sb.agent();
     let mut relay = sb.relay(&["--time-limit", "2m"], &[]);
     let pid = relay.0.id();
+    // The relay writes relay.json just after its pipe answers (design §8.2): wait for it
+    assert!(
+        wait_until(Duration::from_secs(10), || dir.join("relay.json").is_file()),
+        "the relay writes relay.json"
+    );
     let info: Value =
         serde_json::from_str(&fs::read_to_string(dir.join("relay.json")).unwrap()).unwrap();
     assert_eq!(info["pid"], pid);
