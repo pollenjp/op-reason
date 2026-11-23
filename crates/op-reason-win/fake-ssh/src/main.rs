@@ -17,6 +17,10 @@
 //!   of the screen, until killed: the window in front for the tests of the relay's window coming to the front. With a
 //!   program, it starts it once the window is up, so that the program's parent owns the window (it stands for the
 //!   terminal program the relay was started in).
+//! - With `FAKE_WSL_DIR` set and any other arguments (copied as `wsl.exe` for the settings' tests): `--list --quiet`
+//!   prints the names in `<dir>/list` (`--running`: `<dir>/running`) in UTF-16LE, as wsl.exe does; anything else (`-d
+//!   <name> --exec sh -c <script> op-reason-skill <act> <version>`) appends its arguments after `sh -c <script>`, with the
+//!   distribution, to `<dir>/calls.log`, reads its stdin and prints `<dir>/answer-<act>`.
 //! - With `FAKE_SSH_PIPE` set and any other arguments (copied as `ssh.exe` and started with an ssh command line, such as
 //!   `-T git@github.com`, which the relay reads for the command and the destination): `client` on that pipe with the
 //!   steps of `FAKE_SSH_STEPS` (separated by spaces).
@@ -368,6 +372,50 @@ fn front(_title: &str, _program: &[OsString]) -> i32 {
     2
 }
 
+/// `wsl.exe` for the settings' tests (see the module's documentation).
+fn fake_wsl(args: &[OsString]) -> i32 {
+    let dir = std::path::PathBuf::from(std::env::var_os("FAKE_WSL_DIR").unwrap_or_default());
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.first().map(String::as_str) == Some("--list") {
+        let file = if args.iter().any(|a| a == "--running") {
+            "running"
+        } else {
+            "list"
+        };
+        let names = fs::read_to_string(dir.join(file)).unwrap_or_default();
+        let mut out = Vec::new();
+        for u in names.encode_utf16() {
+            out.extend_from_slice(&u.to_le_bytes());
+        }
+        let _ = io::stdout().write_all(&out);
+        return 0;
+    }
+    let distro = args
+        .iter()
+        .position(|a| a == "-d")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
+    let after = args
+        .iter()
+        .position(|a| a == "-c")
+        .map(|i| &args[(i + 2).min(args.len())..])
+        .unwrap_or_default();
+    let mut input = Vec::new();
+    let _ = io::stdin().read_to_end(&mut input);
+    append(
+        &dir.join("calls.log"),
+        &format!("{distro} {} ({} bytes in)", after.join(" "), input.len()),
+    );
+    let act = after.get(1).cloned().unwrap_or_default();
+    let answer = fs::read_to_string(dir.join(format!("answer-{act}"))).unwrap_or_default();
+    let _ = io::stdout().write_all(answer.as_bytes());
+    0
+}
+
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let text = |i: usize| {
@@ -387,6 +435,7 @@ fn main() {
         ),
         "spawn" => spawn(&args[1..]),
         "front" => front(&text(1), args.get(2..).unwrap_or_default()),
+        _ if std::env::var_os("FAKE_WSL_DIR").is_some() => fake_wsl(&args),
         _ => match std::env::var("FAKE_SSH_PIPE") {
             Ok(pipe) if !pipe.is_empty() => {
                 let steps = std::env::var("FAKE_SSH_STEPS").unwrap_or_default();
