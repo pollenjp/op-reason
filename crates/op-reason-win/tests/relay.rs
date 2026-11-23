@@ -911,6 +911,98 @@ fn a_slow_answer_gets_the_window_without_buttons() {
     );
 }
 
+/// Sets a named event of another process (the relay's stop event).
+fn set_event(name: &str) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+    use windows::core::HSTRING;
+    // SAFETY: a valid name; the handle is closed here.
+    unsafe {
+        let h = OpenEventW(EVENT_MODIFY_STATE, false, &HSTRING::from(name))
+            .expect("the relay's stop event");
+        SetEvent(h).expect("set the event");
+        let _ = CloseHandle(h);
+    }
+}
+
+/// The relay starts with the values of `settings.json` (its options win), tells them in `relay.json`, and its stop
+/// event lets the request that is with 1Password finish, fails a new one, and ends it (design
+/// `docs/superpowers/specs/2026-11-23-settings-design.md` §8).
+#[test]
+fn the_relay_reads_its_settings_and_a_stop_lets_the_request_with_1password_finish() {
+    let _g = serial();
+    let sb = Sandbox::new("settings");
+    let dir = sb.lad().join("op-reason");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        r#"{"v":1,"relay":{"mode":"show-only","answerWait":7}}"#,
+    )
+    .unwrap();
+    let _agent = sb.agent();
+    let mut relay = sb.relay(&["--time-limit", "2m"], &[]);
+    let pid = relay.0.id();
+    let info: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("relay.json")).unwrap()).unwrap();
+    assert_eq!(info["pid"], pid);
+    assert_eq!(info["mode"], "show-only", "from settings.json");
+    assert_eq!(info["answerWait"], 7, "from settings.json");
+    assert_eq!(info["timeLimit"], 120, "the option wins");
+    assert_eq!(info["pipe"], sb.pipe());
+    assert!(
+        sb.records()
+            .iter()
+            .any(|r| r["event"] == "ssh-relay" && r["what"] == "start" && r["mode"] == "show-only"),
+        "{:?}",
+        sb.records()
+    );
+    fs::write(sb.agent_dir().join("sign-delay-ms"), "3000").unwrap();
+    let slow = sb.client(Some("stop check"), &["sign"]).spawn().unwrap();
+    assert!(
+        wait_until(Duration::from_secs(3), || sb.agent_signs() == 1),
+        "the request is with 1Password"
+    );
+    set_event(&format!(r"Local\op-reason-ssh-relay-stop-{pid}"));
+    let late = sb
+        .client(Some("after the stop"), &["sign"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        text(&late),
+        "sign 5\n",
+        "a new request fails at once: {late:?}"
+    );
+    assert_eq!(
+        text(&slow.wait_with_output().unwrap()),
+        "sign 14\n",
+        "the request with 1Password finished"
+    );
+    let t0 = Instant::now();
+    let ended = loop {
+        if let Ok(Some(status)) = relay.0.try_wait() {
+            break Some(status);
+        }
+        if t0.elapsed() > Duration::from_secs(10) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(ended.expect("the relay ends").code(), Some(0));
+    assert_eq!(
+        sb.agent_signs(),
+        1,
+        "the late request never reached 1Password"
+    );
+    assert!(
+        sb.records()
+            .iter()
+            .any(|r| r["event"] == "ssh-relay" && r["what"] == "stop"),
+        "{:?}",
+        sb.records()
+    );
+    assert!(!dir.join("relay.json").exists(), "removed at the stop");
+}
+
 #[test]
 fn an_answer_that_never_comes_is_recorded() {
     let _g = serial();

@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use op_reason_core::args;
@@ -53,6 +53,22 @@ pub(super) fn serve(shared: Arc<Shared>, server: pipe::Server) {
         who: None,
     };
     c.run();
+}
+
+/// A request being handled: counted in the relay's `in_flight` while it lives.
+struct Busy<'a>(&'a AtomicUsize);
+
+impl<'a> Busy<'a> {
+    fn new(count: &'a AtomicUsize) -> Busy<'a> {
+        count.fetch_add(1, Ordering::SeqCst);
+        Busy(count)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The connection to the 1Password agent.
@@ -160,7 +176,12 @@ impl<'a> Conn<'a> {
                 Ok(Some(m)) => m,
                 _ => return,
             };
-            let reply = if msg[0] == wire::SIGN_REQUEST {
+            // Counted until its answer is written, so that a stop waits for it; after a stop, a new request fails at
+            // once (design 2026-11-23-settings-design.md §8.2).
+            let _busy = Busy::new(&self.shared.in_flight);
+            let reply = if self.shared.stopping.load(Ordering::SeqCst) {
+                Some(wire::failure())
+            } else if msg[0] == wire::SIGN_REQUEST {
                 self.sign(&msg)
             } else {
                 if let Some(b) = wire::session_bind(&msg) {

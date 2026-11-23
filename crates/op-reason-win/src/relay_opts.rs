@@ -84,11 +84,27 @@ impl OptError {
     }
 }
 
-/// The options after `--ssh-agent`: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`, `--time-limit
-/// <n>[s|m|h]` (a bare number is minutes), `--answer-wait <n>[s|m]` (a bare number is seconds), `--status`; each value
-/// also as `--option=value`.
+/// The relay's values in `settings.json` (design `2026-11-23-settings-design.md` §8.1), on the defaults: what the
+/// relay starts with before its options.
+pub fn base(values: &op_reason_core::settings::Values) -> Opts {
+    Opts {
+        mode: values.mode.unwrap_or_default(),
+        limit_secs: values.time_limit.unwrap_or(DEFAULT_LIMIT),
+        answer_secs: values.answer_wait.unwrap_or(DEFAULT_ANSWER_WAIT),
+        ..Opts::default()
+    }
+}
+
+/// [`parse_with`] on the defaults.
 pub fn parse(args: &[String]) -> Result<Opts, OptError> {
-    let mut o = Opts::default();
+    parse_with(args, Opts::default())
+}
+
+/// The options after `--ssh-agent`, on `base`: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
+/// `--time-limit <n>[s|m|h]` (a bare number is minutes), `--answer-wait <n>[s|m]` (a bare number is seconds),
+/// `--status`; each value also as `--option=value`. An option wins over `base`.
+pub fn parse_with(args: &[String], base: Opts) -> Result<Opts, OptError> {
+    let mut o = base;
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
         if a == "--status" {
@@ -241,6 +257,34 @@ mod tests {
                 .message(Lang::En)
                 .contains("5x")
         );
+    }
+
+    #[test]
+    fn settings_are_the_base_and_options_win() {
+        let values = op_reason_core::settings::values(Some(
+            r#"{"relay":{"mode":"show-only","timeLimit":5400,"answerWait":5}}"#,
+        ));
+        let b = base(&values);
+        assert_eq!(
+            (b.mode, b.limit_secs, b.answer_secs),
+            (Mode::ShowOnly, 5400, 5)
+        );
+        assert_eq!(b.pipe, DEFAULT_PIPE);
+        let o = parse_with(&["--mode".into(), "per-call".into()], b.clone()).unwrap();
+        assert_eq!(
+            (o.mode, o.limit_secs),
+            (Mode::PerCall, 5400),
+            "the option wins, the rest stays"
+        );
+        assert_eq!(parse_with(&[], b.clone()).unwrap(), b);
+        let ignored =
+            op_reason_core::settings::values(Some(r#"{"relay":{"mode":"later","timeLimit":0}}"#));
+        assert_eq!(
+            base(&ignored),
+            Opts::default(),
+            "values that are not accepted count as not set"
+        );
+        assert_eq!(parse(&[]).unwrap(), Opts::default());
     }
 
     #[test]

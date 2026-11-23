@@ -167,6 +167,10 @@ fn relay_label(lang: Lang, what: &str, mode: &str, detail: &str) -> String {
         (Lang::En, "parent-ended") => "SSH relay's parent process ended".to_string(),
         (Lang::En, "window-stuck") => format!("SSH: op-reason's window stuck ({detail})"),
         (Lang::En, "window-unstuck") => format!("SSH: op-reason's window went on ({detail})"),
+        (Lang::En, "stop") if detail.is_empty() => {
+            "SSH relay stopped by op-reason --settings".to_string()
+        }
+        (Lang::En, "stop") => format!("SSH relay stopped by op-reason --settings ({detail})"),
         (Lang::Ja, "start") => format!("SSH の中継を開始 ({mode})"),
         (Lang::Ja, "exit") => "SSH の中継を終了".to_string(),
         (Lang::Ja, "no-prompt") => format!("SSH: 1Password が確認しなかった ({mode})"),
@@ -174,6 +178,10 @@ fn relay_label(lang: Lang, what: &str, mode: &str, detail: &str) -> String {
         (Lang::Ja, "parent-ended") => "SSH の中継の親の process が終わった".to_string(),
         (Lang::Ja, "window-stuck") => format!("SSH: op-reason の窓が止まっている ({detail})"),
         (Lang::Ja, "window-unstuck") => format!("SSH: op-reason の窓が動き出した ({detail})"),
+        (Lang::Ja, "stop") if detail.is_empty() => {
+            "SSH の中継を op-reason --settings が止めた".to_string()
+        }
+        (Lang::Ja, "stop") => format!("SSH の中継を op-reason --settings が止めた ({detail})"),
         _ => format!("SSH relay {what}"),
     }
 }
@@ -868,6 +876,14 @@ mod tests {
             relay_label(Lang::En, "start", "per-call", ""),
             "SSH relay started (per-call)",
             "the others have no detail"
+        );
+        assert_eq!(
+            relay_label(Lang::En, "stop", "per-call", ""),
+            "SSH relay stopped by op-reason --settings"
+        );
+        assert_eq!(
+            relay_label(Lang::Ja, "stop", "per-call", "1 requests still in progress"),
+            "SSH の中継を op-reason --settings が止めた (1 requests still in progress)"
         );
     }
 

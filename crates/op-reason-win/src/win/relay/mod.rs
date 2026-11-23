@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,13 +26,14 @@ use std::time::{Duration, Instant};
 use op_reason_core::contract;
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::log;
+use op_reason_core::settings::relayinfo::{RELAY_INFO_FILE, RelayInfo};
 use op_reason_core::ssh::decide::{Book, Queue};
 use op_reason_core::ssh::record::{self, ProcRec, Relay};
-use op_reason_core::{messages, time};
+use op_reason_core::{messages, settings, time};
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
 use windows::Win32::System::Threading::{
-    CreateMutexW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    CreateEventW, CreateMutexW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
 };
 use windows::core::HSTRING;
 
@@ -49,6 +50,9 @@ const SWEEP: Duration = Duration::from_secs(60);
 const PARENT_POLL: Duration = Duration::from_secs(10);
 /// How many instances of the pipe wait for clients at once (ansible's forks connect together).
 const LISTENERS: usize = 4;
+/// How long a stop waits for the requests that are already with 1Password (design `2026-11-23-settings-design.md`
+/// §8.2): an unlock prompt may be up.
+const STOP_DRAIN: Duration = Duration::from_secs(25);
 
 /// How a window ended without an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,10 @@ pub(super) struct Shared {
     /// The relay's ancestors at start, nearest first: whether the window in front belongs to the program that started
     /// the relay (design `2026-11-22-front-after-allow-design.md` §5.1).
     pub ancestors: Vec<Ancestor>,
+    /// Its stop event was set: new requests fail at once (design `2026-11-23-settings-design.md` §8.2).
+    pub stopping: AtomicBool,
+    /// Requests being handled now (read, and not yet answered).
+    pub in_flight: AtomicUsize,
 }
 
 impl Shared {
@@ -112,6 +120,8 @@ impl Shared {
             parent_gone: AtomicBool::new(false),
             told_no_prompt: AtomicBool::new(false),
             told_no_answer: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            in_flight: AtomicUsize::new(0),
             toasts: OnceLock::new(),
             ancestors: peer::chain(std::process::id())
                 .into_iter()
@@ -204,7 +214,14 @@ pub fn run(args: &[OsString]) -> i32 {
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let opts = match relay_opts::parse(&args) {
+    // The values of settings.json first, then the options (design 2026-11-23-settings-design.md §8.1)
+    let values = settings::values(
+        app::settings_file()
+            .and_then(|f| std::fs::read(f).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .as_deref(),
+    );
+    let opts = match relay_opts::parse_with(&args, relay_opts::base(&values)) {
         Ok(o) => o,
         Err(e) => {
             say(&e.message(lang));
@@ -237,6 +254,8 @@ pub fn run(args: &[OsString]) -> i32 {
     ));
     let attached = !detach_console();
     let shared = Arc::new(Shared::new(opts));
+    watch_stop(&shared);
+    write_info(&shared, &args);
     let parent = Parent::find();
     shared.relay_record("start", parent.as_ref().map(Parent::rec));
     watch_parent(&shared, parent);
@@ -258,13 +277,19 @@ pub fn run(args: &[OsString]) -> i32 {
     }
     if attached {
         let s = Arc::clone(&shared);
-        console::on_close(Box::new(move || s.relay_record("exit", None)));
+        console::on_close(Box::new(move || {
+            s.relay_record("exit", None);
+            remove_info(&s);
+        }));
         let shared = Arc::clone(&shared);
         let _ = thread::Builder::new().spawn(move || {
             loop {
                 thread::sleep(Duration::from_millis(250));
                 if console::interrupted() {
-                    console::without_close_hook(|| shared.relay_record("exit", None));
+                    console::without_close_hook(|| {
+                        shared.relay_record("exit", None);
+                        remove_info(&shared);
+                    });
                     std::process::exit(130);
                 }
             }
@@ -321,6 +346,80 @@ fn status(opts: &Opts, lang: Lang) -> i32 {
             1
         }
     }
+}
+
+/// `relay.json`: the relay's process, pipe and values, for `op-reason --settings` (design
+/// `2026-11-23-settings-design.md` §8.2). Quiet when it cannot be written.
+fn write_info(shared: &Shared, args: &[String]) {
+    let Some(dir) = &shared.state_dir else {
+        return;
+    };
+    let info = RelayInfo {
+        v: 1,
+        pid: std::process::id(),
+        exe: std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        pipe: shared.opts.pipe.clone(),
+        mode: shared.opts.mode.as_str().to_owned(),
+        time_limit: shared.opts.limit_secs,
+        answer_wait: shared.opts.answer_secs,
+        args: args.to_vec(),
+    };
+    let _ = settings::replace(&dir.join(RELAY_INFO_FILE), &info.render());
+}
+
+/// Removes `relay.json` when it is this relay's.
+fn remove_info(shared: &Shared) {
+    let Some(file) = shared.state_dir.as_ref().map(|d| d.join(RELAY_INFO_FILE)) else {
+        return;
+    };
+    let mine = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| RelayInfo::parse(&t))
+        .is_some_and(|i| i.pid == std::process::id());
+    if mine {
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
+/// A handle that a thread waits on for the life of the relay.
+struct Waitable(HANDLE);
+
+// SAFETY: an event handle may be waited on from any thread; it is never closed (the relay exits after it).
+unsafe impl Send for Waitable {}
+
+/// The stop event, `Local\op-reason-ssh-relay-stop-<pid>` (design `2026-11-23-settings-design.md` §8.2): when it is
+/// set, new requests fail at once, the requests in progress get up to 25 seconds, and the relay records `stop`,
+/// removes `relay.json` and exits with 0.
+fn watch_stop(shared: &Arc<Shared>) {
+    let name = format!(r"Local\op-reason-ssh-relay-stop-{}", std::process::id());
+    // SAFETY: a valid name; the handle lives until the process exits.
+    let Ok(event) = (unsafe { CreateEventW(None, true, false, &HSTRING::from(name)) }) else {
+        return;
+    };
+    let event = Waitable(event);
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new().spawn(move || {
+        let event = event;
+        // SAFETY: a valid event handle.
+        unsafe {
+            let _ = WaitForSingleObject(event.0, INFINITE);
+        }
+        shared.stopping.store(true, Ordering::SeqCst);
+        let t0 = Instant::now();
+        while shared.in_flight.load(Ordering::SeqCst) > 0 && t0.elapsed() < STOP_DRAIN {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let left = shared.in_flight.load(Ordering::SeqCst);
+        if left > 0 {
+            shared.relay_note("stop", format!("{left} requests still in progress"));
+        } else {
+            shared.relay_record("stop", None);
+        }
+        remove_info(&shared);
+        console::without_close_hook(|| std::process::exit(0));
+    });
 }
 
 /// The mutex that keeps one relay per logon session, while it is held.
