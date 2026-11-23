@@ -106,7 +106,9 @@ references (`account.json`, forgotten by `forget-accounts`).
 - `relay.running` is a state rather than a choice, but it has the same three operations, so that a script can ask for
   a running relay in the same `check` and `set` as the rest. `relay start|stop|restart` are its words for people
   (§7.1).
-- `skill.folder.<folder>` takes an absolute folder; the names of folders compare without regard to case.
+- `skill.folder.<folder>` takes an absolute folder; the names of folders compare without regard to case. A folder in a
+  WSL distribution's share (`\\wsl.localhost\…`, `\\wsl$\…`) is refused: links cannot be told through the share
+  (§3), and `skill.wsl.<distribution>` is the place for a distribution's own skills folder.
   `skill.wsl.<distribution>` takes a name of `wsl.exe --list` (letters, digits, `.`, `_`, `-`).
 
 ## 5. The layer
@@ -177,15 +179,18 @@ running is listed as not checked: `list` never starts one. Naming a distribution
 `wsl.exe` start it.
 
 `get` prints the value alone (`on`, `per-call`, `60m`); a value that could not be read prints nothing and a line on
-stderr.
+stderr. For the relay's file settings the value is the one in `settings.json` (what the relay starts with); when the
+running relay's own value is known (§8.2) and differs, `list` and `get --json` say so (`relay-differs`).
 
 `check` prints one line per wanted value: `same` or `different`, with the value now and why (for example
-`relay.mode: different: show-only (the running relay; settings.json says per-call): restart the relay`).
+`relay.mode: different: the running relay (pid 4242) uses show-only: restart it`). A relay file setting is the same when
+`settings.json` holds the wanted value and the running relay, when its values are known, runs with it; a relay of
+0.6.0, which does not tell its values, does not make it different.
 
 `--json` (`list`, `get`, `check`):
 
 ```json
-{"v":1,"same":false,"settings":[{"name":"relay.mode","kind":"file","wanted":"per-call","value":"show-only","same":false,"state":"relay-differs","detail":{"file":"per-call","relay":"show-only","pid":4242},"where":"C:\\Users\\<you>\\AppData\\Local\\op-reason\\settings.json"}]}
+{"v":1,"same":false,"settings":[{"name":"relay.mode","kind":"file","wanted":"per-call","value":"per-call","same":false,"state":"relay-differs","detail":{"relay":"show-only","pid":4242},"where":"C:\\Users\\<you>\\AppData\\Local\\op-reason\\settings.json"}]}
 ```
 
 `state` is a code (`ok`, `missing`, `relay-differs`, `task-differs`, `task-off`, `other-task`, `old`, `changed`,
@@ -212,7 +217,8 @@ whether each was done, and the caller (a person or Claude Code, as for `op` call
 
 - On WSL, `op-reason --settings …` runs `op-reason.exe --settings …` (found as for calls: `OPREASON_EXE`, else `PATH`)
   with the same arguments, the terminal's input and output, and returns its exit code; 127 when it cannot be started.
-  A folder given as a WSL path (`skill.folder./mnt/d/agents/skills`) is turned into a Windows path with `wslpath -w`.
+  A folder given as a WSL path (`skill.folder./mnt/d/agents/skills`) is turned into a Windows path with `wslpath -w`;
+  one inside the distribution becomes a `\\wsl.localhost\…` path, which `op-reason.exe` refuses (§4).
   It passes the caller's kind (Claude Code or a person) in `OPREASON_SETTINGS_CALLER` through `WSLENV`, for the record.
   After a `set` of `lang` that succeeded, it updates its own copy of the language (`lang.json`).
 - The PowerShell entry (the fallback where Smart App Control blocks `op-reason.exe`) knows `--settings` as a wrapper
@@ -235,8 +241,12 @@ icon setting (second pull request) applies at once (§12).
   pipe, the mode and times it runs with, and its arguments. It removes the file when it exits by itself. A reader trusts
   the file only when its process ID is the one that answers on the pipe (`GetNamedPipeServerProcessId`); a relay of
   0.6.0 writes none, and its values are then unknown.
-- The relay waits on a named event, `Local\op-reason-ssh-relay-stop-<pid>`. When it is set, the relay records
-  `ssh-relay` `stop`, removes `relay.json` and exits with 0. op-reason sets it only while it holds the lock (§9.4).
+- The relay waits on a named event, `Local\op-reason-ssh-relay-stop-<pid>`. When it is set, the relay fails new
+  requests at once (`SSH_AGENT_FAILURE`), lets the requests that are already with 1Password finish (at most 25 seconds:
+  an unlock prompt may be up), records `ssh-relay` `stop`, removes `relay.json` and exits with 0. op-reason sets it only
+  while it holds the lock (§9.4), so no window of the relay is open then; the requests that the lock does not cover are
+  those passing on an earlier answer and those that wait for 1Password without a window (`2026-11-17-ssh-relay-design.md`
+  §5.5), and the wait lets them finish.
 
 `--status`, its output and its exit codes do not change.
 
@@ -263,19 +273,21 @@ icon setting (second pull request) applies at once (§12).
 
 | Wanted | What op-reason does |
 | --- | --- |
-| `relay.autostart on` | makes the task when it is missing, and then starts the relay when none answers; makes it again when its shape differs, and when op-reason's task runs the relay, stops it with the lock and starts it again, so that the new shape (the new exe) runs. A task that is there and right is left as it is, also when it is turned off |
+| `relay.autostart on` | makes the task when it is missing, and then starts the relay when none answers; makes it again when its shape differs, and when op-reason's task runs the relay, stops it with the lock and starts it again, so that the new shape (the new exe) runs. A task that is there and right is left as it is, also when it is turned off. While a relay that op-reason's task did not start answers (another task's, a terminal's), the task is made turned off and the note says how to start it later: turned on, it would start `op-reason.exe` every minute, which exits at once while the other relay runs, and each start of the console program flashes a console window |
 | `relay.autostart off` | stops the relay when op-reason's task runs it (with the lock), and removes the task |
 | `relay.running on` | nothing when a relay answers (whoever started it); else turns op-reason's task on and runs it, and waits up to 15 seconds for the pipe to answer. Without op-reason's task: fails, saying to turn `relay.autostart` on (op-reason starts the relay from its task only, so that the relay has a live parent: `2026-11-17-ssh-relay-design.md` §8 and §15) |
-| `relay.running off` | turns op-reason's task off and stops the relay when op-reason's task runs it (with the lock); turns the task off when no relay answers; fails when the relay that answers was started otherwise (another task, a terminal) |
+| `relay.running off` | turns op-reason's task off and stops the relay when op-reason's task runs it (with the lock); turns the task off when no relay answers; when the relay that answers was started otherwise (another task, a terminal), turns op-reason's task off and fails for that relay, which it never stops |
 | `relay restart` | with the lock: stops the relay of op-reason's task and runs the task, waits for the pipe |
-| a file value of the relay changed by `set` | when op-reason's task runs the relay and the relay's values (§8.2) differ from the file, or are unknown, restarts it; when another task or a terminal started it, reports the difference (exit 1) |
+| a relay file value in `set` | after the file is written: when op-reason's task runs the relay and the relay's values (§8.2) differ from the file's, restarts it, whether or not this `set` changed the file (so that `check` and then `set` end the same); when its values are unknown (a relay of 0.6.0), restarts it only when this `set` changed the file; when another task or a terminal started the relay and its values differ, reports it (exit 1) |
 
 ### 9.3 Stop
 
 A stop turns op-reason's task off and ends the relay: it stays stopped, also after the next logon, until `relay start`
 (or `set relay.running on`, or `set relay.autostart on` after `off`). The window and the menu of the icon say so. A
 task turned off is not a difference of `relay.autostart` (the task is there and right) but of `relay.running`
-(`task-off`): a script that wants the relay running finds it in its `check`.
+(`task-off`) when no relay answers: a script that wants the relay running finds it in its `check`. `relay.running on` is
+the same as long as some relay answers on the pipe. While op-reason's task is on and another relay answers, `list` and
+`check` warn on `relay.autostart` (`other-relay`): the task starts `op-reason.exe` every minute, which exits at once.
 
 ### 9.4 The lock
 
@@ -285,7 +297,8 @@ waiting at most two seconds. Without it nothing is stopped: "the relay has a win
 1Password: answer it and try again" (exit 1). The lock is held until the relay has ended, and for a restart until the
 new relay answers, so that no window opens in between.
 
-The relay ends first through its stop event (§8.2), then, after five seconds, through `TerminateProcess`.
+The relay ends through its stop event (§8.2); op-reason waits up to 30 seconds for it, then ends it with
+`TerminateProcess` (a relay of 0.6.0 has no stop event and is ended so at once).
 
 ### 9.5 Other tasks
 
@@ -486,8 +499,9 @@ task code:
 | `Format-OpReasonRelayState` (the lines of the state) | the lines of `check` |
 
 The move, once: stop the relay of `\pjp\op-reason-ssh-relay` (with the lock), remove that task, then
-`set relay.autostart=on …`. While both tasks exist, the one whose relay starts first serves; op-reason names the other
-(§9.5).
+`set relay.autostart=on …`, which makes op-reason's task and starts its relay. In the other order, op-reason makes its
+task turned off while the old relay runs (§9.2), names the old task (§9.5), and `relay start` starts op-reason's relay
+once the old one is gone.
 
 ## 19. Checks with the real app
 
@@ -509,4 +523,8 @@ words (`--settings window`). Each goes into the table below.
 
 | Decision | Why |
 | --- | --- |
-| (filled in while implementing) | |
+| A stop drains: new requests fail, those with 1Password finish within 25 seconds, then the relay exits; op-reason waits 30 seconds before `TerminateProcess` (builder check) | the lock covers the relay's windows and the first request of a call, not requests passing on an earlier answer or waiting for 1Password without a window; cutting one of those while 1Password shows an unlock prompt is the anti-goal of §2 |
+| `get` prints the file's value of a relay setting; `check` and `set` also look at the running relay's values, and `set` restarts op-reason's task's relay whenever they differ from the file (builder check) | the file is what the relay starts with; `check` and then `set` must end the same, also after the window changed the file without a restart |
+| With another relay answering, `relay.autostart on` makes the task turned off; `relay.running on` is the same; `relay.running off` turns op-reason's task off and fails for the other relay (builder check) | a task turned on would start `op-reason.exe` every minute, which exits at once and flashes a console window, until the other relay stops |
+| `skill.folder.` refuses folders of the WSL share (builder check) | links cannot be told through the share; `skill.wsl.<distribution>` is the place inside a distribution |
+| `SkillNow` keeps the state behind a link and names the link apart (not a state of its own) | `off` must tell "nothing of op-reason's is there" (the same) from "op-reason's file is behind a link" (refused) |

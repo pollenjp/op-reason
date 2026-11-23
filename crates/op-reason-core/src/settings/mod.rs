@@ -4,8 +4,10 @@
 pub mod catalog;
 pub mod cli;
 pub mod file;
+pub mod skill;
 pub mod task;
 pub mod values;
+pub mod wsl;
 
 pub use file::{
     COPY_FILE, SETTINGS_FILE, VERSION, Values, edit, parse, put, read, remove, render, replace,

@@ -64,6 +64,9 @@ impl Name {
                     if !absolute(folder) {
                         return Err(Usage::RelativeFolder(folder.to_owned()));
                     }
+                    if wsl_share(folder) {
+                        return Err(Usage::WslShare(folder.to_owned()));
+                    }
                     Name::SkillFolder(trim_folder(folder).to_owned())
                 } else {
                     return Err(Usage::UnknownName(text.to_owned()));
@@ -126,6 +129,13 @@ pub fn absolute(folder: &str) -> bool {
         || folder.starts_with('/')
 }
 
+/// A folder in a WSL distribution's share (`\\\\wsl.localhost\\…`, `\\\\wsl$\\…`): links cannot be told through it
+/// (design §4); `skill.wsl.<distribution>` is the place inside a distribution.
+pub fn wsl_share(folder: &str) -> bool {
+    let lower = folder.replace('/', "\\").to_ascii_lowercase();
+    lower.starts_with(r"\\wsl.localhost\") || lower.starts_with(r"\\wsl$\")
+}
+
 /// A folder without its trailing separators, unless it is a root (`C:\`, `/`).
 fn trim_folder(folder: &str) -> &str {
     let trimmed = folder.trim_end_matches(['\\', '/']);
@@ -169,6 +179,8 @@ pub enum Usage {
     BadDistro(String),
     /// A folder that is not absolute.
     RelativeFolder(String),
+    /// A folder in a WSL distribution's share.
+    WslShare(String),
     /// A word or a setting without what must follow it.
     NoValue(String),
     /// A setting named twice in one command.
@@ -281,6 +293,16 @@ mod tests {
             Err(Usage::BadDistro("a;b".into()))
         );
         assert_eq!(Name::parse("nope"), Err(Usage::UnknownName("nope".into())));
+        for share in [
+            r"\\wsl.localhost\Ubuntu\home\me\.codex\skills",
+            r"\\WSL$\Ubuntu\x",
+        ] {
+            assert_eq!(
+                Name::parse(&format!("skill.folder.{share}")),
+                Err(Usage::WslShare(share.into())),
+                "{share}"
+            );
+        }
     }
 
     #[test]
