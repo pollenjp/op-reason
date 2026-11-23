@@ -250,6 +250,7 @@ pub fn run(name: Name, argv: Vec<OsString>) -> i32 {
             return contract::EXIT_USAGE;
         }
         Plan::Log(rest) => return log_viewer(&rest),
+        Plan::Settings(rest) => return crate::settings::run(&rest, lang),
         Plan::Refuse(_) | Plan::Run { .. } => match plan {
             Plan::Run { mode, kind } => (Some(mode), Some(kind)),
             _ => (None, None),

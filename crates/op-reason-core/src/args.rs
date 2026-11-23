@@ -334,6 +334,8 @@ pub enum Plan {
     UsageError(String),
     /// Run the log viewer with these arguments.
     Log(Vec<OsString>),
+    /// `--settings …`: the settings, on Windows by `op-reason.exe` (design `2026-11-23-settings-design.md` §7).
+    Settings(Vec<OsString>),
     /// Refuse the call: log it, print a message, exit 2.
     Refuse(Refusal),
     /// Run `op`.
@@ -379,6 +381,9 @@ pub fn plan(name: Name, args: &[OsString], env: &dyn Fn(&str) -> Option<String>)
         }
         if first == "--log" {
             return (Parsed::default(), Plan::Log(rest.to_vec()));
+        }
+        if first == "--settings" {
+            return (Parsed::default(), Plan::Settings(rest.to_vec()));
         }
         if name == Name::OpReason && rest.is_empty() {
             if first == "--help" || first == "-h" {

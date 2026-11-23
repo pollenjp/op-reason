@@ -157,6 +157,7 @@ pub fn run() -> i32 {
             return contract::EXIT_USAGE;
         }
         Plan::Log(rest) => return log_viewer(&rest, lang),
+        Plan::Settings(rest) => return super::settings::run(&rest, lang),
         Plan::Refuse(refusal) => {
             let line = match refusal {
                 Refusal::EmptyReason => messages::empty_reason(lang),

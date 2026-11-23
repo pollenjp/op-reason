@@ -15,7 +15,7 @@
 #   Never runs op: for every line below the fake op is not called once and fish's stderr stays empty
 #   op <Tab>: --reason and the top-level commands (item, read, run, vault, whoami, help, …); no files
 #   op --<Tab>: --reason and op's global flags (--account, --format, --help, --version), and the wrapper options
-#     (--skill, --log, --completion) as the first argument only
+#     (--skill, --log, --completion, --settings) as the first argument only
 #   --reason: not offered again once written (--reason X, --reason=X); while its value is written, neither commands
 #     nor files are offered
 #   Command path: values of --reason, --account and the like are not read as commands, so op item <Tab> gives the
@@ -119,7 +119,7 @@ else
   ng "op <Tab> gives --reason and the top-level commands, no files" "$(shown)"
 fi
 cands "op --"
-if has --reason --account --format --help --version --skill --log --completion && quiet; then
+if has --reason --account --format --help --version --skill --log --completion --settings && quiet; then
   ok "op --<Tab> gives --reason, the global flags and the wrapper options"
 else
   ng "op --<Tab> gives --reason, the global flags and the wrapper options" "$(shown)"
@@ -173,7 +173,7 @@ fi
 
 echo "== Flags"
 cands "op item get --"
-if has --vault --fields --reveal --otp --account --reason && lacks --out-file --skill --log && quiet; then
+if has --vault --fields --reveal --otp --account --reason && lacks --out-file --skill --log --settings && quiet; then
   ok "op item get --<Tab> gives item get's flags, the global flags and --reason, not other commands' flags"
 else
   ng "op item get --<Tab> gives item get's flags, the global flags and --reason, not other commands' flags" "$(shown)"

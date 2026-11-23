@@ -15,6 +15,8 @@ mod procfs;
 #[cfg(unix)]
 mod runner;
 #[cfg(unix)]
+mod settings;
+#[cfg(unix)]
 mod signals;
 #[cfg(unix)]
 mod ssh;

@@ -102,6 +102,7 @@ complete -c __OPREASON_CMD__ -n '__op_reason_at; and __op_reason_no_reason' -a -
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l skill -d 'Print the guide for AI agents (op-reason)'
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l log -d 'Show who called op and why (op-reason)'
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l completion -x -a fish -d 'Print the fish completion (op-reason)'
+complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l settings -d "op-reason's settings: list, get, set, check (op-reason)"
 
 # --- Global flags
 

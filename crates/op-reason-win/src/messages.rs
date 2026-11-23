@@ -31,6 +31,8 @@ Wrapper options (first argument only)
   op-reason --skill     a guide for AI agents (SKILL.md)
   op-reason --log       who called op and why: the last hour by default;
                         --since 1d, --all, --json
+  op-reason --settings  op-reason's settings: list, get, set, check
+                        (op-reason --settings help)
 
 AI agents: run op-reason --skill once to learn how to call op here.
 
@@ -70,6 +72,8 @@ wrapper の option (最初の引数のときだけ)
   op-reason --skill     AI エージェント向けの手引き (SKILL.md)
   op-reason --log       誰が何の理由で op を呼んだか。既定は直近 1 時間
                         (--since 1d・--all・--json)
+  op-reason --settings  op-reason の設定: list・get・set・check
+                        (op-reason --settings help)
 
 AI エージェントは、最初に op-reason --skill を打って呼び方を読んでください。
 
@@ -238,6 +242,14 @@ mod tests {
             assert!(relay_status(lang, p, Some(42)).contains("42"));
             assert!(relay_status(lang, p, None).contains(p));
             assert!(relay_running(lang).contains("--status"));
+        }
+    }
+
+    /// The usage names the settings.
+    #[test]
+    fn usage_names_the_settings() {
+        for lang in [Lang::En, Lang::Ja] {
+            assert!(usage_full(lang, "9.8.7").contains("op-reason --settings"));
         }
     }
 

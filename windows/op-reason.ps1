@@ -82,6 +82,7 @@ powershell.exe を挟んで op.exe を起こし、1Password の承認をその 1
 
 wrapper の option (最初の引数のときだけ)
   op-reason --skill     AI エージェント向けの手引き (SKILL.md)
+  op-reason --settings  op-reason の設定 (op-reason.exe が扱います。この入口では変えられません)
 
 PowerShell では、op run の -- を '--' と引用符で囲んでください (囲まない -- は PowerShell が取ります)。
 cmd.exe やほかの program からは op-reason.cmd を呼びます (cmd.exe が引数を読み直すので、空白の無い
@@ -112,6 +113,7 @@ op-reason {0} は非公式の道具です (1Password の製品ではありませ
       answerFirst   = 'その承認の画面に応えてから (窓の出ていない画面なら拒否してから)、打ち直してください。'
       unknown       = '(分からない)'
       completion    = 'fish の補完は WSL の op-reason (op-reason --completion fish) が出します。'
+      settings      = '設定は op-reason.exe が扱います (op-reason.exe --settings)。この PowerShell の入口では変えられません。'
       completionUsage = '--completion は fish だけです: --completion fish [<コマンド>] (渡されたもの: {0})'
       logInfo       = 'Windows の記録は {0} にあります (1 行 1 件の JSON)。PowerShell なら: Get-Content {0} | ConvertFrom-Json | Format-Table time, event, reason'
       helpReason    = '(理由なし: help)'
@@ -139,6 +141,7 @@ Without a reason (no approval prompt)
 
 Wrapper options (first argument only)
   op-reason --skill     a guide for AI agents (SKILL.md)
+  op-reason --settings  op-reason's settings (op-reason.exe changes them; this entry does not)
 
 In PowerShell, quote the -- of op run as '--' (PowerShell takes an unquoted --).
 From cmd.exe and other programs, call op-reason.cmd (cmd.exe re-parses the
@@ -169,6 +172,7 @@ Usage: op-reason --reason "<why you call op>" <op arguments...>
     answerFirst   = 'Answer that approval prompt first (deny it if it came without the window), then run this again.'
     unknown       = '(unknown)'
     completion    = 'The fish completion comes from op-reason on WSL (op-reason --completion fish).'
+    settings      = 'The settings come from op-reason.exe (op-reason.exe --settings); this PowerShell entry does not change them.'
     completionUsage = '--completion supports only fish: --completion fish [<command>] (got: {0})'
     logInfo       = 'The Windows log is {0} (one JSON object per line). In PowerShell: Get-Content {0} | ConvertFrom-Json | Format-Table time, event, reason'
     helpReason    = '(no reason: help)'
@@ -592,6 +596,7 @@ function Get-Plan([string]$name, [string[]]$argv) {
       return $plan
     }
     if ($first -ceq '--log') { $plan.action = 'log'; $plan.rest = $rest; return $plan }
+    if ($first -ceq '--settings') { $plan.action = 'settings'; $plan.rest = $rest; return $plan }
     if ($name -eq 'op-reason' -and $rest.Length -eq 0) {
       if ($first -ceq '--help' -or $first -ceq '-h') { $plan.action = 'usage'; return $plan }
       if ($first -ceq '--version' -or $first -ceq '-V') { $plan.action = 'version'; return $plan }
@@ -936,6 +941,7 @@ switch ($plan.action) {
     exit 0
   }
   'completion' { Write-Err $M.completion; exit 2 }
+  'settings' { Write-Err $M.settings; exit 2 }
   'error' { Write-Err $plan.message; exit 2 }
   'log' { Write-Output ($M.logInfo -f (Join-Path (Get-StateDir) 'log.jsonl')); exit 0 }
 }

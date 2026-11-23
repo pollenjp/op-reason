@@ -50,6 +50,7 @@ fn call_table() {
             Plan::Completion { .. } => "completion",
             Plan::UsageError(_) => "error",
             Plan::Log(_) => "log",
+            Plan::Settings(_) => "settings",
             Plan::Refuse(_) => "refuse",
             Plan::Run { .. } => "run",
         };
