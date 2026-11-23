@@ -200,7 +200,7 @@ op --reason "staging の VM を作るのに Proxmox の API の token を読む"
 | `op-reason --skill` | AI エージェント向けの手引き (SKILL.md)。断るときの文からも案内します |
 | `op-reason --completion fish [<コマンド>]` | `op` (か `<コマンド>`) の fish の補完 |
 | `op-reason-log`・`op-reason --log` | 記録を見る (下) |
-| `op-reason --settings …` | op-reason の設定: `list`・`get`・`set`・`check`・SSH の中継 ([設定](#設定)) |
+| `op-reason --settings …` | op-reason の設定: `list`・`get`・`set`・`check`・SSH の中継。後ろに何も無ければ設定の窓 ([設定](#設定)) |
 
 ### 記録
 
@@ -441,7 +441,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 `op-reason --settings` は op-reason の設定を読み、変えます。op-reason が自分で読む値 (`%LOCALAPPDATA%\op-reason\settings.json`
 に置く) と、Windows・タスク スケジューラー・Claude Code がほかの所から読むもの (中継のタスク・動いている中継・skill の
 ファイル) です。どの設定にも同じ 3 つの操作があります: `get` が今の値を読み、`set` がそうし (打ち直しても何も変わりません)、
-`check` が望む値と今の値を比べます。設計: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md) (英語)。
+`check` が望む値と今の値を比べます。後ろに何も付けなければ、同じことをボタンでする
+[設定の窓](#窓スタートメニューアイコン) を開きます。設計: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md) (英語)。
 
 | 設定 | 値 (既定) | 置き場 |
 | --- | --- | --- |
@@ -451,6 +452,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 | `relay.answer-wait` | `<数>[s\|m]`。数だけなら秒。`60m` まで (`60s`) | `settings.json` |
 | `relay.autostart` | `on`・`off` (`off`) | op-reason のタスク `\op-reason-ssh-relay-<あなたの SID>` |
 | `relay.running` | `on`・`off` | `\\.\pipe\op-reason-ssh-agent` で答える中継 |
+| `relay.tray-icon` | `on`・`off` (`on`) | `settings.json`。通知領域の中継のアイコンがすぐに従います |
+| `start-menu` | `on`・`off` (`off`) | スタートメニューのプログラムのフォルダ (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`) の `op-reason.lnk` |
 | `skill.windows` | `on`・`off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Windows の Claude Code) |
 | `skill.wsl.<distro>` | `on`・`off` (`off`) | その WSL の distro の `~/.claude/skills/op-reason/SKILL.md` |
 | `skill.folder.<フォルダ>` | `on`・`off` (`off`) | `<フォルダ>\op-reason\SKILL.md` (ほかのエージェントやプロジェクト向け) |
@@ -485,6 +488,30 @@ op-reason --settings set skill.windows on          # Claude Code が見つける
   して渡します)。PowerShell の入口では設定を変えられません。
 - 変えたことはすべて、打った人とともにログに残ります (`op-reason --log`)。エージェントには、ユーザーに頼まれたときだけ
   設定を変えるよう伝えてあります。`op` と同じく、あなたのアカウントのプログラムは変えられてしまいます。
+
+### 窓・スタートメニュー・アイコン
+
+後ろに何も付けない `op-reason --settings` と、`op-reason.exe` のダブルクリックは、設定の窓を開いてすぐに戻ります
+(窓はログオンごとに 1 つで、もう一度起こすと前に出ます)。窓は `lang` の言語で話し、言語を変えるとすぐに切り替わります:
+
+- **SSH の中継**: 中継が動いているか・その process・モード・誰が起こしたかを 1 行で出します。op-reason が手を出せない
+  とき (ほかのタスクが起こした中継など) は **起こす**・**止める**・**起こし直す** が灰色になります。チェックボックスは
+  `relay.autostart` と `relay.tray-icon` です。モードと時間は変えたときに書き、中継が次に起きるときに効きます:
+  **適用** が問いの後に op-reason の中継をその値で起こし直します (1Password がもう一度尋ね、覚えた答えは忘れます)。
+- **AI エージェント向けの skill**: 置き場とその状態です。**置く・更新する**・**消す**・**確かめる**・**フォルダを足す…**。
+  動いていない WSL の distro は窓を開いたときには見に行きません。その行で操作すると、それで起こします。
+- **スタートメニューと記録**: `start-menu`・記録のフォルダ (**開く**)・リンクのために覚えたアカウント (**忘れる**)。
+- どの操作もコマンドラインと同じ層を通り (`set`。`settings.json` に置く値は、中継を起こし直さずに書きます)、窓とは別の
+  thread で動き、`from: window` として記録に残ります。
+
+`set start-menu on` はスタートメニューに **op-reason** を出し、Windows の検索で窓を見つけられるようにします:
+`op-reason.lnk` がこの `op-reason.exe` を `--settings` 付きで起こします (コンソールはタスクバーに一瞬だけ出ます)。exe を
+動かしたら、`set start-menu on` がショートカットを作り直します。同じ名前でも op-reason のものでないショートカットには触りません。
+
+中継は動いている間、通知領域に鍵のアイコンを出します (Windows 11 は新しいアイコンを `^` の中に入れます。タスクバーへ
+ドラッグすると常に見えます)。クリックで設定の窓が開きます。メニューは中継の行を出し、設定や記録のフォルダを開き、
+op-reason の中継を起こし直し・止め (op-reason のタスクが起こしたのでない中継では灰色)、アイコンを隠します
+(`relay.tray-icon off`)。メニューの操作は `op-reason.exe --settings …` を別の process で起こし、`from: tray` として記録に残ります。
 
 ## 知っておくこと
 

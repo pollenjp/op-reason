@@ -320,11 +320,11 @@ S25〜S31 を足した PR の op-reason 0.5.0 (Windows は PR の Windows exe �
 3 つ目の build では、応答しなくなった窓は無く (窓は 6 回)、押す前に 1Password の画面も点も出なかった。窓と一緒に出る通知の
 差出人は「Windows PowerShell」 (op-reason はその AppUserModelID を借りている)。終わりにタスクを消し、中継を止めた。
 
-## 設定を確かめること (G1〜G11)
+## 設定を確かめること (G1〜G19)
 
 `op-reason --settings` ([2026-11-23-settings-design.md](superpowers/specs/2026-11-23-settings-design.md)、英語)。CI は
 GitHub の runner (管理者として動く) でテスト用の名前のタスクを作り、`wsl.exe` は偽物を使います。ここで確かめるのは、
-管理者でないユーザー・本物のログオン・本物の WSL と 1Password です。約 20 分で、ログオフが 1 回、1Password の確認が 2 回です。
+管理者でないユーザー・本物のログオン・本物の WSL と 1Password です。約 30 分で、ログオフが 2 回、1Password の確認が 3 回です。
 
 用意:
 
@@ -351,7 +351,15 @@ GitHub の runner (管理者として動く) でテスト用の名前のタス�
 | G8 | `& $exe --settings set relay.mode show-only`。そのあと G4 と同じ ssh | `relay.mode: per-call → show-only` と、中継を起こし直した行。`get relay.mode --json` に `relay-differs` が無い。署名ごとに 1Password が確認し (show-only)、op-reason の窓が誰がなぜかを出す。戻すには `set relay.mode default` |
 | G9 | `& $exe --settings set skill.windows on` (か用意 4 の選んだフォルダ)。出た `SKILL.md` を開く。Windows の Claude Code で `/skills` | 手引きの閉じる `---` の次の行に `<!-- placed by op-reason <版>: …`。Claude Code の一覧に op-reason の skill。`set skill.windows off` で消える (空の `op-reason` フォルダも) |
 | G10 | WSL で、この branch の `op-reason` を使って `op-reason --settings set "skill.wsl.$WSL_DISTRO_NAME" on`、そのあと `off` | 印の付いた `~/.claude/skills/op-reason/SKILL.md` ができ、そのあと消える。`~/.claude/skills` が symbolic link (home-manager) なら断り、何も書かない |
-| G11 | `& $exe --settings set relay.autostart off`。用意 3 の `settings.json` を戻す。用意 2 のほかのタスクを有効に戻す | タスクが消え、op-reason のタスクの中継は答えない |
+| G11 | `& $exe --settings` | プロンプトがすぐに戻り、設定の窓が `lang` の言語で前面に開く。読んでいる間は **読み直す** が灰色。中継の行は「動いています · pid … · per-call · op-reason のタスクが起こしたもの」。もう一度 `& $exe --settings` を打つと窓が前に出る。Explorer で `op-reason.exe` をダブルクリックしても同じ (コンソールが一瞬出る) |
+| G12 | 窓で **日本語** を選び、そのあと **English** に戻す | 窓がすぐに日本語になり、そして英語に戻る。間に `& $exe --settings get lang` を打つと `ja` |
+| G13 | 窓で、Windows の行 (か用意 4 の選んだフォルダ) に **置く・更新する**、そのあと **消す**。動いていない WSL の distro に **確かめる** | 行の状態が変わる (「置いてあります (<版>)」・「置いていません」)。確かめた distro が起き、その行が読まれる。`& $exe --log --since 10m` に窓からの `settings` の行。用意 4 の選んだフォルダで確かめるときは、代わりに **フォルダを足す…** を使う。足すと同時に置くので、行はすぐ「置いてあります (<版>)」になり、**置く・更新する** は灰色のまま (置くものが無い)。**消す** で消え、行もなくなる (フォルダを忘れる) |
+| G14 | 窓でモードを `show-only` にする。**適用** を押し、問いに OK。そのあと G4 と同じ ssh | 適用の横の注記が、適用するまで中継は別の値で動くと言う。適用の後、中継の行が `show-only` になり、1Password が署名を確認する。モードを戻して、もう一度 **適用** |
+| G15 | `& $exe --settings set start-menu on`。Windows キーを押して `op-reason` と打つ | スタートメニューが **op-reason** を見つけ、設定の窓が開く (コンソールはタスクバーに一瞬だけ出る)。`set start-menu off` で消える |
+| G16 | 通知領域 (Windows 11 では `^` の中) の中継の鍵 | ツールチップは「op-reason の SSH の中継 · per-call」。クリックで設定の窓が開く。右クリックのメニューに中継の行・**op-reason の設定を開く**・**記録のフォルダを開く**・**中継を起こし直す**・**中継を止める**・**このアイコンを隠す**。**中継を起こし直す** で、15 秒以内に別の process ID の中継が答える (`& $exe --ssh-agent --status` がそれを出す)。**このアイコンを隠す** でアイコンがすぐに消え、`set relay.tray-icon on` で戻る |
+| G17 | Explorer を起こし直す (タスク マネージャー → **エクスプローラー** → **再起動**) | 数秒で中継のアイコンが戻る |
+| G18 | 中継が動いている (G2 のタスク) まま、ログオフしてログオンし直す | ログオンの後、通知領域に中継のアイコンがある (タスクがタスクバーより先に中継を起こすことがある) |
+| G19 | `& $exe --settings set relay.autostart off`。用意 3 の `settings.json` を戻す。用意 2 のほかのタスクを有効に戻す | タスクが消え、op-reason のタスクの中継は答えず、そのアイコンも消える |
 
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
 

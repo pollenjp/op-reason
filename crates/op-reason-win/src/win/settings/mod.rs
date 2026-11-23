@@ -1,10 +1,14 @@
 //! `op-reason.exe --settings …` (design `2026-11-23-settings-design.md`): the core's engine on Windows. [`WinSystem`]
 //! implements the core's `System` with Task Scheduler ([`taskschd`]), the relay's pipe and named objects
-//! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records.
+//! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records. Without
+//! more words it opens the settings window ([`window`]).
 
+mod controls;
 mod relayctl;
+mod shortcut;
 mod taskschd;
 mod user;
+mod window;
 mod wslexe;
 
 use std::cell::OnceCell;
@@ -16,7 +20,9 @@ use std::time::Duration;
 use op_reason_core::contract;
 use op_reason_core::lang::Lang;
 use op_reason_core::settings::cli;
-use op_reason_core::settings::engine::{Change, Ctx, OtherTask, Place, System};
+use op_reason_core::settings::engine::{
+    Change, Ctx, OtherTask, Place, ShortcutAct, ShortcutNow, System,
+};
 use op_reason_core::settings::relayinfo::RelayInfo;
 use op_reason_core::settings::skill::{self, SkillAct, SkillNow};
 use op_reason_core::settings::task::{self, TaskNow, TaskWant};
@@ -69,18 +75,45 @@ pub fn run(args: &[OsString], lang: Lang) -> i32 {
             return contract::EXIT_USAGE;
         }
     };
+    match cmd {
+        cli::Command::Window => return launch(lang),
+        cli::Command::WindowHere => return window::run(lang),
+        _ => {}
+    }
     // SAFETY: initializes COM for this thread (Task Scheduler); a thread initialized already is fine.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let sys = WinSystem::new();
+    // The relay's icon runs its menu's actions as op-reason --settings, and says so (design §12, §15)
+    let from = match std::env::var(crate::relay_opts::SETTINGS_FROM).as_deref() {
+        Ok("tray") => "tray",
+        _ => "cli",
+    };
     let ctx = Ctx {
         sys: &sys,
         version: app::VERSION,
         skill: app::SKILL,
-        from: "cli",
+        from,
     };
     let mut out = io::stdout().lock();
     let mut err = io::stderr().lock();
     cli::run(cmd, &ctx, lang, &mut out, &mut err)
+}
+
+/// `op-reason --settings` without more words, and a double click on `op-reason.exe` (design §11.1): brings an open
+/// settings window to the front, or starts one in a process of its own without a console, and returns at once.
+pub fn launch(lang: Lang) -> i32 {
+    match window::launch() {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "{}{}",
+                messages::PREFIX,
+                crate::settings_ui::not_started(lang, &e)
+            );
+            contract::EXIT_USAGE
+        }
+    }
 }
 
 /// The system on Windows.
@@ -274,6 +307,14 @@ impl System for WinSystem {
             Place::Folder(f) => skill::local(Path::new(f), true, act, want, app::VERSION),
             Place::Wsl(d) => wslexe::skill(d, act, want, app::VERSION),
         }
+    }
+
+    fn shortcut(&self, act: ShortcutAct) -> Result<ShortcutNow, String> {
+        shortcut::act(act)
+    }
+
+    fn changed(&self) {
+        relayctl::tell_changed();
     }
 
     fn distributions(&self) -> Result<Vec<Distro>, String> {

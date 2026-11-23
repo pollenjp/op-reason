@@ -6,13 +6,15 @@
 //! Threads: the main thread accepts connections; one thread per connection reads its requests, decides and passes them
 //! on, and shows the window when its turn comes ([`ask`]); one forgets decisions once a minute; one watches the relay's
 //! parent process (§15); one waits for Ctrl+C while a console is attached; one records a window that does not appear
-//! within five seconds (design `2026-11-22-front-after-allow-design.md` §12); and, from the first signature that passes
-//! without a window, one shows the toasts (design `2026-11-18-pass-toasts-design.md` §4).
+//! within five seconds (design `2026-11-22-front-after-allow-design.md` §12); one holds the icon in the notification
+//! area ([`tray`], design `2026-11-23-settings-design.md` §12); and, from the first signature that passes without a
+//! window, one shows the toasts (design `2026-11-18-pass-toasts-design.md` §4).
 
 mod ask;
 mod conn;
 mod peer;
 pub(crate) mod pipe;
+mod tray;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -256,6 +258,7 @@ pub fn run(args: &[OsString]) -> i32 {
     let shared = Arc::new(Shared::new(opts));
     watch_stop(&shared);
     write_info(&shared, &args);
+    tray::start(shared.opts.mode.as_str(), shared.opts.task.is_some());
     let parent = Parent::find();
     shared.relay_record("start", parent.as_ref().map(Parent::rec));
     watch_parent(&shared, parent);
@@ -278,6 +281,7 @@ pub fn run(args: &[OsString]) -> i32 {
     if attached {
         let s = Arc::clone(&shared);
         console::on_close(Box::new(move || {
+            tray::remove();
             s.relay_record("exit", None);
             remove_info(&s);
         }));
@@ -287,6 +291,7 @@ pub fn run(args: &[OsString]) -> i32 {
                 thread::sleep(Duration::from_millis(250));
                 if console::interrupted() {
                     console::without_close_hook(|| {
+                        tray::remove();
                         shared.relay_record("exit", None);
                         remove_info(&shared);
                     });
@@ -419,6 +424,7 @@ fn watch_stop(shared: &Arc<Shared>) {
             shared.relay_record("stop", None);
         }
         remove_info(&shared);
+        tray::remove();
         console::without_close_hook(|| std::process::exit(0));
     });
 }

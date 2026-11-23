@@ -3,12 +3,14 @@
 //! (`-d <name> --exec sh -c <script>`, which starts it).
 
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use op_reason_core::settings::catalog;
 use op_reason_core::settings::skill::{self, SkillAct, SkillNow};
 use op_reason_core::settings::wsl::{self, Distro};
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 /// `wsl.exe`, or the fake of the tests (`OPREASON_WSL_EXE`).
 fn exe() -> String {
@@ -26,11 +28,13 @@ struct Ran {
 }
 
 /// Runs `wsl.exe` with `args` (UTF-8 output asked for), `input` on its stdin, for at most `limit`. `Err` when it could
-/// not start or did not end in time.
+/// not start or did not end in time. Its console is never shown (`CREATE_NO_WINDOW`): started by the settings window
+/// or the icon's actions, it would get a console window of its own, or Windows Terminal's, for a moment.
 fn run(args: &[String], input: &[u8], limit: Duration) -> Result<Ran, String> {
     let mut child = Command::new(exe())
         .args(args)
         .env("WSL_UTF8", "1")
+        .creation_flags(CREATE_NO_WINDOW.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

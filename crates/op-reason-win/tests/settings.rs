@@ -7,11 +7,14 @@
 //! real `LOCALAPPDATA`: they run only where `CI` is set (GitHub's runners), and remove the task at the end.
 #![cfg(windows)]
 
+use std::collections::BTreeMap;
+use std::ffi::{OsString, c_void};
 use std::fs;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -99,20 +102,28 @@ impl Sandbox {
             .join("SKILL.md")
     }
 
-    /// `op-reason.exe --settings <args>` with this sandbox's profile and state, and the fake `wsl.exe`.
-    fn settings(&self, args: &[&str]) -> Output {
+    /// The variables that point op-reason at this sandbox: its profile and state, and the fake `wsl.exe`.
+    fn vars(&self) -> Vec<(&'static str, OsString)> {
         let wsl = self.root.join("wsl.exe");
         if !wsl.exists() {
             fs::copy(fake_ssh(), &wsl).unwrap();
         }
+        vec![
+            ("USERPROFILE", self.profile().into()),
+            ("APPDATA", self.root.join("appdata").into()),
+            ("LOCALAPPDATA", self.root.join("lad").into()),
+            ("OPREASON_LANG", "en".into()),
+            ("OPREASON_WSL_EXE", wsl.into()),
+            ("FAKE_WSL_DIR", self.root.join("wsl").into()),
+        ]
+    }
+
+    /// `op-reason.exe --settings <args>` with this sandbox's profile and state, and the fake `wsl.exe`.
+    fn settings(&self, args: &[&str]) -> Output {
         Command::new(exe())
             .arg("--settings")
             .args(args)
-            .env("USERPROFILE", self.profile())
-            .env("LOCALAPPDATA", self.root.join("lad"))
-            .env("OPREASON_LANG", "en")
-            .env("OPREASON_WSL_EXE", &wsl)
-            .env("FAKE_WSL_DIR", self.root.join("wsl"))
+            .envs(self.vars())
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .stdin(Stdio::null())
@@ -275,6 +286,33 @@ fn a_wsl_distribution_goes_through_wsl_exe() {
         !place.contains("(0 bytes in)"),
         "the file goes on stdin: {calls}"
     );
+}
+
+#[test]
+fn the_start_menu_shortcut_is_made_checked_and_removed() {
+    let sb = Sandbox::new("start-menu");
+    let lnk = sb
+        .root
+        .join("appdata")
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("op-reason.lnk");
+    let out = sb.settings(&["set", "start-menu", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(lnk.is_file(), "{}", lnk.display());
+    let out = sb.settings(&["check", "start-menu=on", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let out = sb.settings(&["set", "start-menu", "off"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!lnk.exists());
+    // A file of that name that is not op-reason's shortcut is left alone
+    fs::create_dir_all(lnk.parent().unwrap()).unwrap();
+    fs::write(&lnk, b"not a shortcut").unwrap();
+    let out = sb.settings(&["set", "start-menu", "on"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert_eq!(fs::read(&lnk).unwrap(), b"not a shortcut");
 }
 
 // --- op-reason's scheduled task (on CI only)
@@ -470,4 +508,747 @@ fn a_relay_outside_the_task_is_named_and_never_stopped() {
     let out = s(&["relay", "start"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(relay_answers());
+}
+
+// --- The settings window (on CI only: there is one per logon session, and a desktop may have its own open)
+
+/// The class of the settings window.
+const WINDOW_CLASS: &str = "op-reason-settings";
+
+unsafe extern "system" fn each_window(
+    hwnd: windows::Win32::Foundation::HWND,
+    found: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    let mut name = [0u16; 64];
+    // SAFETY: `found` points at the vector of `settings_windows` for the length of EnumWindows; the buffer outlives
+    // the call.
+    unsafe {
+        let n = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut name);
+        if n > 0 && String::from_utf16_lossy(&name[..n as usize]) == WINDOW_CLASS {
+            (*(found.0 as *mut Vec<windows::Win32::Foundation::HWND>)).push(hwnd);
+        }
+    }
+    true.into()
+}
+
+/// The top-level windows of the settings window's class.
+fn settings_windows() -> Vec<windows::Win32::Foundation::HWND> {
+    let mut found: Vec<windows::Win32::Foundation::HWND> = Vec::new();
+    // SAFETY: the callback pushes into `found`, which outlives the call.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
+            Some(each_window),
+            windows::Win32::Foundation::LPARAM(
+                &mut found as *mut Vec<windows::Win32::Foundation::HWND> as isize,
+            ),
+        );
+    }
+    found
+}
+
+/// Closes every settings window when a window test ends, and waits for their processes to end.
+struct CloseWindows;
+
+impl Drop for CloseWindows {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+        };
+        for hwnd in settings_windows() {
+            // SAFETY: plain calls on a window handle, and a process handle closed here.
+            unsafe {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                let process = OpenProcess(PROCESS_SYNCHRONIZE, false, pid);
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                if let Ok(p) = process {
+                    let _ = WaitForSingleObject(p, 30_000);
+                    let _ = CloseHandle(p);
+                }
+            }
+        }
+    }
+}
+
+/// Starts `op-reason.exe` without arguments in a console of its own (hidden), as a double click in Explorer does, with
+/// the sandbox's variables. Returns its exit code once it ended (within 10 seconds).
+fn start_alone(sb: &Sandbox) -> Option<u32> {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess,
+        PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW, WaitForSingleObject,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+    let mut vars: BTreeMap<String, (OsString, OsString)> = std::env::vars_os()
+        .map(|(k, v)| (k.to_string_lossy().to_uppercase(), (k, v)))
+        .collect();
+    for k in ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"] {
+        vars.remove(k);
+    }
+    for (k, v) in sb.vars() {
+        vars.insert(k.to_owned(), (k.into(), v));
+    }
+    let mut block: Vec<u16> = Vec::new();
+    for (k, v) in vars.values() {
+        block.extend(k.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(v.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    let app = HSTRING::from(exe().as_os_str());
+    let mut line: Vec<u16> = format!("\"{}\"", exe().display())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: SW_HIDE.0 as u16,
+        ..Default::default()
+    };
+    let mut info = PROCESS_INFORMATION::default();
+    // SAFETY: the strings, the block and the structures outlive the calls; the handles are closed here.
+    unsafe {
+        CreateProcessW(
+            &app,
+            Some(PWSTR(line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+            Some(block.as_ptr() as *const c_void),
+            PCWSTR::null(),
+            &startup,
+            &mut info,
+        )
+        .ok()?;
+        let ended = WaitForSingleObject(info.hProcess, 10_000) == WAIT_OBJECT_0;
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(info.hProcess, &mut code).is_ok();
+        let _ = CloseHandle(info.hThread);
+        let _ = CloseHandle(info.hProcess);
+        (ended && got).then_some(code)
+    }
+}
+
+#[test]
+fn op_reason_settings_opens_one_window_and_returns_at_once() {
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let t0 = Instant::now();
+    let out = sb.settings(&[]);
+    let took = t0.elapsed();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        took < Duration::from_secs(2),
+        "op-reason --settings returns at once, not when the window closes (took {took:?})"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+    // Again: the open window comes to the front, and no second one opens
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    // A second window's process (two launches at the same moment) finds the first window and ends
+    let out = sb.settings(&["window"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(settings_windows().len(), 1, "one settings window");
+}
+
+#[test]
+fn a_double_click_opens_the_window_instead_of_the_usage() {
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("double-click");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    assert_eq!(
+        start_alone(&sb),
+        Some(0),
+        "op-reason.exe in a console of its own ends at once"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+}
+
+/// The control `id` of the settings window.
+fn control(
+    window: windows::Win32::Foundation::HWND,
+    id: u16,
+) -> Option<windows::Win32::Foundation::HWND> {
+    // SAFETY: a plain call on a window handle.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(window), i32::from(id)) }.ok()
+}
+
+fn enabled(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    // SAFETY: a plain call on a window handle.
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(hwnd) }.as_bool()
+}
+
+fn title(hwnd: windows::Win32::Foundation::HWND) -> String {
+    let mut buf = [0u16; 128];
+    // SAFETY: the buffer's length is passed.
+    let n = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf) };
+    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
+}
+
+/// Posts a control's notification to the settings window, as a click or a choice of the user does.
+fn notify(window: windows::Win32::Foundation::HWND, id: u16, code: u32) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    let ctl = control(window, id).expect("the control");
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(window),
+            windows::Win32::UI::WindowsAndMessaging::WM_COMMAND,
+            WPARAM(((code as usize) << 16) | usize::from(id)),
+            LPARAM(ctl.0 as isize),
+        );
+    }
+}
+
+#[test]
+fn the_window_changes_the_settings_with_its_controls() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::Controls::LVM_GETITEMCOUNT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BN_CLICKED, CB_SETCURSEL, CBN_SELCHANGE, SendMessageW,
+    };
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-controls");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+    let window = settings_windows()[0];
+    assert_eq!(title(window), "op-reason settings");
+    // The window lies within the work area of its screen (the runner's screen is 768 pixels high)
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        };
+        let mut r = RECT::default();
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: the structures outlive the calls.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(window, &mut r);
+            let _ = GetMonitorInfoW(
+                MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                &mut info,
+            );
+        }
+        let work = info.rcWork;
+        assert!(
+            r.top >= work.top
+                && r.bottom <= work.bottom
+                && r.left >= work.left
+                && r.right <= work.right,
+            "window {:?} in the work area {:?}",
+            (r.left, r.top, r.right, r.bottom),
+            (work.left, work.top, work.right, work.bottom)
+        );
+    }
+    for id in [
+        ids::LANG,
+        ids::RELAY_LINE,
+        ids::START,
+        ids::STOP,
+        ids::RESTART,
+        ids::AUTOSTART,
+        ids::TRAY_ICON,
+        ids::MODE,
+        ids::TIME_LIMIT,
+        ids::ANSWER_WAIT,
+        ids::APPLY,
+        ids::SKILLS,
+        ids::PLACE,
+        ids::REMOVE,
+        ids::CHECK,
+        ids::ADD_FOLDER,
+        ids::START_MENU,
+        ids::RECORDS,
+        ids::OPEN_RECORDS,
+        ids::ACCOUNTS,
+        ids::FORGET,
+        ids::STATUS,
+        ids::REFRESH,
+        ids::CLOSE,
+    ] {
+        assert!(control(window, id).is_some(), "the control {id}");
+    }
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(60), || enabled(refresh)),
+        "the window read the settings (Refresh acts again)"
+    );
+    // The skill list shows the temporary profile's place, and Place or update places SKILL.md there
+    let skills = control(window, ids::SKILLS).unwrap();
+    // SAFETY: a message without pointers.
+    let rows = unsafe { SendMessageW(skills, LVM_GETITEMCOUNT, None, None) }.0;
+    assert!(rows >= 1, "the Windows place at least: {rows}");
+    assert!(!sb.skill_file().exists());
+    notify(window, ids::PLACE, BN_CLICKED);
+    assert!(
+        wait_until(Duration::from_secs(30), || sb.skill_file().is_file()),
+        "Place or update placed {}",
+        sb.skill_file().display()
+    );
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // Choosing 日本語 writes lang ja, and the window speaks Japanese
+    let lang = control(window, ids::LANG).unwrap();
+    // SAFETY: a message without pointers.
+    unsafe { SendMessageW(lang, CB_SETCURSEL, Some(WPARAM(1)), None) };
+    notify(window, ids::LANG, CBN_SELCHANGE);
+    let file = sb.root.join("lad").join("op-reason").join("settings.json");
+    let lang_is_ja = || {
+        fs::read_to_string(&file)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .is_some_and(|v| v["lang"] == "ja")
+    };
+    assert!(
+        wait_until(Duration::from_secs(30), lang_is_ja),
+        "{}",
+        fs::read_to_string(&file).unwrap_or_default()
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || title(window)
+            == "op-reason の設定"),
+        "{}",
+        title(window)
+    );
+    let log = sb.log();
+    assert!(log.contains(r#""from":"window""#), "{log}");
+}
+
+/// The value at `path` (`relay.timeLimit`) of the sandbox's `settings.json`.
+fn file_value(sb: &Sandbox, path: &[&str]) -> Value {
+    let text = fs::read_to_string(sb.root.join("lad").join("op-reason").join("settings.json"))
+        .unwrap_or_default();
+    let mut v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    for key in path {
+        v = v[*key].clone();
+    }
+    v
+}
+
+/// Types `text` into a field of the settings window, as the user does (the field tells the window it changed).
+/// `WM_SETTEXT` directly: `SetWindowTextW` does not change a control of another process.
+fn type_into(field: windows::Win32::Foundation::HWND, text: &str) {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETTEXT};
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: Windows carries WM_SETTEXT's string to the other process; it outlives the call.
+    unsafe {
+        SendMessageW(
+            field,
+            WM_SETTEXT,
+            None,
+            Some(LPARAM(wide.as_ptr() as isize)),
+        );
+    }
+}
+
+/// The text of a field of the settings window (`WM_GETTEXT`, which Windows carries back from the other process).
+fn field_text(field: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_GETTEXT};
+    let mut buf = [0u16; 64];
+    // SAFETY: the buffer's length is passed; it outlives the call.
+    let n = unsafe {
+        SendMessageW(
+            field,
+            WM_GETTEXT,
+            Some(WPARAM(buf.len())),
+            Some(LPARAM(buf.as_mut_ptr() as isize)),
+        )
+    }
+    .0;
+    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0).min(buf.len())])
+}
+
+#[test]
+fn a_typed_time_is_written_before_the_next_action_and_when_the_window_closes() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BM_SETCHECK, BN_CLICKED, PostMessageW, SendMessageW, WM_CLOSE,
+    };
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-times");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(wait_until(Duration::from_secs(15), || settings_windows()
+        .len()
+        == 1));
+    let window = settings_windows()[0];
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // 30 minutes typed, and at once (well within the time a field waits) a click on the icon's box
+    type_into(control(window, ids::TIME_LIMIT).unwrap(), "30");
+    // SAFETY: messages without pointers.
+    unsafe {
+        SendMessageW(
+            control(window, ids::TRAY_ICON).unwrap(),
+            BM_SETCHECK,
+            Some(WPARAM(0)),
+            None,
+        );
+    }
+    notify(window, ids::TRAY_ICON, BN_CLICKED);
+    assert!(
+        wait_until(Duration::from_secs(30), || file_value(
+            &sb,
+            &["relay", "timeLimit"]
+        ) == 1800
+            && file_value(&sb, &["relay", "trayIcon"]) == false),
+        "both written: {}",
+        file_value(&sb, &[])
+    );
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    assert_eq!(
+        field_text(control(window, ids::TIME_LIMIT).unwrap()),
+        "30",
+        "the field keeps what was typed"
+    );
+    // 45 seconds typed, and the window closed at once: written before the window's process ends
+    type_into(control(window, ids::ANSWER_WAIT).unwrap(), "45");
+    let pid = window_pid(window);
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    assert!(
+        wait_until(Duration::from_secs(30), || !process_alive(pid)),
+        "the window's process ends"
+    );
+    assert_eq!(
+        file_value(&sb, &["relay", "answerWait"]),
+        45,
+        "{}",
+        file_value(&sb, &[])
+    );
+}
+
+fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: a plain question about a window handle.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    pid
+}
+
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // SAFETY: a handle opened and closed here.
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            return false;
+        };
+        let alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        let _ = CloseHandle(h);
+        alive
+    }
+}
+
+// --- The icon of op-reason's own task (on CI only, under the task's real name)
+
+/// `op-reason.exe --settings <args>` with the real profile, for op-reason's task under its real name: the relay's icon
+/// runs its actions with the relay's variables, which do not name a test's task.
+fn real_settings(args: &[&str]) -> Output {
+    Command::new(exe())
+        .arg("--settings")
+        .args(args)
+        .env_remove("OPREASON_RELAY_TASK")
+        .env("OPREASON_LANG", "en")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run op-reason.exe --settings")
+}
+
+/// Removes op-reason's task (its real name) and stops its relay whatever happens.
+struct RealTaskGuard;
+
+impl Drop for RealTaskGuard {
+    fn drop(&mut self) {
+        let _ = real_settings(&["set", "relay.autostart", "off"]);
+    }
+}
+
+/// The process that `relay.json` of the real profile names.
+fn relay_json_pid() -> Option<u64> {
+    let info = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("op-reason").join("relay.json"))
+        .and_then(|f| fs::read_to_string(f).ok())?;
+    serde_json::from_str::<Value>(&info).ok()?["pid"].as_u64()
+}
+
+#[test]
+fn the_icon_restarts_the_relay_of_op_reasons_task() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_COMMAND};
+    use windows::core::{HSTRING, PCWSTR};
+    if !on_ci() {
+        eprintln!(
+            "skipped: it makes op-reason's scheduled task under its real name (set CI=1 to run it)"
+        );
+        return;
+    }
+    let _g = serial();
+    assert!(!relay_answers(), "no relay may run before this test");
+    let _guard = RealTaskGuard;
+    let out = real_settings(&["set", "relay.autostart", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(relay_answers(), "the task's relay answers: {}", text(&out));
+    // the relay writes relay.json just after its pipe answers
+    assert!(
+        wait_until(Duration::from_secs(10), || relay_json_pid().is_some()),
+        "relay.json names the task's relay"
+    );
+    let before = relay_json_pid();
+    let tray = || {
+        // SAFETY: a static class name.
+        unsafe {
+            FindWindowW(
+                &HSTRING::from(op_reason_win::relay_opts::TRAY_CLASS),
+                PCWSTR::null(),
+            )
+        }
+        .ok()
+        .filter(|h| !h.is_invalid())
+    };
+    assert!(
+        wait_until(Duration::from_secs(15), || tray().is_some()),
+        "the task's relay has its icon's window"
+    );
+    // Restart the relay, from the icon's menu: op-reason --settings relay restart in a process of its own, out of the
+    // task's job, so that the task can start the new relay at once
+    let restart = op_reason_win::tray_ui::Item::Restart.id();
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = PostMessageW(tray(), WM_COMMAND, WPARAM(usize::from(restart)), LPARAM(0));
+    }
+    assert!(
+        wait_until(Duration::from_secs(45), || {
+            relay_json_pid().is_some_and(|p| Some(p) != before) && relay_answers()
+        }),
+        "a new relay of op-reason's task answers: before {before:?}, now {:?}",
+        relay_json_pid()
+    );
+    // The action writes its record once the new relay answers: wait for it
+    let log = || {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join("op-reason").join("log.jsonl"))
+            .and_then(|f| fs::read_to_string(f).ok())
+            .unwrap_or_default()
+    };
+    let recorded = || {
+        log().lines().any(|l| {
+            l.contains(r#""event":"settings""#)
+                && l.contains(r#""from":"tray""#)
+                && l.contains(r#""result":"done""#)
+        })
+    };
+    assert!(
+        wait_until(Duration::from_secs(20), recorded),
+        "the restart is recorded as from the icon: {}",
+        log().lines().rev().take(5).collect::<Vec<_>>().join("\n")
+    );
+}
+
+// --- No console window while the settings window works
+
+unsafe extern "system" fn each_console(
+    hwnd: windows::Win32::Foundation::HWND,
+    found: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, IsWindowVisible};
+    // SAFETY: `found` points at the vector of `visible_consoles` for the length of EnumWindows; the buffers outlive the
+    // calls.
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true.into();
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, &mut class);
+        let class = String::from_utf16_lossy(&class[..usize::try_from(n).unwrap_or(0)]);
+        // conhost's window, or Windows Terminal's when it is the default terminal
+        if class == "ConsoleWindowClass" || class == "CASCADIA_HOSTING_WINDOW_CLASS" {
+            let mut title = [0u16; 512];
+            let n = GetWindowTextW(hwnd, &mut title);
+            let title = String::from_utf16_lossy(&title[..usize::try_from(n).unwrap_or(0)]);
+            (*(found.0 as *mut Vec<String>)).push(format!("{class}: {title}"));
+        }
+    }
+    true.into()
+}
+
+/// The visible console windows, as `<class>: <title>`.
+fn visible_consoles() -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    // SAFETY: the callback pushes into `found`, which outlives the call.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
+            Some(each_console),
+            windows::Win32::Foundation::LPARAM(&mut found as *mut Vec<String> as isize),
+        );
+    }
+    found
+}
+
+/// Looks every 2 ms, on a thread of its own, for visible console windows whose title names `needle` (the sandbox's
+/// folder, where the fake `wsl.exe` is): Windows shows one for a console program started by a process without a
+/// console, or hands it to Windows Terminal, which comes to the front.
+struct ConsoleWatch {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Vec<String>>>,
+}
+
+impl ConsoleWatch {
+    fn start(needle: &Path) -> ConsoleWatch {
+        let needle = needle.display().to_string().to_lowercase();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut seen: Vec<String> = Vec::new();
+            while !flag.load(Ordering::SeqCst) {
+                for window in visible_consoles() {
+                    if window.to_lowercase().contains(&needle) && !seen.contains(&window) {
+                        seen.push(window);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            seen
+        });
+        ConsoleWatch {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(mut self) -> Vec<String> {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread
+            .take()
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_window_shows_no_console_window_while_it_works() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::{CB_SETCURSEL, CBN_SELCHANGE, SendMessageW};
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-console");
+    // a distribution that runs: every read of the window starts the fake wsl.exe, for the list and for the place
+    let wsl = sb.root.join("wsl");
+    fs::write(wsl.join("list"), "Fake\r\n").unwrap();
+    fs::write(wsl.join("running"), "Fake\r\n").unwrap();
+    fs::write(
+        wsl.join("answer-look"),
+        "op-reason-skill 1 missing - - /home/u/.claude/skills/op-reason/SKILL.md\n",
+    )
+    .unwrap();
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let watch = ConsoleWatch::start(&sb.root);
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(wait_until(Duration::from_secs(15), || settings_windows()
+        .len()
+        == 1));
+    let window = settings_windows()[0];
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // a job: the language, and the read after it
+    // SAFETY: a message without pointers.
+    unsafe {
+        SendMessageW(
+            control(window, ids::LANG).unwrap(),
+            CB_SETCURSEL,
+            Some(WPARAM(1)),
+            None,
+        )
+    };
+    notify(window, ids::LANG, CBN_SELCHANGE);
+    assert!(wait_until(Duration::from_secs(30), || {
+        file_value(&sb, &["lang"]) == "ja"
+    }));
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    let shown = watch.stop();
+    let calls = fs::read_to_string(wsl.join("calls.log")).unwrap_or_default();
+    assert!(
+        calls.contains("Fake op-reason-skill look"),
+        "the window ran the fake wsl.exe: {calls}"
+    );
+    assert!(
+        shown.is_empty(),
+        "no console window for the programs the window starts: {shown:?}"
+    );
 }

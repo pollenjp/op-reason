@@ -1726,3 +1726,124 @@ fn a_timed_out_window_leaves_its_notification() {
     clear_notices();
     assert_eq!(left, Some(1), "the sign of a request that went unanswered");
 }
+
+// --- The relay's icon in the notification area (design docs/superpowers/specs/2026-11-23-settings-design.md §12)
+
+/// The relay's hidden window that holds its icon.
+fn tray_window() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::core::{HSTRING, PCWSTR};
+    // SAFETY: a static class name.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            &HSTRING::from(op_reason_win::relay_opts::TRAY_CLASS),
+            PCWSTR::null(),
+        )
+    }
+    .ok()
+    .filter(|h| !h.is_invalid())
+}
+
+/// Whether the relay's icon is in the notification area, as its window says (nothing when there is no window).
+fn tray_shown() -> Option<bool> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        RegisterWindowMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
+    };
+    let hwnd = tray_window()?;
+    let mut result = 0usize;
+    // SAFETY: a registered message without pointers; the result outlives the call.
+    let answered = unsafe {
+        let query = RegisterWindowMessageW(&windows::core::HSTRING::from(
+            op_reason_win::relay_opts::TRAY_QUERY,
+        ));
+        SendMessageTimeoutW(
+            hwnd,
+            query,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            2_000,
+            Some(&mut result),
+        )
+    };
+    (answered.0 != 0).then_some(result == 1)
+}
+
+/// `op-reason.exe --settings <args>` with the sandbox's state.
+fn settings(sb: &Sandbox, args: &[&str]) -> Output {
+    Command::new(exe())
+        .arg("--settings")
+        .args(args)
+        .env("LOCALAPPDATA", sb.lad())
+        .env("OPREASON_LANG", "en")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run op-reason.exe --settings")
+}
+
+#[test]
+fn the_relay_shows_its_icon_and_the_setting_hides_it_at_once() {
+    let _g = serial();
+    let sb = Sandbox::new("tray");
+    let _relay = sb.relay(&[], &[]);
+    assert!(
+        wait_until(Duration::from_secs(15), || tray_shown() == Some(true)),
+        "the relay added its icon: {:?}",
+        tray_shown()
+    );
+    let out = settings(&sb, &["set", "relay.tray-icon", "off"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(3), || tray_shown() == Some(false)),
+        "set relay.tray-icon off takes the icon away at once"
+    );
+    let out = settings(&sb, &["set", "relay.tray-icon", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(5), || tray_shown() == Some(true)),
+        "and on brings it back"
+    );
+    // The menu's Hide this icon: op-reason --settings in a process of its own, recorded as from the icon
+    let hide = op_reason_win::tray_ui::Item::Hide.id();
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            tray_window(),
+            windows::Win32::UI::WindowsAndMessaging::WM_COMMAND,
+            windows::Win32::Foundation::WPARAM(usize::from(hide)),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    }
+    assert!(
+        wait_until(Duration::from_secs(15), || tray_shown() == Some(false)),
+        "Hide this icon took it away"
+    );
+    let log = fs::read_to_string(sb.lad().join("op-reason").join("log.jsonl")).unwrap_or_default();
+    assert!(
+        log.lines()
+            .any(|l| l.contains(r#""event":"settings""#) && l.contains(r#""from":"tray""#)),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_relay_started_with_the_icon_off_shows_none() {
+    let _g = serial();
+    let sb = Sandbox::new("tray-off");
+    let dir = sb.lad().join("op-reason");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        r#"{"v":1,"relay":{"trayIcon":false}}"#,
+    )
+    .unwrap();
+    let _relay = sb.relay(&[], &[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || tray_shown().is_some()),
+        "the icon's window is there, to be told when the setting changes"
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(tray_shown(), Some(false));
+}

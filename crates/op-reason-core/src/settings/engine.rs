@@ -27,6 +27,39 @@ pub enum Place {
     Folder(String),
 }
 
+/// What to do with the Start menu's shortcut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutAct {
+    /// Read it.
+    Look,
+    /// Make it (again) for this exe.
+    Place,
+    /// Remove it.
+    Remove,
+}
+
+/// The Start menu's shortcut `op-reason.lnk` (design §13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortcutState {
+    /// No shortcut of that name.
+    Missing,
+    /// It starts this exe with `--settings`.
+    Ok,
+    /// It starts another `op-reason.exe` (the one named) with `--settings`: made again by `set`.
+    Differs(String),
+    /// A shortcut of that name that does not start `op-reason.exe --settings` (its target named): never touched.
+    Foreign(String),
+}
+
+/// The shortcut now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutNow {
+    /// What is there.
+    pub state: ShortcutState,
+    /// The shortcut's path.
+    pub path: String,
+}
+
 /// A scheduled task, not op-reason's, whose action starts `op-reason.exe --ssh-agent` (design §9.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OtherTask {
@@ -81,6 +114,10 @@ pub trait System {
     fn wait_relay(&self) -> Option<u32>;
     /// Looks at, places or removes the skill `want` (marked) at a place.
     fn skill(&self, place: &Place, act: SkillAct, want: &str) -> Result<SkillNow, String>;
+    /// Looks at, makes or removes the Start menu's shortcut.
+    fn shortcut(&self, act: ShortcutAct) -> Result<ShortcutNow, String>;
+    /// Tells the running relay that `settings.json` changed (its icon applies `relay.tray-icon` at once).
+    fn changed(&self);
     /// The WSL distributions (none without WSL).
     fn distributions(&self) -> Result<Vec<Distro>, String>;
     /// The folder of the records.
@@ -153,6 +190,8 @@ pub enum State {
     },
     /// Other tasks start a relay too (`list` only: it walks every task folder).
     OtherTasks(Vec<String>),
+    /// The Start menu's shortcut.
+    Shortcut(ShortcutState),
     /// A WSL distribution that does not run: not looked at.
     NotRunning,
     /// The value could not be read.
@@ -412,6 +451,14 @@ impl<'a> Now<'a> {
                     }
                 }
             }
+            Name::StartMenu => match sys.shortcut(ShortcutAct::Look) {
+                Ok(now) => {
+                    item.value = Some(shortcut_value(&now.state).into());
+                    item.where_ = now.path;
+                    item.state = State::Shortcut(now.state);
+                }
+                Err(e) => item.state = State::Unreadable(e),
+            },
             _ => {
                 let place = place_of(name).expect("a skill place");
                 if let (Place::Wsl(d), Some(distros)) = (&place, distros)
@@ -445,6 +492,14 @@ impl<'a> Now<'a> {
             return (
                 "lang",
                 v.lang.map_or("default", |l| l.code()).to_owned(),
+                None,
+            );
+        }
+        if *name == Name::RelayTrayIcon {
+            // The relay applies it at once: no value of the running relay to compare
+            return (
+                "relay.trayIcon",
+                on_off(v.tray_icon.unwrap_or(true)).to_owned(),
                 None,
             );
         }
@@ -498,6 +553,14 @@ fn skill_value(state: &SkillState) -> &'static str {
     match state {
         SkillState::Ok | SkillState::Old(_) | SkillState::Changed => "on",
         SkillState::Missing | SkillState::Foreign => "off",
+    }
+}
+
+/// `on` while a shortcut of op-reason's settings is there (for this exe or not), `off` otherwise.
+fn shortcut_value(state: &ShortcutState) -> &'static str {
+    match state {
+        ShortcutState::Ok | ShortcutState::Differs(_) => "on",
+        ShortcutState::Missing | ShortcutState::Foreign(_) => "off",
     }
 }
 
@@ -566,6 +629,18 @@ fn same(now: &Now, name: &Name, want: &Want, item: &Item) -> bool {
             };
             value == wanted.as_deref() && relay_same
         }
+        (Name::RelayTrayIcon, Want::On(on)) => value == Some(on_off(*on)),
+        (Name::RelayTrayIcon, Want::Default) => value == Some("on"),
+        (Name::StartMenu, Want::On(on)) => match &item.state {
+            State::Shortcut(state) => {
+                if *on {
+                    *state == ShortcutState::Ok
+                } else {
+                    matches!(state, ShortcutState::Missing | ShortcutState::Foreign(_))
+                }
+            }
+            _ => false,
+        },
         (Name::RelayAutostart, Want::On(true)) => {
             value == Some("on") && !matches!(item.state, State::TaskDiffers(_))
         }
@@ -595,10 +670,10 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
     let pid_before = ctx.sys.relay_pid();
     let mut out = Vec::new();
     let file_wants: Vec<&(Name, Want)> = wants.iter().filter(|(n, _)| n.is_file()).collect();
-    let relay_named = file_wants.iter().any(|(n, _)| *n != Name::Lang);
+    let relay_named = file_wants.iter().any(|(n, _)| relay_value(n));
     let mut relay_changed = false;
     if !file_wants.is_empty() {
-        let (changes, changed) = set_file(ctx, &file_wants);
+        let (changes, changed) = write_file(ctx, &file_wants);
         relay_changed = changed;
         out.extend(changes);
     }
@@ -616,8 +691,79 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
             out.push(skill_set(ctx, name, &place, *on));
         }
     }
+    if let Some(on) = on_of(wants, &Name::StartMenu) {
+        out.push(start_menu(ctx, on));
+    }
     record(ctx, &out);
     out
+}
+
+/// Writes file settings without starting the relay again: the window writes a value when it changes, and its Apply
+/// restarts the relay (design §11.2). Names that are not kept in `settings.json` are left out.
+pub fn write(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
+    let file_wants: Vec<&(Name, Want)> = wants.iter().filter(|(n, _)| n.is_file()).collect();
+    if file_wants.is_empty() {
+        return Vec::new();
+    }
+    let (out, _) = write_file(ctx, &file_wants);
+    record(ctx, &out);
+    out
+}
+
+/// Writes the file settings and tells the relay's icon window when its setting changed; returns the changes and
+/// whether a relay value changed in the file.
+fn write_file(ctx: &Ctx, wants: &[&(Name, Want)]) -> (Vec<Change>, bool) {
+    let (changes, changed) = set_file(ctx, wants);
+    if changes
+        .iter()
+        .any(|c| c.name == Name::RelayTrayIcon.text() && c.done == Done::Done)
+    {
+        ctx.sys.changed();
+    }
+    (changes, changed)
+}
+
+/// A value that the relay reads when it starts (its mode and times): a change starts it again.
+fn relay_value(name: &Name) -> bool {
+    matches!(
+        name,
+        Name::RelayMode | Name::RelayTimeLimit | Name::RelayAnswerWait
+    )
+}
+
+fn start_menu(ctx: &Ctx, on: bool) -> Change {
+    let sys = ctx.sys;
+    let name = Name::StartMenu.text();
+    let now = match sys.shortcut(ShortcutAct::Look) {
+        Ok(n) => n,
+        Err(e) => return Change::new(&name, None, on_off(on), Done::Failed(Why::Failed(e))),
+    };
+    let mut change = Change::new(
+        &name,
+        Some(shortcut_value(&now.state)),
+        on_off(on),
+        Done::Same,
+    );
+    let act = match (&now.state, on) {
+        (ShortcutState::Foreign(_), true) => {
+            change.done = Done::Failed(Why::Foreign(now.path.clone()));
+            None
+        }
+        (ShortcutState::Missing | ShortcutState::Differs(_), true) => Some(ShortcutAct::Place),
+        (ShortcutState::Ok | ShortcutState::Differs(_), false) => Some(ShortcutAct::Remove),
+        _ => None,
+    };
+    if let Some(act) = act {
+        change.done = match sys.shortcut(act) {
+            Ok(after) => match (act, &after.state) {
+                (ShortcutAct::Place, ShortcutState::Ok)
+                | (ShortcutAct::Remove, ShortcutState::Missing) => Done::Done,
+                _ => Done::Failed(Why::Failed(format!("{} was left as it was", after.path))),
+            },
+            Err(e) => Done::Failed(Why::Failed(e)),
+        };
+    }
+    change
 }
 
 /// The `on`/`off` wanted for `name`.
@@ -635,6 +781,7 @@ fn set_file(ctx: &Ctx, wants: &[&(Name, Want)]) -> (Vec<Change>, bool) {
             Name::Lang => &["lang"],
             Name::RelayMode => &["relay", "mode"],
             Name::RelayTimeLimit => &["relay", "timeLimit"],
+            Name::RelayTrayIcon => &["relay", "trayIcon"],
             _ => &["relay", "answerWait"],
         }
     };
@@ -673,7 +820,7 @@ fn set_file(ctx: &Ctx, wants: &[&(Name, Want)]) -> (Vec<Change>, bool) {
                     {
                         Done::Same
                     } else {
-                        relay_changed |= *name != Name::Lang;
+                        relay_changed |= relay_value(name);
                         Done::Done
                     }
                 }
@@ -692,6 +839,7 @@ fn file_text(name: &Name, v: &Values) -> String {
         Name::RelayTimeLimit => {
             values::minutes_text(v.time_limit.unwrap_or(values::DEFAULT_TIME_LIMIT))
         }
+        Name::RelayTrayIcon => on_off(v.tray_icon.unwrap_or(true)).to_owned(),
         _ => values::seconds_text(v.answer_wait.unwrap_or(values::DEFAULT_ANSWER_WAIT)),
     }
 }
@@ -1455,6 +1603,62 @@ mod tests {
         assert!(matches!(i.state, State::Ignored(_)), "{:?}", i.state);
     }
 
+    // --- the tray icon and the Start menu (second pull request)
+
+    #[test]
+    fn the_tray_icon_is_a_file_setting_that_tells_the_relay_at_once() {
+        let f = Fake::new().ours_running();
+        let c = check(&f.ctx(), &[on(Name::RelayTrayIcon)]);
+        assert!(c[0].same, "on by default");
+        let c = set(&f, &[off(Name::RelayTrayIcon)]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(
+            crate::settings::values(f.settings.borrow().as_deref()).tray_icon,
+            Some(false)
+        );
+        assert_eq!(
+            f.calls(),
+            ["changed"],
+            "no restart: the relay reads it at once"
+        );
+        let c = check(&f.ctx(), &[off(Name::RelayTrayIcon)]);
+        assert!(c[0].same);
+    }
+
+    #[test]
+    fn the_start_menu_shortcut_is_made_again_and_never_replaced_when_foreign() {
+        let f = Fake::new();
+        let c = set(&f, &[on(Name::StartMenu)]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(f.calls(), ["shortcut Look", "shortcut Place"]);
+        assert!(check(&f.ctx(), &[on(Name::StartMenu)])[0].same);
+        *f.shortcut.borrow_mut() = ShortcutState::Differs(r"D:\old\op-reason.exe".into());
+        let i = get(&f.ctx(), &Name::StartMenu);
+        assert_eq!(i.value.as_deref(), Some("on"));
+        assert!(
+            !check(&f.ctx(), &[on(Name::StartMenu)])[0].same,
+            "another exe"
+        );
+        assert_eq!(set(&f, &[on(Name::StartMenu)])[0].done, Done::Done);
+        *f.shortcut.borrow_mut() = ShortcutState::Foreign(r"C:\x\other.exe".into());
+        assert!(matches!(
+            set(&f, &[on(Name::StartMenu)])[0].done,
+            Done::Failed(Why::Foreign(_))
+        ));
+        assert_eq!(set(&f, &[off(Name::StartMenu)])[0].done, Done::Same);
+        *f.shortcut.borrow_mut() = ShortcutState::Ok;
+        assert_eq!(set(&f, &[off(Name::StartMenu)])[0].done, Done::Done);
+        assert_eq!(*f.shortcut.borrow(), ShortcutState::Missing);
+    }
+
+    #[test]
+    fn list_has_the_tray_icon_and_the_start_menu() {
+        let f = Fake::new();
+        let names: Vec<String> = list(&f.ctx()).iter().map(|i| i.name.text()).collect();
+        assert!(names.contains(&"relay.tray-icon".to_owned()), "{names:?}");
+        assert!(names.contains(&"start-menu".to_owned()), "{names:?}");
+    }
+
     // --- the relay's file values
 
     #[test]
@@ -1515,6 +1719,41 @@ mod tests {
         assert_eq!(c[0].done, Done::Done, "the file is written");
         assert!(matches!(c[1].done, Done::Failed(Why::NotOurs(_))));
         assert!(!f.calls().iter().any(|c| c.starts_with("stop")));
+    }
+
+    #[test]
+    fn the_window_writes_the_relay_values_and_leaves_the_restart_to_apply() {
+        // design §11.2: changing the mode or the times writes them; Apply restarts the relay
+        let f = Fake::new().ours_running();
+        let c = write(
+            &f.ctx(),
+            &[
+                (Name::RelayMode, Want::Mode(RelayMode::ShowOnly)),
+                (Name::RelayTimeLimit, Want::Secs(1800)),
+            ],
+        );
+        assert!(f.calls().is_empty(), "no restart: {:?}", f.calls());
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert!(c.iter().all(|c| c.done == Done::Done), "{c:?}");
+        assert_eq!(
+            f.settings.borrow().as_deref(),
+            Some(r#"{"v":1,"relay":{"mode":"show-only","timeLimit":1800}}"#)
+        );
+        assert_eq!(f.records.borrow().len(), 1, "recorded");
+        let c = write(&f.ctx(), &[(Name::RelayTrayIcon, Want::On(false))]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(
+            f.calls(),
+            ["changed"],
+            "the relay's icon window is told at once"
+        );
+        let same = write(&f.ctx(), &[(Name::RelayTrayIcon, Want::On(false))]);
+        assert_eq!(same[0].done, Done::Same);
+        assert_eq!(
+            f.records.borrow().len(),
+            2,
+            "nothing done, nothing recorded"
+        );
     }
 
     #[test]
@@ -1644,9 +1883,11 @@ mod tests {
                 "relay.mode",
                 "relay.time-limit",
                 "relay.answer-wait",
+                "relay.tray-icon",
                 "relay.autostart",
                 "relay.running",
                 "skill.windows",
+                "start-menu",
                 "skill.wsl.Ubuntu",
                 "skill.wsl.Debian",
                 r"skill.folder.D:\a",

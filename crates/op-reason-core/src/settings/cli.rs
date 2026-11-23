@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::lang::Lang;
 use crate::logview::display_width;
 use crate::settings::catalog::{self, Name, Usage, Want};
-use crate::settings::engine::{self, Change, Ctx, Done, Item, State};
+use crate::settings::engine::{self, Change, Ctx, Done, Item, ShortcutState, State};
 use crate::settings::skill::SkillState;
 use crate::settings::text;
 
@@ -16,8 +16,10 @@ pub use crate::settings::text::{usage, usage_error};
 /// What `op-reason --settings …` asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// No more arguments: the window.
+    /// No more arguments: the window (on Windows, a process of its own is started for it).
     Window,
+    /// `window`: be the settings window (the process that `Window` starts; not in the usage).
+    WindowHere,
     /// `help`: the usage of `--settings`.
     Help,
     /// `list`.
@@ -79,6 +81,11 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
         None => Ok(()),
     };
     match word.as_str() {
+        "window" => {
+            no_json()?;
+            none_left(0)?;
+            Ok(Command::WindowHere)
+        }
         "help" | "--help" | "-h" => {
             no_json()?;
             none_left(0)?;
@@ -163,7 +170,7 @@ fn pairs(args: &[&String]) -> Result<Vec<(Name, Want)>, Usage> {
 /// Runs a command on the engine, prints what it found or did, and returns the exit code (design §7.3).
 pub fn run(cmd: Command, ctx: &Ctx, lang: Lang, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match cmd {
-        Command::Window | Command::Help => {
+        Command::Window | Command::WindowHere | Command::Help => {
             let _ = out.write_all(usage(lang).as_bytes());
             0
         }
@@ -329,6 +336,12 @@ fn item_json(item: &Item, version: &str) -> Value {
             (code, json!({"file": file, "version": placed, "link": link}))
         }
         State::OtherTasks(tasks) => ("other-tasks", json!({"tasks": tasks})),
+        State::Shortcut(state) => match state {
+            ShortcutState::Missing => ("missing", json!({})),
+            ShortcutState::Ok => ("ok", json!({})),
+            ShortcutState::Differs(t) => ("shortcut-differs", json!({"target": t})),
+            ShortcutState::Foreign(t) => ("foreign", json!({"target": t})),
+        },
         State::NotRunning => ("not-running", json!({})),
         State::Unreadable(e) => ("unreadable", json!({"error": e})),
     };
@@ -356,6 +369,12 @@ mod tests {
     #[test]
     fn words() {
         assert_eq!(p(&[]), Ok(Command::Window));
+        assert_eq!(
+            p(&["window"]),
+            Ok(Command::WindowHere),
+            "the window process that op-reason --settings starts"
+        );
+        assert!(p(&["window", "x"]).is_err());
         assert_eq!(p(&["help"]), Ok(Command::Help));
         assert_eq!(p(&["--help"]), Ok(Command::Help));
         assert_eq!(p(&["list"]), Ok(Command::List { json: false }));
@@ -631,5 +650,20 @@ mod run_tests {
         assert!(usage_error(Lang::Ja, &u).contains("later"));
         assert!(usage(Lang::En).contains("op-reason --settings check"));
         assert!(usage(Lang::Ja).contains("op-reason --settings check"));
+    }
+
+    #[test]
+    fn the_usage_says_that_no_word_opens_a_window() {
+        // an agent that runs op-reason --settings for its help must learn that it opens a window on the desktop
+        let en = usage(Lang::En);
+        assert!(
+            en.contains("op-reason --settings                    ")
+                && en.contains("the settings window"),
+            "{en}"
+        );
+        assert!(en.contains("op-reason --settings help"), "{en}");
+        let ja = usage(Lang::Ja);
+        assert!(ja.contains("設定の窓"), "{ja}");
+        assert!(ja.contains("op-reason --settings help"), "{ja}");
     }
 }
