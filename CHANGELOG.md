@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **`op-reason --settings`**: one list of op-reason's settings with the same three operations, `get` (the value now),
+  `set` (make it so; running it again changes nothing) and `check` (compare a wanted value with the value now: exit 0
+  the same, 1 different, 2 failed), with `--json`, and `list`, `relay start|stop|restart`, `forget-accounts` and
+  `open-records`. The settings: `lang`, `relay.mode`, `relay.time-limit`, `relay.answer-wait` (in `settings.json`),
+  `relay.autostart`, `relay.running`, `skill.windows`, `skill.wsl.<distribution>` and `skill.folder.<folder>`. On WSL,
+  `op-reason --settings` runs `op-reason.exe --settings`; the PowerShell entry says that the settings come from
+  `op-reason.exe`.
+- **op-reason's own scheduled task for the SSH relay** (`relay.autostart`): `\op-reason-ssh-relay-<SID>` in the root
+  folder, with the shape the README recommends (at logon and again every minute, "Do not start a new instance", hidden,
+  priority 5). `relay stop` turns it off and ends the relay until `relay start`. Stops and restarts take op-reason's lock
+  first, and a relay that another task or a terminal started is shown, never stopped; while one runs, op-reason's task is
+  made turned off.
+- **The relay reads its mode and times from `settings.json`**; its options still win. It writes `relay.json` (its
+  process ID and the values it runs with), and on its stop event it fails new requests, lets those with 1Password finish
+  (25 seconds at most) and exits; `op-reason --log` shows the stop.
+- **The skill placed where agents read it**: `skill.windows` (`%USERPROFILE%\.claude\skills`), `skill.wsl.<distribution>`
+  (through `wsl.exe`) and `skill.folder.<folder>`. The copy carries op-reason's version after its front matter, is updated
+  when older and removed only where it carries the mark; nothing is written through a junction or a symbolic link.
+- Every settings change is recorded in `log.jsonl` with its caller, and `op-reason --log` shows it. The skill tells agents
+  to change op-reason's settings only when the user asks.
+
 ## 0.6.0 — 2026-11-22
 
 - **After Allow, the SSH relay's window comes to the front until 1Password has answered**, so that 1Password's prompt

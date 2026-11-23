@@ -5,7 +5,7 @@ English: [manual-verification.md](manual-verification.md)
 CI は偽の `op-reason.exe`・`powershell.exe`・`op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で
 動かず、CI の Windows の runner では WSL2 も動きません)。ここの確認には、人と、1Password のアプリと 1Password CLI の入った
 Windows と、WSL が要ります。WSL の確認 (1〜14 と R) で 30 分ほどかかり、承認の画面が 15 回ほど出ます。
-参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 1 時間ほど足します。
+参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 1 時間ほど、設定の確認 (G) は 20 分ほど足します。
 
 ## 確かめる間の決まり
 
@@ -319,6 +319,39 @@ S25〜S31 を足した PR の op-reason 0.5.0 (Windows は PR の Windows exe �
 
 3 つ目の build では、応答しなくなった窓は無く (窓は 6 回)、押す前に 1Password の画面も点も出なかった。窓と一緒に出る通知の
 差出人は「Windows PowerShell」 (op-reason はその AppUserModelID を借りている)。終わりにタスクを消し、中継を止めた。
+
+## 設定を確かめること (G1〜G11)
+
+`op-reason --settings` ([2026-11-23-settings-design.md](superpowers/specs/2026-11-23-settings-design.md)、英語)。CI は
+GitHub の runner (管理者として動く) でテスト用の名前のタスクを作り、`wsl.exe` は偽物を使います。ここで確かめるのは、
+管理者でないユーザー・本物のログオン・本物の WSL と 1Password です。約 20 分で、ログオフが 1 回、1Password の確認が 2 回です。
+
+用意:
+
+1. この pull request の Windows の zip を、SSH の中継の用意と同じように展開します。以下 `$exe`。どのコマンドも
+   **管理者でない** PowerShell で、`$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'` を入れて打ちます。
+2. 中継が動いていないこと: `& $exe --ssh-agent --status` が 1 で終わる。**ほかのタスクが中継を起こしているときは**
+   (自分のタスクや dotfiles のタスク)、先にそれを無効にして中継を止め、確かめ終えたら戻します:
+   `Disable-ScheduledTask -TaskPath '<そのフォルダ>' -TaskName '<その名前>'` と
+   `Stop-ScheduledTask -TaskPath '<そのフォルダ>' -TaskName '<その名前>'` (あとで `Enable-ScheduledTask` と
+   `Start-ScheduledTask`)。
+3. `%LOCALAPPDATA%\op-reason\settings.json` があれば写しを取っておきます。
+4. **skill**: `%USERPROFILE%\.claude\skills` (や WSL の distro の `~/.claude/skills`) に op-reason の手引きを置きたくない
+   ときは、G9 を選んだフォルダ (`skill.folder.$env:TEMP\op-reason-skill-check`) で確かめ、G10 は飛ばします。
+
+| # | すること | 期待すること |
+| --- | --- | --- |
+| G1 | `& $exe --settings list` | 設定ごとに 1 行: `relay.autostart off`・`relay.running off`・WSL の distro ごとの行 (動いていないものは「見ていません」)。最後に記録のフォルダとアカウント。ほかのタスクが中継を起こすなら (用意 2)、`relay.autostart` の行がそれを名指しする |
+| G2 | `& $exe --settings set relay.autostart on` | `relay.autostart: off → on`。そのあと `& $exe --ssh-agent --status` が 0 で終わる。タスク スケジューラー (**表示 → 隠しタスクの表示**) のルートに `op-reason-ssh-relay-<あなたの SID>`: あなたのログオン時と 1 分ごと。「新しいインスタンスを開始しない」。あなたのユーザーで「ユーザーがログオンしているときのみ実行する」、最上位の特権ではない |
+| G3 | `& $exe --settings check relay.autostart=on relay.running=on --json; $LASTEXITCODE` | `"same":true`、そして 0 |
+| G4 | 1Password をロックして解除する。`$env:OPREASON_SSH_REASON = 'check G4'; ssh -T git@github.com`。**この呼び出しを許可**。1Password で承認 | S25 と同じ: 押したときに op-reason の窓が前面に出て、1Password の画面がすぐ出る (名前は op-reason)。`Hi <user>!` |
+| G5 | `$env:OPREASON_SSH_REASON = 'check G5'; ssh -T git@github.com`。op-reason の窓が待っている間に、別の PowerShell で `& $exe --settings relay stop; $LASTEXITCODE`。そのあと **この呼び出しを許可** | `relay.running: not changed (off): the relay has a window open, …` (日本語なら「変えていません」)、そして 1。中継はそのまま動き、許可が通る |
+| G6 | `& $exe --settings relay stop`。2 分待つ。`& $exe --ssh-agent --status` | 2 分後も 1: 1 分ごとの trigger は止めた中継を起こさない。`& $exe --settings get relay.running --json` が `task-off`。`& $exe --log --since 10m` に「SSH の中継を op-reason --settings が止めた」と、あなたが打った `settings` の行 |
+| G7 | ログオフしてログオンし直す。`& $exe --ssh-agent --status`。そのあと `& $exe --settings relay start` | ログオンし直しても止まったまま。`relay start` で 15 秒以内に答える |
+| G8 | `& $exe --settings set relay.mode show-only`。そのあと G4 と同じ ssh | `relay.mode: per-call → show-only` と、中継を起こし直した行。`get relay.mode --json` に `relay-differs` が無い。署名ごとに 1Password が確認し (show-only)、op-reason の窓が誰がなぜかを出す。戻すには `set relay.mode default` |
+| G9 | `& $exe --settings set skill.windows on` (か用意 4 の選んだフォルダ)。出た `SKILL.md` を開く。Windows の Claude Code で `/skills` | 手引きの閉じる `---` の次の行に `<!-- placed by op-reason <版>: …`。Claude Code の一覧に op-reason の skill。`set skill.windows off` で消える (空の `op-reason` フォルダも) |
+| G10 | WSL で、この branch の `op-reason` を使って `op-reason --settings set "skill.wsl.$WSL_DISTRO_NAME" on`、そのあと `off` | 印の付いた `~/.claude/skills/op-reason/SKILL.md` ができ、そのあと消える。`~/.claude/skills` が symbolic link (home-manager) なら断り、何も書かない |
+| G11 | `& $exe --settings set relay.autostart off`。用意 3 の `settings.json` を戻す。用意 2 のほかのタスクを有効に戻す | タスクが消え、op-reason のタスクの中継は答えない |
 
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
 

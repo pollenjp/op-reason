@@ -203,7 +203,8 @@ paths, also when the command came from WSL.
 | --- | --- | --- | --- |
 | `check` | every value is as wanted | some value differs | a usage mistake, or a value could not be read |
 | `set`, `relay …`, `forget-accounts`, `open-records` | done: every value is now as asked | something could not be done (each says why; the rest was done) | a usage mistake: nothing was done |
-| `list`, `get`, `help` | read | — | a usage mistake, or the value could not be read |
+| `get` | read | — | a usage mistake, or the value could not be read |
+| `list`, `help` | read (a value that could not be read says so on its line) | — | a usage mistake |
 
 `check` follows `diff` and `cmp` (0 same, 1 different, 2 trouble), so that `check` and then `set` replaces a script's
 own comparison.
@@ -528,3 +529,14 @@ words (`--settings window`). Each goes into the table below.
 | With another relay answering, `relay.autostart on` makes the task turned off; `relay.running on` is the same; `relay.running off` turns op-reason's task off and fails for the other relay (builder check) | a task turned on would start `op-reason.exe` every minute, which exits at once and flashes a console window, until the other relay stops |
 | `skill.folder.` refuses folders of the WSL share (builder check) | links cannot be told through the share; `skill.wsl.<distribution>` is the place inside a distribution |
 | `SkillNow` keeps the state behind a link and names the link apart (not a state of its own) | `off` must tell "nothing of op-reason's is there" (the same) from "op-reason's file is behind a link" (refused) |
+| `op-reason --settings` without more arguments prints the usage of `--settings` until the window comes (second pull request) | the first pull request has no window; the word is kept for it |
+| `list` walks every task folder for other tasks that start a relay and names them on `relay.autostart` (`other-tasks`); `get`, `check` and `set` look only at the running tasks | §9.5; a walk takes a moment on a machine with many tasks, and only `list` and the window show it |
+| The writers of `settings.json` wait up to five seconds for `Local\op-reason-settings`, and write without it after that | a writer that hangs must not keep the language switch of a call's window from working; the write is still atomic (a temporary file renamed over it) |
+| `relay.json` is removed by the relay only when it holds the relay's own process ID; a reader trusts it only for the process that answers on the default pipe | a relay that was killed leaves the file; a later relay writes its own |
+| The relay's stop is recorded as `ssh-relay` `stop` (with `detail` naming the requests still in progress after 25 seconds); `op-reason --log` shows "SSH relay stopped by op-reason --settings" | the log tells a stop by the settings from an exit (Ctrl+C, a closed console) |
+| The record's `why` codes: `locked`, `not-ours`, `no-task`, `no-answer`, `foreign`, `link`, `failed: <message>` | short and stable for `op-reason --log --json` readers |
+| On WSL, the caller's kind goes in `OPREASON_SETTINGS_CALLER` (`claude` or `human`) through `WSLENV`; `op-reason.exe` takes it for the record with its other signs of Claude Code | `op-reason.exe` started through WSL interop cannot see Claude Code's process or variables |
+| A WSL path is turned into a Windows path only in `skill.folder./…` names, and in pairs only when the value is `on` or `off` | a folder may hold `=`; values never do |
+| The test name of the task (`OPREASON_RELAY_TASK`) is honored only where `CI` is set | the tests on GitHub's runners must not meet a user's task, and a desktop must not take a variable for it |
+| The guard for links covers the chosen folder's parent too (`guard_parent` for every place) | the same rule as `.claude` of `.claude\skills`: a chosen folder whose parent is a junction is refused |
+| `docker-desktop` and `docker-desktop-data` (any name starting with `docker-desktop`) are left out of the distributions, and lines that are not names (a message of `wsl.exe`) too | they are not shells of the user; `wsl.exe --list` prints a message instead of names when there are none |
