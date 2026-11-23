@@ -4,4 +4,7 @@
 pub mod file;
 pub mod values;
 
-pub use file::{COPY_FILE, SETTINGS_FILE, VERSION, parse, read, remove, render, replace, write};
+pub use file::{
+    COPY_FILE, SETTINGS_FILE, VERSION, Values, edit, parse, put, read, remove, render, replace,
+    values, write,
+};

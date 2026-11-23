@@ -1,4 +1,6 @@
-//! The language chosen in the window of `op-reason.exe` (design `2026-11-15-language-toggle-design.md` §3 and §5).
+//! `settings.json`: the language chosen in the window of `op-reason.exe` (design `2026-11-15-language-toggle-design.md`
+//! §3 and §5), and the values of the settings that op-reason reads itself (design `2026-11-23-settings-design.md` §6:
+//! the relay's mode and times, whether it shows its icon, the folders where the skill was placed).
 //!
 //! - Windows: `%LOCALAPPDATA%\op-reason\settings.json`, written by the window's switch, read by `op-reason.exe`, the
 //!   launcher and the PowerShell entry.
@@ -14,9 +16,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::lang::Lang;
+use crate::settings::values::RelayMode;
 
 /// The file on Windows, in `%LOCALAPPDATA%\op-reason`.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -35,30 +38,181 @@ pub fn parse(text: &str) -> Option<Lang> {
     Lang::parse(value.as_object()?.get("lang")?.as_str()?)
 }
 
-/// The text of a file that says `lang`: `{"v":1,"lang":"…"}`, or, when `old` is a JSON object, its `v` (1 when it has
-/// none), `lang`, then its other fields as they were.
-pub fn render(old: Option<&str>, lang: Lang) -> String {
-    let lang_json = Value::from(lang.code()).to_string();
-    let old = old
-        .and_then(|t| serde_json::from_str::<Value>(t.trim_start_matches('\u{feff}')).ok())
-        .and_then(|v| match v {
-            Value::Object(m) => Some(m),
-            _ => None,
-        });
-    let Some(mut fields) = old else {
-        return format!(r#"{{"v":{VERSION},"lang":{lang_json}}}"#);
+/// The values of `settings.json` that op-reason reads itself. `None` is "not set": the default counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Values {
+    /// `lang`: the language chosen in a window or by `set lang`.
+    pub lang: Option<Lang>,
+    /// `relay.mode`.
+    pub mode: Option<RelayMode>,
+    /// `relay.timeLimit`, seconds above zero.
+    pub time_limit: Option<u64>,
+    /// `relay.answerWait`, seconds above zero.
+    pub answer_wait: Option<u64>,
+    /// `relay.trayIcon`.
+    pub tray_icon: Option<bool>,
+    /// `skill.folders`: the folders where `set skill.folder.<folder> on` placed the skill.
+    pub folders: Vec<String>,
+    /// Fields that were there but not accepted: their path (`relay.mode`) and their JSON text. They count as not set.
+    pub ignored: Vec<(String, String)>,
+}
+
+/// The values in a file's text (a byte order mark is allowed); no file, or a text that is not a JSON object, has none.
+pub fn values(text: Option<&str>) -> Values {
+    let Some(root) = text.and_then(object) else {
+        return Values::default();
     };
+    let mut ignored = Vec::new();
+    let mut ignore = |path: &str, value: &Value| ignored.push((path.to_owned(), value.to_string()));
+    let mut lang = None;
+    if let Some(l) = root.get("lang") {
+        lang = l.as_str().and_then(Lang::parse);
+        if lang.is_none() {
+            ignore("lang", l);
+        }
+    }
+    let mut mode = None;
+    let mut time_limit = None;
+    let mut answer_wait = None;
+    let mut tray_icon = None;
+    match root.get("relay") {
+        Some(Value::Object(relay)) => {
+            if let Some(m) = relay.get("mode") {
+                mode = m.as_str().and_then(RelayMode::parse);
+                if mode.is_none() {
+                    ignore("relay.mode", m);
+                }
+            }
+            for (key, slot) in [
+                ("timeLimit", &mut time_limit),
+                ("answerWait", &mut answer_wait),
+            ] {
+                if let Some(n) = relay.get(key) {
+                    *slot = n.as_u64().filter(|s| *s > 0);
+                    if slot.is_none() {
+                        ignore(&format!("relay.{key}"), n);
+                    }
+                }
+            }
+            if let Some(t) = relay.get("trayIcon") {
+                tray_icon = t.as_bool();
+                if tray_icon.is_none() {
+                    ignore("relay.trayIcon", t);
+                }
+            }
+        }
+        Some(other) => ignore("relay", other),
+        None => {}
+    }
+    let mut folders = Vec::new();
+    match root.get("skill") {
+        Some(Value::Object(skill)) => match skill.get("folders") {
+            Some(Value::Array(list)) => {
+                for f in list {
+                    match f.as_str() {
+                        Some(f) => folders.push(f.to_owned()),
+                        None => ignore("skill.folders", f),
+                    }
+                }
+            }
+            Some(other) => ignore("skill.folders", other),
+            None => {}
+        },
+        Some(other) => ignore("skill", other),
+        None => {}
+    }
+    Values {
+        lang,
+        mode,
+        time_limit,
+        answer_wait,
+        tray_icon,
+        folders,
+        ignored,
+    }
+}
+
+/// A text's JSON object (a byte order mark is allowed).
+fn object(text: &str) -> Option<Map<String, Value>> {
+    match serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).ok()? {
+        Value::Object(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// The text of a file after `change` changed its fields: `v` first (the old one, else 1), then `lang` when there is
+/// one, then the other fields in the order of their names. A missing or broken old text starts from no fields.
+pub fn edit(old: Option<&str>, change: impl FnOnce(&mut Map<String, Value>)) -> String {
+    let mut fields = old.and_then(object).unwrap_or_default();
     let v = fields.remove("v").unwrap_or(Value::from(VERSION));
-    fields.remove("lang");
-    let mut out = format!(r#"{{"v":{v},"lang":{lang_json}"#);
-    for (key, value) in &fields {
+    change(&mut fields);
+    let mut out = format!(r#"{{"v":{v}"#);
+    let lang = fields.remove("lang");
+    let rest = lang.iter().map(|l| ("lang", l)).chain(
+        fields
+            .iter()
+            .filter(|(k, _)| *k != "v")
+            .map(|(k, v)| (k.as_str(), v)),
+    );
+    for (key, value) in rest {
         out.push(',');
-        out.push_str(&Value::from(key.as_str()).to_string());
+        out.push_str(&Value::from(key).to_string());
         out.push(':');
         out.push_str(&value.to_string());
     }
     out.push('}');
     out
+}
+
+/// Puts `value` at `path` (`["relay", "mode"]`), making the objects on the way (a field on the way that is not an
+/// object is replaced); `None` removes it, and then the objects on the way that it left empty.
+pub fn put(map: &mut Map<String, Value>, path: &[&str], value: Option<Value>) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    match value {
+        Some(value) => {
+            let mut here = map;
+            for key in parents {
+                let slot = here
+                    .entry((*key).to_owned())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if !slot.is_object() {
+                    *slot = Value::Object(Map::new());
+                }
+                here = slot.as_object_mut().expect("an object was just put here");
+            }
+            here.insert((*last).to_owned(), value);
+        }
+        None => {
+            remove_at(map, parents, last);
+        }
+    }
+}
+
+/// Removes `parents…/last`; returns whether `map` is empty afterwards (so that the caller removes it).
+fn remove_at(map: &mut Map<String, Value>, parents: &[&str], last: &str) -> bool {
+    match parents.split_first() {
+        None => {
+            map.remove(last);
+        }
+        Some((first, rest)) => {
+            if let Some(Value::Object(child)) = map.get_mut(*first)
+                && remove_at(child, rest, last)
+            {
+                map.remove(*first);
+            }
+        }
+    }
+    map.is_empty()
+}
+
+/// The text of a file that says `lang`: `{"v":1,"lang":"…"}`, or, when `old` is a JSON object, its `v` (1 when it has
+/// none), `lang`, then its other fields as they were.
+pub fn render(old: Option<&str>, lang: Lang) -> String {
+    edit(old, |fields| {
+        fields.insert("lang".to_owned(), Value::from(lang.code()));
+    })
 }
 
 /// Reads the chosen language. `Ok(None)` when the file is missing or holds no choice; `Err` for other read errors
@@ -121,6 +275,7 @@ fn temporary(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::values::RelayMode;
 
     #[test]
     fn parse_reads_lang_whatever_v_says() {
@@ -174,6 +329,97 @@ mod tests {
         for lang in [Lang::En, Lang::Ja] {
             assert_eq!(parse(&render(Some(r#"{"a":1}"#), lang)), Some(lang));
         }
+    }
+
+    #[test]
+    fn values_reads_the_relay_and_the_skill() {
+        let v = values(Some(
+            r#"{"v":1,"lang":"ja","relay":{"mode":"show-only","timeLimit":90,"answerWait":5,"trayIcon":false},"skill":{"folders":["D:\\a","E:\\b"]}}"#,
+        ));
+        assert_eq!(v.lang, Some(Lang::Ja));
+        assert_eq!(v.mode, Some(RelayMode::ShowOnly));
+        assert_eq!((v.time_limit, v.answer_wait), (Some(90), Some(5)));
+        assert_eq!(v.tray_icon, Some(false));
+        assert_eq!(v.folders, vec![r"D:\a".to_owned(), r"E:\b".to_owned()]);
+        assert!(v.ignored.is_empty());
+        assert_eq!(values(None), Values::default());
+        assert_eq!(values(Some("junk")), Values::default());
+        assert_eq!(
+            values(Some("\u{feff}{\"relay\":{\"mode\":\"per-call\"}}")).mode,
+            Some(RelayMode::PerCall)
+        );
+    }
+
+    #[test]
+    fn values_ignores_what_it_does_not_accept() {
+        let v = values(Some(
+            r#"{"lang":"fr","relay":{"mode":"later","timeLimit":0,"answerWait":"60","trayIcon":"yes"},"skill":{"folders":["D:\\a",3]}}"#,
+        ));
+        assert_eq!(v.lang, None);
+        assert_eq!(v.mode, None);
+        assert_eq!(
+            (v.time_limit, v.answer_wait, v.tray_icon),
+            (None, None, None)
+        );
+        assert_eq!(v.folders, vec![r"D:\a".to_owned()]);
+        let keys: Vec<&str> = v.ignored.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "lang",
+                "relay.mode",
+                "relay.timeLimit",
+                "relay.answerWait",
+                "relay.trayIcon",
+                "skill.folders"
+            ]
+        );
+        assert_eq!(v.ignored[1].1, r#""later""#);
+        assert_eq!(values(Some(r#"{"relay":7}"#)).ignored[0].0, "relay");
+    }
+
+    #[test]
+    fn edit_puts_v_and_lang_first_and_keeps_the_rest() {
+        let text = edit(Some(r#"{"lang":"ja","theme":1}"#), |m| {
+            put(m, &["relay", "mode"], Some(Value::from("per-call")))
+        });
+        assert_eq!(
+            text,
+            r#"{"v":1,"lang":"ja","relay":{"mode":"per-call"},"theme":1}"#
+        );
+        let text = edit(Some(&text), |m| {
+            put(m, &["relay", "timeLimit"], Some(Value::from(90)))
+        });
+        assert_eq!(
+            text,
+            r#"{"v":1,"lang":"ja","relay":{"mode":"per-call","timeLimit":90},"theme":1}"#
+        );
+        let text = edit(Some(&text), |m| {
+            put(m, &["relay", "mode"], None);
+            put(m, &["relay", "timeLimit"], None);
+            put(m, &["lang"], None);
+        });
+        assert_eq!(text, r#"{"v":1,"theme":1}"#, "empty parents go");
+        assert_eq!(edit(Some(r#"{"v":3}"#), |_| {}), r#"{"v":3}"#);
+        assert_eq!(edit(Some("junk"), |_| {}), r#"{"v":1}"#);
+        assert_eq!(
+            edit(Some(r#"{"relay":"x"}"#), |m| put(
+                m,
+                &["relay", "mode"],
+                Some(Value::from("show-only"))
+            )),
+            r#"{"v":1,"relay":{"mode":"show-only"}}"#,
+            "a parent that is not an object is replaced when a value goes in"
+        );
+        assert_eq!(
+            edit(Some(r#"{"relay":"x"}"#), |m| put(
+                m,
+                &["relay", "mode"],
+                None
+            )),
+            r#"{"v":1,"relay":"x"}"#,
+            "and left alone when a value goes"
+        );
     }
 
     fn scratch(tag: &str) -> PathBuf {
