@@ -874,14 +874,38 @@ fn file_value(sb: &Sandbox, path: &[&str]) -> Value {
 }
 
 /// Types `text` into a field of the settings window, as the user does (the field tells the window it changed).
+/// `WM_SETTEXT` directly: `SetWindowTextW` does not change a control of another process.
 fn type_into(field: windows::Win32::Foundation::HWND, text: &str) {
-    // SAFETY: WM_SETTEXT, which Windows carries to the other process; the string outlives the call.
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETTEXT};
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: Windows carries WM_SETTEXT's string to the other process; it outlives the call.
     unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
+        SendMessageW(
             field,
-            &windows::core::HSTRING::from(text),
+            WM_SETTEXT,
+            None,
+            Some(LPARAM(wide.as_ptr() as isize)),
         );
     }
+}
+
+/// The text of a field of the settings window (`WM_GETTEXT`, which Windows carries back from the other process).
+fn field_text(field: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_GETTEXT};
+    let mut buf = [0u16; 64];
+    // SAFETY: the buffer's length is passed; it outlives the call.
+    let n = unsafe {
+        SendMessageW(
+            field,
+            WM_GETTEXT,
+            Some(WPARAM(buf.len())),
+            Some(LPARAM(buf.as_mut_ptr() as isize)),
+        )
+    }
+    .0;
+    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0).min(buf.len())])
 }
 
 #[test]
@@ -933,7 +957,7 @@ fn a_typed_time_is_written_before_the_next_action_and_when_the_window_closes() {
     );
     assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
     assert_eq!(
-        controls_text(control(window, ids::TIME_LIMIT).unwrap()),
+        field_text(control(window, ids::TIME_LIMIT).unwrap()),
         "30",
         "the field keeps what was typed"
     );
@@ -954,10 +978,6 @@ fn a_typed_time_is_written_before_the_next_action_and_when_the_window_closes() {
         "{}",
         file_value(&sb, &[])
     );
-}
-
-fn controls_text(hwnd: windows::Win32::Foundation::HWND) -> String {
-    title(hwnd)
 }
 
 fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
