@@ -86,8 +86,8 @@ Anti-goals (what would make it a failure even if it works):
 | --- | --- | --- | --- | --- |
 | `lang` | file | `en`, `ja`, `default` | `default`: `OPREASON_LANG`, else English | `settings.json` `lang` |
 | `relay.mode` | file | `per-call`, `show-only` | `per-call` | `settings.json` `relay.mode` |
-| `relay.time-limit` | file | `<n>[s\|m\|h]`, a bare number is minutes | `60m` | `settings.json` `relay.timeLimit` (seconds) |
-| `relay.answer-wait` | file | `<n>[s\|m]`, a bare number is seconds | `60s` | `settings.json` `relay.answerWait` (seconds) |
+| `relay.time-limit` | file | `<n>[s\|m\|h]`, a bare number is minutes; at most `24h` | `60m` | `settings.json` `relay.timeLimit` (seconds) |
+| `relay.answer-wait` | file | `<n>[s\|m]`, a bare number is seconds; at most `60m` | `60s` | `settings.json` `relay.answerWait` (seconds) |
 | `relay.tray-icon` | file | `on`, `off` | `on` | `settings.json` `relay.trayIcon` (second pull request) |
 | `relay.autostart` | system | `on`, `off` | `off` | op-reason's scheduled task (§9) |
 | `relay.running` | system | `on`, `off` | none | the process that answers on `\\.\pipe\op-reason-ssh-agent`; op-reason's task turned on or off |
@@ -540,3 +540,14 @@ words (`--settings window`). Each goes into the table below.
 | The test name of the task (`OPREASON_RELAY_TASK`) is honored only where `CI` is set | the tests on GitHub's runners must not meet a user's task, and a desktop must not take a variable for it |
 | The guard for links covers the chosen folder's parent too (`guard_parent` for every place) | the same rule as `.claude` of `.claude\skills`: a chosen folder whose parent is a junction is refused |
 | `docker-desktop` and `docker-desktop-data` (any name starting with `docker-desktop`) are left out of the distributions, and lines that are not names (a message of `wsl.exe`) too | they are not shells of the user; `wsl.exe --list` prints a message instead of names when there are none |
+| The relay that answers is op-reason's only when its process is one that a running instance of op-reason's task started (`IRegisteredTask::GetInstances`, `IRunningTask::EnginePID`), and every stop reads the relay again once it holds the lock (final review) | a Running task alone is not enough: while another relay runs, the trigger of every minute starts an `op-reason.exe` that exits at once, and for that moment the task is Running; a relay replaced between the first read and the lock must not be stopped |
+| `set` makes `relay.autostart` before `relay.running` whatever their order on the command line (final review) | §7.1's fixed order; `set relay.running=on relay.autostart=on` must not fail for a task it makes itself |
+| A stop turns op-reason's task off before it ends the relay, under the lock; a task made again is turned off before its relay stops and made turned on; a task to be off is made off in its XML (`<Enabled>false</Enabled>`) rather than made on and turned off (final review) | the trigger of every minute must find no moment to start a relay that would outlive the task or run the old exe |
+| A relay that the same `set` started (another process ID than before the `set`) is not started again for the relay's values (final review) | the file was written before the start, so it runs with them; restarting it would make 1Password ask once more, right after a first install |
+| `relay.time-limit` at most a day, `relay.answer-wait` at most an hour, in `set`, in `settings.json` and in the relay's options (final review) | a longer value overflowed the relay's clocks: it failed at its first window, at every start |
+| A request that waits for its turn or for op-reason's lock gives up when the relay is asked to stop (final review) | `op-reason --settings` holds the lock while it stops the relay; the request would otherwise hold the stop for the drain's 25 seconds |
+| The language switch of a call's window takes `Local\op-reason-settings` too (final review) | §6: a click and a `set` must not undo each other |
+| A `settings.json` that is not a JSON object is named on the file settings (`ignored`) before the next write replaces it (final review) | a file broken by hand would otherwise be replaced without a word |
+| On Windows `/…` is not an absolute folder; on WSL a WSL path that `wslpath -w` cannot turn is refused before `op-reason.exe` starts (final review) | `/…` is relative to the current drive on Windows: the skill would land in another folder |
+| A place that reports another state than asked after placing or removing (the WSL script refuses that way) is a failure, and a chosen folder that cannot be remembered in `settings.json` is one too (final review) | a refusal must never be reported as done |
+| The fish completion offers the words after `--settings` and not op's commands there | op's commands after `--settings` would be wrong words |

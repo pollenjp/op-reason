@@ -14,7 +14,8 @@
   priority 5). `relay stop` turns it off and ends the relay until `relay start`. Stops and restarts take op-reason's lock
   first, and a relay that another task or a terminal started is shown, never stopped; while one runs, op-reason's task is
   made turned off.
-- **The relay reads its mode and times from `settings.json`**; its options still win. It writes `relay.json` (its
+- **The relay reads its mode and times from `settings.json`**; its options still win. `--time-limit` takes at most a
+  day and `--answer-wait` at most an hour (a longer value made the relay fail at its first window). It writes `relay.json` (its
   process ID and the values it runs with), and on its stop event it fails new requests, lets those with 1Password finish
   (25 seconds at most) and exits; `op-reason --log` shows the stop.
 - **The skill placed where agents read it**: `skill.windows` (`%USERPROFILE%\.claude\skills`), `skill.wsl.<distribution>`

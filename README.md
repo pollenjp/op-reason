@@ -400,7 +400,8 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
   ([design](docs/superpowers/specs/2026-11-22-front-after-allow-design.md)). The relay says in a toast and a record
   when its parent is missing or ends.
 - One relay per logon session. Options: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
-  `--time-limit <n>[s|m|h]` (60m), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s).
+  `--time-limit <n>[s|m|h]` (60m, at most 24h), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s, at
+  most 60m). Without them, the relay takes these values from `settings.json` ([Settings](#settings)).
 - While its window is open, the relay holds op-reason's lock, so that its windows and 1Password's prompts come in pairs
   with those of `op` calls.
 
@@ -462,8 +463,8 @@ Design: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/
 | --- | --- | --- |
 | `lang` | `en`, `ja`, `default` (`default`: `OPREASON_LANG`, else English) | `settings.json` |
 | `relay.mode` | `per-call`, `show-only` (`per-call`) | `settings.json`, read by the relay when it starts; its options win |
-| `relay.time-limit` | `<n>[s\|m\|h]`, a bare number is minutes (`60m`) | `settings.json` |
-| `relay.answer-wait` | `<n>[s\|m]`, a bare number is seconds (`60s`) | `settings.json` |
+| `relay.time-limit` | `<n>[s\|m\|h]`, a bare number is minutes, at most `24h` (`60m`) | `settings.json` |
+| `relay.answer-wait` | `<n>[s\|m]`, a bare number is seconds, at most `60m` (`60s`) | `settings.json` |
 | `relay.autostart` | `on`, `off` (`off`) | op-reason's scheduled task `\op-reason-ssh-relay-<your SID>` |
 | `relay.running` | `on`, `off` | the relay that answers on `\\.\pipe\op-reason-ssh-agent` |
 | `skill.windows` | `on`, `off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Claude Code on Windows) |

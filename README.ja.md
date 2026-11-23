@@ -387,7 +387,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   「1Password が確認しています」の最後の行にもそう出ます ([設計](docs/superpowers/specs/2026-11-22-front-after-allow-design.md))。
   中継は、親が無いとき・終わったときに toast と記録でそう知らせます。
 - 中継はログオン セッションに 1 つです。option: `--mode per-call|show-only`・`--pipe <名前>`・`--upstream <名前>`・
-  `--time-limit <数>[s|m|h]` (既定 60m)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s)。
+  `--time-limit <数>[s|m|h]` (既定 60m、24h まで)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s、60m まで)。
+  option が無ければ、中継はこれらの値を `settings.json` から取ります ([設定](#設定))。
 - 窓を出している間、中継は op-reason の lock を持ちます。中継の窓と 1Password の画面は、`op` の呼び出しのものと混ざらずに
   組で出ます。
 
@@ -445,8 +446,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 | --- | --- | --- |
 | `lang` | `en`・`ja`・`default` (`default`: `OPREASON_LANG`、無ければ英語) | `settings.json` |
 | `relay.mode` | `per-call`・`show-only` (`per-call`) | `settings.json`。中継が起きるときに読み、中継の option が勝ちます |
-| `relay.time-limit` | `<数>[s\|m\|h]`。数だけなら分 (`60m`) | `settings.json` |
-| `relay.answer-wait` | `<数>[s\|m]`。数だけなら秒 (`60s`) | `settings.json` |
+| `relay.time-limit` | `<数>[s\|m\|h]`。数だけなら分。`24h` まで (`60m`) | `settings.json` |
+| `relay.answer-wait` | `<数>[s\|m]`。数だけなら秒。`60m` まで (`60s`) | `settings.json` |
 | `relay.autostart` | `on`・`off` (`off`) | op-reason のタスク `\op-reason-ssh-relay-<あなたの SID>` |
 | `relay.running` | `on`・`off` | `\\.\pipe\op-reason-ssh-agent` で答える中継 |
 | `skill.windows` | `on`・`off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Windows の Claude Code) |
