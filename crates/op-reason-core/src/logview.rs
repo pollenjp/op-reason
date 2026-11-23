@@ -415,6 +415,38 @@ fn row(lang: Lang, rec: &Value, today: &str, decisions: &HashMap<String, Value>)
                 command(lang, rec),
             ]
         }
+        "settings" => {
+            let ja = lang == Lang::Ja;
+            let changes = rec["changes"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|c| {
+                            let mut s = text(&c["name"]);
+                            if !c["from"].is_null() {
+                                s.push(' ');
+                                s.push_str(&text(&c["from"]));
+                            }
+                            s.push_str(" → ");
+                            s.push_str(&text(&c["to"]));
+                            if c["result"] == "failed" {
+                                s.push_str(if ja { " (失敗)" } else { " (failed)" });
+                            }
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            [
+                when,
+                if ja { "設定" } else { "settings" }.to_string(),
+                "-".into(),
+                who(lang, rec),
+                "-".into(),
+                cell(&clip(&changes, 200, "…")),
+            ]
+        }
         "refused" => [
             when,
             format!("{} ({})", l.refused, why_label(lang, &text(&rec["why"]))),
@@ -551,7 +583,9 @@ pub fn run(
         .filter(|r| {
             matches!(
                 r["event"].as_str(),
-                Some("start" | "refused" | "shared-approval" | "ssh-sign" | "ssh-relay")
+                Some(
+                    "start" | "refused" | "shared-approval" | "ssh-sign" | "ssh-relay" | "settings"
+                )
             ) && r["epoch"].as_i64().unwrap_or(0) >= cutoff
         })
         .map(|mut r| {
@@ -787,6 +821,33 @@ mod tests {
         assert_eq!(json.len(), 5);
         assert!(json[1].contains(r#""id":"s1""#) && json[3].contains(r#""decision":"s1""#));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_settings_record_is_one_line_with_its_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "op-reason-logview-settings-{}",
+            crate::log::random_u64()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = r#"{"v":1,"id":"c1","event":"settings","time":"t","epoch":4500,"session":null,"from":"window","caller":{"type":"claude","claude_pid":3,"herdr":null,"cwd":"~","repo":null,"branch":null},"changes":[{"name":"relay.mode","from":"per-call","to":"show-only","result":"done"},{"name":"relay.running","from":"on","to":"off","result":"failed","why":"locked"}]}"#;
+        std::fs::write(dir.join("log.jsonl"), format!("{rec}\n")).unwrap();
+        let lines = view(&dir, Lang::En, &["--all"]);
+        let line = lines.iter().find(|l| l.contains("relay.mode")).unwrap();
+        assert!(line.contains("settings"), "{line}");
+        assert!(line.contains("Claude"), "{line}");
+        assert!(
+            line.contains("relay.mode per-call → show-only; relay.running on → off (failed)"),
+            "{line}"
+        );
+        let lines = view(&dir, Lang::Ja, &["--all"]);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("設定") && l.contains("(失敗)")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

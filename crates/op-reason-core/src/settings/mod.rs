@@ -4,10 +4,14 @@
 pub mod catalog;
 pub mod cli;
 pub mod engine;
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod file;
+pub mod record;
 pub mod relayinfo;
 pub mod skill;
 pub mod task;
+pub mod text;
 pub mod values;
 pub mod wsl;
 
