@@ -27,7 +27,16 @@
 # of options and prints an empty line, so printf is used
 function __op_reason_words
     set -l skip 0
+    set -l first 1
     for w in (commandline -xpc)[2..]
+        # The wrapper's --settings, as the first argument, starts a command path of its own
+        if test $first = 1
+            set first 0
+            if test "$w" = --settings
+                printf '%s\n' --settings
+                continue
+            end
+        end
         if test $skip = 1
             set skip 0
             continue
@@ -103,6 +112,22 @@ complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l skill
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l log -d 'Show who called op and why (op-reason)'
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l completion -x -a fish -d 'Print the fish completion (op-reason)'
 complete -c __OPREASON_CMD__ -n 'test (count (commandline -xpc)) -eq 1' -l settings -d "op-reason's settings: list, get, set, check (op-reason)"
+
+# --- op-reason --settings: its words and the settings (never op's commands)
+
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a list -d 'Every setting now (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a get -d 'The value of one setting now (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a set -d 'Make it so: <name> <value> or <name>=<value> (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a check -d 'Compare <name>=<value> with now (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a relay -d 'Start, stop or restart the SSH relay (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a forget-accounts -d 'Forget the accounts remembered for links (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a open-records -d 'Open the folder of the records (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings' -a help -d 'The usage of --settings (op-reason)'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings relay' -a 'start stop restart'
+complete -c __OPREASON_CMD__ -n '__op_reason_at --settings get; or __op_reason_at --settings set' \
+    -a 'lang relay.mode relay.time-limit relay.answer-wait relay.autostart relay.running skill.windows skill.wsl. skill.folder.'
+complete -c __OPREASON_CMD__ -n '__op_reason_in --settings check' \
+    -a 'lang= relay.mode= relay.time-limit= relay.answer-wait= relay.autostart= relay.running= skill.windows='
 
 # --- Global flags
 

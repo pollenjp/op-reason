@@ -26,6 +26,8 @@
 #   Files: values of --out-file and of the short forms (op read -o, op inject -i), and op document create's argument
 #   After -- (op run's child command): the child command's names and its own completion; no op flags. op -- <Tab> gives
 #     neither op's commands nor --reason
+#   --settings: the words after it (list, get, set, check, relay …), relay's words, the settings for get, set and check;
+#     not op's commands
 #   op-reason as the command name: the same completion works for op-reason
 #
 # ## How
@@ -123,6 +125,26 @@ if has --reason --account --format --help --version --skill --log --completion -
   ok "op --<Tab> gives --reason, the global flags and the wrapper options"
 else
   ng "op --<Tab> gives --reason, the global flags and the wrapper options" "$(shown)"
+fi
+
+echo "== --settings"
+cands "op --settings "
+if has list get set check relay && lacks item vault --reason && quiet; then
+  ok "op --settings <Tab> gives the words of the settings, not op's commands"
+else
+  ng "op --settings <Tab> gives the words of the settings, not op's commands" "$(shown)"
+fi
+cands "op --settings relay "
+if has start stop restart && lacks list && quiet; then
+  ok "op --settings relay <Tab> gives start, stop and restart"
+else
+  ng "op --settings relay <Tab> gives start, stop and restart" "$(shown)"
+fi
+cands "op --settings get "
+if has lang relay.mode relay.autostart skill.windows && quiet; then
+  ok "op --settings get <Tab> gives the settings"
+else
+  ng "op --settings get <Tab> gives the settings" "$(shown)"
 fi
 
 echo "== --reason"

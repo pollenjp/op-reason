@@ -33,10 +33,21 @@ pub fn run(args: &[OsString], lang: Lang) -> i32 {
             return 127;
         }
     };
-    let args: Vec<String> = args
-        .iter()
-        .map(|a| translate(&a.to_string_lossy()))
-        .collect();
+    let mut turned = Vec::with_capacity(args.len());
+    for a in args {
+        match translate(&a.to_string_lossy()) {
+            Ok(t) => turned.push(t),
+            Err(path) => {
+                print_stderr(&format!(
+                    "{}{}\n",
+                    messages::PREFIX,
+                    not_turned(lang, &path)
+                ));
+                return op_reason_core::contract::EXIT_USAGE;
+            }
+        }
+    }
+    let args = turned;
     let claude = env("CLAUDECODE").as_deref() == Some("1")
         || env("CLAUDE_CODE_SESSION_ID").is_some_and(|v| !v.is_empty());
     let status = launch::command(&exe)
@@ -73,13 +84,25 @@ fn no_exe(lang: Lang, looked: &str) -> String {
     }
 }
 
-/// A chosen folder given as a WSL path (`skill.folder./mnt/d/x`, also with `=on`) as its Windows path.
-fn translate(arg: &str) -> String {
+fn not_turned(lang: Lang, path: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "wslpath -w could not turn {path} into a Windows path: give a folder of Windows (such as /mnt/c/…), or use skill.wsl.<distribution> for this distribution's skills"
+        ),
+        Lang::Ja => format!(
+            "wslpath -w が {path} を Windows のパスにできませんでした。Windows のフォルダ (/mnt/c/… など) を渡すか、この distro の skill には skill.wsl.<distro> を使ってください"
+        ),
+    }
+}
+
+/// A chosen folder given as a WSL path (`skill.folder./mnt/d/x`, also with `=on`) as its Windows path; `Err` with the
+/// path when `wslpath -w` cannot turn it (it is never passed on as it is: on Windows `/…` names another folder).
+fn translate(arg: &str) -> Result<String, String> {
     let Some(rest) = arg.strip_prefix(FOLDER) else {
-        return arg.to_owned();
+        return Ok(arg.to_owned());
     };
     if !rest.starts_with('/') {
-        return arg.to_owned();
+        return Ok(arg.to_owned());
     }
     let (path, value) = match rest.rsplit_once('=') {
         Some((p, v)) if matches!(v, "on" | "off") => (p, Some(v)),
@@ -87,12 +110,12 @@ fn translate(arg: &str) -> String {
     };
     let windows = launch::wslpath_w(Path::new(path));
     if windows.is_empty() {
-        return arg.to_owned();
+        return Err(path.to_owned());
     }
-    match value {
+    Ok(match value {
         Some(v) => format!("{FOLDER}{windows}={v}"),
         None => format!("{FOLDER}{windows}"),
-    }
+    })
 }
 
 /// After a `set` that succeeded: the language it set, in this executable's copy (`default` removes it).

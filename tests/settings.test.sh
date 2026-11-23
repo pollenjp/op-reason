@@ -14,7 +14,8 @@
 #   - op-reason --settings <args> runs op-reason.exe --settings <args> (OPREASON_EXE) with the arguments unchanged,
 #     stdout and the exit code passed through
 #   - the caller's kind goes in OPREASON_SETTINGS_CALLER, added to WSLENV (claude under Claude Code, human otherwise)
-#   - a chosen folder given as a WSL path is passed as the Windows path that wslpath -w gives
+#   - a chosen folder given as a WSL path is passed as the Windows path that wslpath -w gives; one that it cannot turn
+#     is refused (exit 2) before op-reason.exe starts
 #   - set lang that succeeded updates the WSL copy of the language (lang.json); default removes it; a failed one does
 #     not
 #   - op as the name works too; without op-reason.exe: exit 127 and one line on stderr
@@ -89,6 +90,13 @@ check "the WSL path becomes the Windows path" test "$(args)" == "--settings|set|
 run "${work}/bin/op-reason" --settings set "skill.folder./mnt/d/a=on" >/dev/null
 detail="args=$(args)"
 check "also in a name=value pair" test "$(args)" == "--settings|set|skill.folder.D:\\a=on|"
+
+rm -f "${work}/rec/args"
+err=$(run "${work}/bin/op-reason" --settings set "skill.folder./home/me/skills" on 2>&1 >/dev/null)
+rc=$?
+detail="rc=${rc} err=${err}"
+check "a WSL path that wslpath cannot turn is refused (exit 2), op-reason.exe not started" \
+  test "${rc}" == 2 -a ! -e "${work}/rec/args"
 
 echo "== the WSL copy of the language"
 copy="${work}/state/op-reason/lang.json"
