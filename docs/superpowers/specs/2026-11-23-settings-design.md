@@ -355,7 +355,7 @@ still finds the front matter on the first line:
 ### 11.1 Opening it
 
 - `op-reason --settings` with no more arguments brings an open settings window to the front, or starts
-  `op-reason.exe --settings window` without a console (`DETACHED_PROCESS`), lets it take the front
+  `op-reason.exe --settings window` with a console that is never shown (`CREATE_NO_WINDOW`; §21), lets it take the front
   (`AllowSetForegroundWindow`), and exits at once: a terminal gets its prompt back.
 - **A double click on `op-reason.exe`** (no arguments, a console of its own, its output a console) does the same instead
   of printing the usage into a console that closes at once. The plan of the call table does not change (no arguments is
@@ -567,3 +567,4 @@ words (`--settings window`). Each goes into the table below.
 | The icon's actions for the relay of op-reason's task run with Explorer as their parent (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`), with the relay's variables (final review) | that relay runs in Task Scheduler's job, which keeps the task running while any of its processes lives: "Do not start a new instance" would ignore the new relay of a restart, or a window opened from the icon would hold the task |
 | The window does not clip its children, opens in the middle of the work area where the pointer is, no higher than that work area, with a skill list of six rows that may shrink to two; it greys its controls before it shows (CI screenshots) | group boxes paint only their frames; a 768-pixel screen, or 1080 pixels at 150 %, must show Refresh and Close and the line of the last result |
 | The usage of `--settings` and the skill say that `op-reason --settings` without a word opens a window on the desktop, and `help` prints the words (final review) | an agent that runs it for its help would otherwise open a window on the user's desktop |
+| The settings window's process, `wsl.exe` and the icon's actions start with a console that is never shown (`CREATE_NO_WINDOW`), not without one (manual checks) | a console program started by a process without a console gets a console of its own, which Windows shows or hands to Windows Terminal, and that window comes to the front for a moment at every read |

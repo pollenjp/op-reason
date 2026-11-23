@@ -30,7 +30,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CreateMutexW, CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CreateMutexW, CreateProcessW, PROCESS_INFORMATION,
     STARTUPINFOW, WaitForSingleObject,
 };
 use windows::Win32::UI::Controls::{
@@ -96,9 +96,11 @@ pub fn launch() -> Result<(), String> {
     Ok(())
 }
 
-/// Starts `<exe> --settings window` without a console and without handles of this process (a caller that reads this
-/// process's output must not wait for the window), out of the caller's job when the job lets it go (a terminal's job
-/// would end the window with the terminal). Returns its process ID.
+/// Starts `<exe> --settings window` with a console of its own that is never shown (`CREATE_NO_WINDOW`: the console
+/// programs it starts, `wsl.exe` for every read, share it instead of showing a console window or Windows Terminal for a
+/// moment) and without handles of this process (a caller that reads this process's output must not wait for the
+/// window), out of the caller's job when the job lets it go (a terminal's job would end the window with the terminal).
+/// Returns its process ID.
 fn start_detached(exe: &Path) -> Result<u32, String> {
     let app = HSTRING::from(exe.as_os_str());
     let dir = exe.parent().map(|d| HSTRING::from(d.as_os_str()));
@@ -108,8 +110,8 @@ fn start_detached(exe: &Path) -> Result<u32, String> {
     };
     let mut why = String::new();
     for flags in [
-        DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB,
-        DETACHED_PROCESS,
+        CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+        CREATE_NO_WINDOW,
     ] {
         let mut line: Vec<u16> = format!("\"{}\" --settings window", exe.display())
             .encode_utf16()

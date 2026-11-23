@@ -293,7 +293,8 @@ changes op-reason's settings through one layer:
   fails new requests, waits up to 25 seconds for the ones in progress, records `stop` and exits.
 - The WSL executable passes `--settings` on to `op-reason.exe --settings`; the PowerShell entry refuses it.
 - Without more words (and on a double click of `op-reason.exe`), `op-reason.exe --settings` starts
-  `op-reason.exe --settings window` without a console and returns. That process holds `Local\op-reason-settings-window`
+  `op-reason.exe --settings window` with a console that is never shown (`CREATE_NO_WINDOW`: `wsl.exe` and the other
+  console programs it starts share it) and returns. That process holds `Local\op-reason-settings-window`
   and shows the window of class `op-reason-settings` (`win/settings/window.rs`, its standard controls in `controls.rs`):
   a worker thread runs the engine for every control (`from: window`) and reads every setting again after each job; its
   texts and lines are portable (`settings_ui.rs`). The mode and the times go through `engine::write`, which leaves the
