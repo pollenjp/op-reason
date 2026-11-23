@@ -2,34 +2,21 @@
 //! A mode is changed by starting the relay again with another option; the window has no switch for it.
 
 use op_reason_core::lang::Lang;
+use op_reason_core::settings::values;
 
 /// The first argument that chooses the relay's face.
 pub const RELAY_ARG: &str = "--ssh-agent";
 /// The relay's own pipe.
-pub const DEFAULT_PIPE: &str = r"\\.\pipe\op-reason-ssh-agent";
+pub const DEFAULT_PIPE: &str = values::RELAY_PIPE;
 /// The 1Password agent's pipe (the one Windows OpenSSH uses by default).
-pub const DEFAULT_UPSTREAM: &str = r"\\.\pipe\openssh-ssh-agent";
+pub const DEFAULT_UPSTREAM: &str = values::RELAY_UPSTREAM;
 /// How long an answer covers its call: 60 minutes.
-pub const DEFAULT_LIMIT: u64 = 60 * 60;
+pub const DEFAULT_LIMIT: u64 = values::DEFAULT_TIME_LIMIT;
 /// How long a window waits for an answer: 60 seconds.
-pub const DEFAULT_ANSWER_WAIT: u64 = 60;
+pub const DEFAULT_ANSWER_WAIT: u64 = values::DEFAULT_ANSWER_WAIT;
 
-/// `per-call` (the relay decides) or `show-only` (1Password decides).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    PerCall,
-    ShowOnly,
-}
-
-impl Mode {
-    /// The word of the option, the records and the window.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Mode::PerCall => "per-call",
-            Mode::ShowOnly => "show-only",
-        }
-    }
-}
+/// `per-call` (the relay decides) or `show-only` (1Password decides): the core's, which settings hold too.
+pub use values::RelayMode as Mode;
 
 /// What the relay was started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,51 +113,20 @@ pub fn parse(args: &[String]) -> Result<Opts, OptError> {
                 .ok_or_else(|| OptError::Missing(name.to_owned()))?,
         };
         match name {
-            "--mode" => {
-                o.mode = match value.as_str() {
-                    "per-call" => Mode::PerCall,
-                    "show-only" => Mode::ShowOnly,
-                    _ => return Err(OptError::BadMode(value)),
-                }
-            }
+            "--mode" => o.mode = Mode::parse(&value).ok_or(OptError::BadMode(value))?,
             "--pipe" => o.pipe = pipe_path(&value),
             "--upstream" => o.upstream = pipe_path(&value),
             "--time-limit" => {
-                o.limit_secs = duration(&value, 60, true)
+                o.limit_secs = values::duration(&value, 60, true)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
             _ => {
-                o.answer_secs = duration(&value, 1, false)
+                o.answer_secs = values::duration(&value, 1, false)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
         }
     }
     Ok(o)
-}
-
-/// Seconds of `<n>`, `<n>s`, `<n>m` (and `<n>h` when `hours`); a bare number counts `bare` seconds each. Zero is no
-/// duration.
-fn duration(text: &str, bare: u64, hours: bool) -> Option<u64> {
-    let (digits, unit) = match text.char_indices().last() {
-        Some((at, c)) if c.is_ascii_alphabetic() => (
-            &text[..at],
-            match c {
-                's' => 1,
-                'm' => 60,
-                'h' if hours => 3600,
-                _ => return None,
-            },
-        ),
-        _ => (text, bare),
-    };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits
-        .parse::<u64>()
-        .ok()
-        .and_then(|n| n.checked_mul(unit))
-        .filter(|s| *s > 0)
 }
 
 /// A pipe's full name: `\\.\pipe\` in front of a bare name.
