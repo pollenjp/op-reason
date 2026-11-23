@@ -202,7 +202,7 @@ The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves t
 | `op-reason --skill` | a guide for AI agents (a SKILL.md file); refusals point agents to it |
 | `op-reason --completion fish [<command>]` | the fish completion for `op` (or `<command>`) |
 | `op-reason-log`, `op-reason --log` | the log viewer (below) |
-| `op-reason --settings …` | op-reason's settings: `list`, `get`, `set`, `check`, the SSH relay ([Settings](#settings)) |
+| `op-reason --settings …` | op-reason's settings: `list`, `get`, `set`, `check`, the SSH relay; without more words, the settings window ([Settings](#settings)) |
 
 ### The log
 
@@ -458,7 +458,8 @@ Time      Result       Secs  Caller           Reason              Command
 `%LOCALAPPDATA%\op-reason\settings.json`, and what Windows, Task Scheduler and Claude Code read elsewhere (the relay's
 scheduled task, the running relay, the skill files). Every setting has the same three operations: `get` reads the value
 now, `set` makes it so (running it again changes nothing), and `check` compares a wanted value with the value now.
-Design: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md).
+Without more words it opens [the settings window](#the-window-the-start-menu-and-the-icon), which does the same with
+buttons. Design: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md).
 
 | Setting | Values (default) | Kept in |
 | --- | --- | --- |
@@ -468,6 +469,8 @@ Design: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/
 | `relay.answer-wait` | `<n>[s\|m]`, a bare number is seconds, at most `60m` (`60s`) | `settings.json` |
 | `relay.autostart` | `on`, `off` (`off`) | op-reason's scheduled task `\op-reason-ssh-relay-<your SID>` |
 | `relay.running` | `on`, `off` | the relay that answers on `\\.\pipe\op-reason-ssh-agent` |
+| `relay.tray-icon` | `on`, `off` (`on`) | `settings.json`; the relay's icon in the notification area follows it at once |
+| `start-menu` | `on`, `off` (`off`) | `op-reason.lnk` in your Start menu's Programs folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`) |
 | `skill.windows` | `on`, `off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Claude Code on Windows) |
 | `skill.wsl.<distribution>` | `on`, `off` (`off`) | `~/.claude/skills/op-reason/SKILL.md` in that WSL distribution |
 | `skill.folder.<folder>` | `on`, `off` (`off`) | `<folder>\op-reason\SKILL.md`, for another agent or a project |
@@ -503,6 +506,34 @@ op-reason --settings set skill.windows on          # place the guide where Claud
   Windows path). The PowerShell entry does not change settings.
 - Every change is recorded in the log with its caller (`op-reason --log` shows it). Agents are told to change settings
   only when the user asks; as for `op`, a program of your account can still change them.
+
+### The window, the Start menu and the icon
+
+`op-reason --settings` without more words, and a double click on `op-reason.exe`, open the settings window and return
+at once (there is one window per logon; starting it again brings it to the front). It speaks the language of `lang`
+and changes it at once:
+
+- **SSH relay**: a line that says whether the relay runs, its process, its mode and who started it. **Start**, **Stop**
+  and **Restart** are greyed when op-reason may not act, for example on a relay that another task started. The check
+  boxes are `relay.autostart` and `relay.tray-icon`. The mode and the times are written when they change and used when
+  the relay starts again: **Apply** restarts op-reason's relay with them, after a question (1Password asks once more,
+  and remembered answers are forgotten).
+- **Skill for AI agents**: the places and their states. **Place or update**, **Remove**, **Check** (a WSL distribution
+  that does not run is looked at only then, which starts it) and **Add a folder…**.
+- **Start menu and records**: `start-menu`, the records folder (**Open**) and the accounts remembered for links
+  (**Forget**).
+- Every action is the same `set` as on the command line, run on a thread of its own, and is recorded with
+  `from: window`.
+
+`set start-menu on` puts **op-reason** in the Start menu, so that Windows' search finds the window: `op-reason.lnk`
+starts this `op-reason.exe` with `--settings` (its console shows for a moment in the taskbar). After the exe moves,
+`set start-menu on` makes the shortcut again. A shortcut of that name that is not op-reason's is left alone.
+
+While the relay runs, it shows a key in the notification area (Windows 11 puts a new icon behind `^`; drag it onto the
+taskbar to keep it in sight). A click opens the settings window; the menu shows the relay's line and opens the
+settings or the records folder, restarts or stops op-reason's relay (greyed for a relay that op-reason's task did not
+start), and hides the icon (`relay.tray-icon off`). The menu's actions run `op-reason.exe --settings …` in a process
+of their own and are recorded with `from: tray`.
 
 ## Things to know
 

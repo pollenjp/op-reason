@@ -329,12 +329,12 @@ With the third build no window stopped answering (six windows), and 1Password sh
 click. The notification that comes with the window names "Windows PowerShell" as its sender (op-reason borrows that
 AppUserModelID). At the end the task was removed and the relays stopped.
 
-## Checks of the settings (G1–G11)
+## Checks of the settings (G1–G19)
 
 `op-reason --settings` ([2026-11-23-settings-design.md](superpowers/specs/2026-11-23-settings-design.md)). CI makes a
 scheduled task under a test name on GitHub's runners, which run as an administrator, and fakes `wsl.exe`; these checks
-are for a user without administrator rights, a real logon, a real WSL and the real 1Password. About 20 minutes, with
-one logoff and two 1Password prompts.
+are for a user without administrator rights, a real logon, a real WSL and the real 1Password. About 30 minutes, with
+two logoffs and three 1Password prompts.
 
 Preparation:
 
@@ -362,7 +362,15 @@ Preparation:
 | G8 | `& $exe --settings set relay.mode show-only`; then an ssh as in G4 | `relay.mode: per-call → show-only` and a line that the relay was started again; `get relay.mode --json` has no `relay-differs`. 1Password asks for the signature (show-only), with op-reason's window showing who and why. `set relay.mode default` to go back |
 | G9 | `& $exe --settings set skill.windows on` (or the chosen folder of preparation 4); open the `SKILL.md` it names; in Claude Code on Windows, `/skills` | The guide, with `<!-- placed by op-reason <version>: …` on the line after the closing `---`; Claude Code lists the skill op-reason. `set skill.windows off` removes it (and the empty `op-reason` folder) |
 | G10 | In WSL, with this branch's `op-reason`: `op-reason --settings set "skill.wsl.$WSL_DISTRO_NAME" on`, then `off` | `~/.claude/skills/op-reason/SKILL.md` with the mark, then gone. Where `~/.claude/skills` is a symbolic link (home-manager): refused, nothing written |
-| G11 | `& $exe --settings set relay.autostart off`; restore the `settings.json` of preparation 3; turn the other task of preparation 2 on again | The task is gone and no relay of op-reason's task answers |
+| G11 | `& $exe --settings` | The prompt comes back at once, and the settings window opens in front, in the language of `lang`; while it reads, **Refresh** is greyed. The relay's line says "Running · pid … · per-call · started by op-reason's task". A second `& $exe --settings` brings the window to the front; a double click on `op-reason.exe` in Explorer does the same (its console shows for a moment) |
+| G12 | In the window: choose **日本語**, then **English** again | The window speaks Japanese at once, then English; `& $exe --settings get lang` says `ja` in between |
+| G13 | In the window: **Place or update** on the Windows row (or the chosen folder of preparation 4), then **Remove**; **Check** on a WSL distribution that does not run | The row's state follows (`placed (<version>)`, `not placed`); the checked distribution starts and its row is read. `& $exe --log --since 10m` has `settings` lines from the window |
+| G14 | In the window: change the mode to `show-only`; **Apply**, answer the question with OK; then an ssh as in G4 | The note by Apply says that the relay runs with other values until Apply; after Apply the relay's line says `show-only` and 1Password asks for the signature. Change the mode back and **Apply** again |
+| G15 | `& $exe --settings set start-menu on`; press the Windows key and type `op-reason` | The Start menu finds **op-reason**; it opens the settings window (its console shows in the taskbar only for a moment). `set start-menu off` removes it |
+| G16 | The notification area (on Windows 11 behind `^`): the relay's key | Its tooltip "op-reason SSH relay · per-call". A click opens the settings window; the right-click menu has the relay's line, **Open op-reason settings**, **Open the records folder**, **Restart the relay**, **Stop the relay**, **Hide this icon**. **Restart the relay**: the relay answers again (`--ssh-agent --status`); **Hide this icon**: the icon goes at once, and `set relay.tray-icon on` brings it back |
+| G17 | Restart Explorer (Task Manager → **Windows Explorer** → **Restart**) | The relay's icon comes back within a few seconds |
+| G18 | With the relay running (G2's task), log off and on again | The relay's icon is in the notification area after the logon (the task may start the relay before the taskbar is there) |
+| G19 | `& $exe --settings set relay.autostart off`; restore the `settings.json` of preparation 3; turn the other task of preparation 2 on again | The task is gone, no relay of op-reason's task answers, and its icon is gone |
 
 ## Open question: does plain `signout` close only one process's session?
 

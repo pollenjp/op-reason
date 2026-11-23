@@ -5,10 +5,10 @@
 - **`op-reason --settings`**: one list of op-reason's settings with the same three operations, `get` (the value now),
   `set` (make it so; running it again changes nothing) and `check` (compare a wanted value with the value now: exit 0
   the same, 1 different, 2 failed), with `--json`, and `list`, `relay start|stop|restart`, `forget-accounts` and
-  `open-records`. The settings: `lang`, `relay.mode`, `relay.time-limit`, `relay.answer-wait` (in `settings.json`),
-  `relay.autostart`, `relay.running`, `skill.windows`, `skill.wsl.<distribution>` and `skill.folder.<folder>`. On WSL,
-  `op-reason --settings` runs `op-reason.exe --settings`; the PowerShell entry says that the settings come from
-  `op-reason.exe`.
+  `open-records`. The settings: `lang`, `relay.mode`, `relay.time-limit`, `relay.answer-wait`, `relay.tray-icon` (in
+  `settings.json`), `relay.autostart`, `relay.running`, `start-menu`, `skill.windows`, `skill.wsl.<distribution>` and
+  `skill.folder.<folder>`. On WSL, `op-reason --settings` runs `op-reason.exe --settings`; the PowerShell entry says that
+  the settings come from `op-reason.exe`.
 - **op-reason's own scheduled task for the SSH relay** (`relay.autostart`): `\op-reason-ssh-relay-<SID>` in the root
   folder, with the shape the README recommends (at logon and again every minute, "Do not start a new instance", hidden,
   priority 5), which starts `op-reason.exe --ssh-agent --task <its name>`: the relay writes the name into `relay.json`, and
@@ -25,6 +25,14 @@
   when older and removed only where it carries the mark; nothing is written through a junction or a symbolic link.
 - Every settings change is recorded in `log.jsonl` with its caller, and `op-reason --log` shows it. The skill tells agents
   to change op-reason's settings only when the user asks.
+- **The settings window**: `op-reason --settings` without more words, and a double click on `op-reason.exe`, open a
+  window of Windows' standard controls (one per logon) that does what the command line does, recorded with
+  `from: window`: the language, the SSH relay (Start, Stop and Restart as op-reason may act, the task, the icon, the
+  mode and the times with Apply), the skill places (with a folder picker), the Start menu entry and the records.
+- **`start-menu`**: `op-reason.lnk` in the Start menu, so that Windows' search finds the settings window.
+- **The relay's icon in the notification area** (`relay.tray-icon`, on by default, applied at once): a click opens the
+  settings window; its menu opens the records folder, restarts or stops op-reason's relay and hides the icon, recorded
+  with `from: tray`. It comes back when Explorer starts again.
 
 ## 0.6.0 — 2026-11-22
 

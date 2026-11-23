@@ -23,7 +23,12 @@
 # a window; their client is a copy of fake-ssh named ssh.exe with an ssh command line (the second one long, with a long
 # destination), so that the toasts show the command and the destination as for a real ssh; the toast window and the
 # whole screen are saved with CAPTUREBLT, which layered windows need
-# (docs/superpowers/specs/2026-11-18-pass-toasts-design.md).
+# (docs/superpowers/specs/2026-11-18-pass-toasts-design.md). Then the relay's icon in the notification area with its
+# menu open (the notification area's context-menu message posted to the icon's window).
+#
+# The settings window (op-reason.exe --settings) in English and in Japanese, with a temporary profile where the skill is
+# placed on Windows, and, with -FakeSsh, two WSL distributions through the fake wsl.exe: one that runs without the
+# skill and one that does not run (docs/superpowers/specs/2026-11-23-settings-design.md).
 #
 # ASCII only: Japanese strings are written as \u escapes (Windows PowerShell would misread a file without a BOM).
 [CmdletBinding()]
@@ -59,6 +64,9 @@ public static class OpReasonShots {
   [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
   [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
@@ -495,6 +503,94 @@ if ($FakeSsh) {
   }
   Show-Relay '15-relay-show-only-en' 'show-only' 'en' 'SSH key: 1Password is asking' $ansibleCall
   $agent.Kill(); $agent.WaitForExit()
+
+  # The relay's icon and its menu (docs/superpowers/specs/2026-11-23-settings-design.md section 12)
+  $relay = Start-Proc $Exe @('--ssh-agent', '--pipe', $pipe, '--upstream', $up) @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = 'en' }
+  $tray = [IntPtr]::Zero
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($tray -eq [IntPtr]::Zero -and $sw.ElapsedMilliseconds -lt 10000) {
+    Start-Sleep -Milliseconds 100
+    $tray = [OpReasonShots]::FindWindowW('op-reason-ssh-relay-tray', [NullString]::Value)
+  }
+  if ($tray -eq [IntPtr]::Zero) { Write-Warning 'no icon window for scene 19-relay-tray-menu-en' } else {
+    [Threading.Thread]::Sleep(1000)
+    # WM_CONTEXTMENU as the notification area sends it with NOTIFYICON_VERSION_4: the point in wParam, the event and
+    # the icon's ID in lParam, to the callback message WM_APP + 1
+    $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $x = $b.Right - 160
+    $y = $b.Bottom - 56
+    [void][OpReasonShots]::PostMessageW($tray, 0x8001, [IntPtr](($y -shl 16) -bor $x), [IntPtr]((1 -shl 16) -bor 0x007B))
+    $menu = Wait-ClassWindow '#32768' 5000
+    if ($menu -eq [IntPtr]::Zero) { Write-Warning 'no menu for scene 19-relay-tray-menu-en' } else {
+      [Threading.Thread]::Sleep(400)
+      Save-Window $menu (Join-Path $Out '19-relay-tray-menu-en.png')
+      Save-Screen (Join-Path $Out '19-relay-tray-menu-en-screen.png')
+    }
+    # WM_CANCELMODE to the menu's owner closes the menu
+    [void][OpReasonShots]::PostMessageW($tray, 0x001F, [IntPtr]::Zero, [IntPtr]::Zero)
+  }
+  if (-not $relay.HasExited) { $relay.Kill() }
+  $relay.WaitForExit()
+}
+
+# --- the settings window (docs/superpowers/specs/2026-11-23-settings-design.md section 11)
+
+# Waits until the control $Id of the settings window acts (Refresh: the window's first read is over).
+function Wait-Enabled([IntPtr] $Window, [int] $Id, [int] $TimeoutMs = 60000) {
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+    $c = [OpReasonShots]::GetDlgItem($Window, $Id)
+    if ($c -ne [IntPtr]::Zero -and [OpReasonShots]::IsWindowEnabled($c)) { return $true }
+    Start-Sleep -Milliseconds 100
+  }
+  return $false
+}
+
+# Closes the settings window (one per logon session) and waits until it is gone.
+function Close-Settings {
+  $h = [OpReasonShots]::FindWindowW('op-reason-settings', [NullString]::Value)
+  if ($h -eq [IntPtr]::Zero) { return }
+  [void][OpReasonShots]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ([OpReasonShots]::FindWindowW('op-reason-settings', [NullString]::Value) -ne [IntPtr]::Zero -and $sw.ElapsedMilliseconds -lt 30000) {
+    Start-Sleep -Milliseconds 100
+  }
+}
+
+$settingsDir = Join-Path $work 'settings'
+$settingsEnv = @{
+  LOCALAPPDATA = (Join-Path $settingsDir 'lad')
+  USERPROFILE  = (Join-Path $settingsDir 'profile')
+  APPDATA      = (Join-Path $settingsDir 'appdata')
+}
+New-Item -ItemType Directory -Force -Path $settingsEnv.USERPROFILE, (Join-Path $settingsEnv.LOCALAPPDATA 'op-reason') | Out-Null
+if ($FakeSsh) {
+  $settingsWsl = Join-Path $settingsDir 'wsl'
+  New-Item -ItemType Directory -Force -Path $settingsWsl | Out-Null
+  Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $settingsDir 'wsl.exe')
+  Set-Content -LiteralPath (Join-Path $settingsWsl 'list') -Value "Ubuntu`r`nDebian`r`n" -NoNewline
+  Set-Content -LiteralPath (Join-Path $settingsWsl 'running') -Value "Ubuntu`r`n" -NoNewline
+  Set-Content -LiteralPath (Join-Path $settingsWsl 'answer-look') -NoNewline `
+    -Value "op-reason-skill 1 missing - - /home/you/.claude/skills/op-reason/SKILL.md`n"
+  $settingsEnv.OPREASON_WSL_EXE = Join-Path $settingsDir 'wsl.exe'
+  $settingsEnv.FAKE_WSL_DIR = $settingsWsl
+}
+# the skill placed on Windows and the Start menu entry made, so that the window shows them on
+$p = Start-Proc $Exe @('--settings', 'set', 'skill.windows=on', 'start-menu=on') $settingsEnv
+if (-not $p.WaitForExit(60000)) { $p.Kill() }
+foreach ($scene in @(@('17-settings-en', 'en'), @('18-settings-ja', 'ja'))) {
+  Set-Content -LiteralPath (Join-Path $settingsEnv.LOCALAPPDATA 'op-reason\settings.json') -NoNewline `
+    -Value ('{"v":1,"lang":"' + $scene[1] + '"}')
+  $p = Start-Proc $Exe @('--settings') $settingsEnv
+  [void]$p.WaitForExit(10000)
+  $h = Wait-ClassWindow 'op-reason-settings' 15000
+  if ($h -eq [IntPtr]::Zero) { Write-Warning "no settings window for scene $($scene[0])" } else {
+    # 152: Refresh (crates/op-reason-win/src/settings_ui.rs, ids::REFRESH)
+    if (-not (Wait-Enabled $h 152)) { Write-Warning "the settings window did not finish reading for scene $($scene[0])" }
+    [Threading.Thread]::Sleep(500)
+    Save-Window $h (Join-Path $Out "$($scene[0]).png")
+  }
+  Close-Settings
 }
 
 # --- timings
