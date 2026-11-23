@@ -83,11 +83,16 @@ pub fn run(args: &[OsString], lang: Lang) -> i32 {
     // SAFETY: initializes COM for this thread (Task Scheduler); a thread initialized already is fine.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let sys = WinSystem::new();
+    // The relay's icon runs its menu's actions as op-reason --settings, and says so (design §12, §15)
+    let from = match std::env::var(crate::relay_opts::SETTINGS_FROM).as_deref() {
+        Ok("tray") => "tray",
+        _ => "cli",
+    };
     let ctx = Ctx {
         sys: &sys,
         version: app::VERSION,
         skill: app::SKILL,
-        from: "cli",
+        from,
     };
     let mut out = io::stdout().lock();
     let mut err = io::stderr().lock();
