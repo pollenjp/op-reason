@@ -1036,8 +1036,12 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
     let out = real_settings(&["set", "relay.autostart", "on"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(relay_answers(), "the task's relay answers: {}", text(&out));
+    // the relay writes relay.json just after its pipe answers
+    assert!(
+        wait_until(Duration::from_secs(10), || relay_json_pid().is_some()),
+        "relay.json names the task's relay"
+    );
     let before = relay_json_pid();
-    assert!(before.is_some(), "relay.json names the task's relay");
     let tray = || {
         // SAFETY: a static class name.
         unsafe {
