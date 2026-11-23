@@ -13,8 +13,8 @@ use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -1101,5 +1101,146 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
             && l.contains(r#""result":"done""#)),
         "the restart is recorded as from the icon: {}",
         log.lines().rev().take(5).collect::<Vec<_>>().join("\n")
+    );
+}
+
+// --- No console window while the settings window works
+
+unsafe extern "system" fn each_console(
+    hwnd: windows::Win32::Foundation::HWND,
+    found: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, IsWindowVisible};
+    // SAFETY: `found` points at the vector of `visible_consoles` for the length of EnumWindows; the buffers outlive the
+    // calls.
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true.into();
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, &mut class);
+        let class = String::from_utf16_lossy(&class[..usize::try_from(n).unwrap_or(0)]);
+        // conhost's window, or Windows Terminal's when it is the default terminal
+        if class == "ConsoleWindowClass" || class == "CASCADIA_HOSTING_WINDOW_CLASS" {
+            let mut title = [0u16; 512];
+            let n = GetWindowTextW(hwnd, &mut title);
+            let title = String::from_utf16_lossy(&title[..usize::try_from(n).unwrap_or(0)]);
+            (*(found.0 as *mut Vec<String>)).push(format!("{class}: {title}"));
+        }
+    }
+    true.into()
+}
+
+/// The visible console windows, as `<class>: <title>`.
+fn visible_consoles() -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    // SAFETY: the callback pushes into `found`, which outlives the call.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
+            Some(each_console),
+            windows::Win32::Foundation::LPARAM(&mut found as *mut Vec<String> as isize),
+        );
+    }
+    found
+}
+
+/// Looks every 2 ms, on a thread of its own, for visible console windows whose title names `needle` (the sandbox's
+/// folder, where the fake `wsl.exe` is): Windows shows one for a console program started by a process without a
+/// console, or hands it to Windows Terminal, which comes to the front.
+struct ConsoleWatch {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Vec<String>>>,
+}
+
+impl ConsoleWatch {
+    fn start(needle: &Path) -> ConsoleWatch {
+        let needle = needle.display().to_string().to_lowercase();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut seen: Vec<String> = Vec::new();
+            while !flag.load(Ordering::SeqCst) {
+                for window in visible_consoles() {
+                    if window.to_lowercase().contains(&needle) && !seen.contains(&window) {
+                        seen.push(window);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            seen
+        });
+        ConsoleWatch {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(mut self) -> Vec<String> {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread
+            .take()
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_window_shows_no_console_window_while_it_works() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::{CB_SETCURSEL, CBN_SELCHANGE, SendMessageW};
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-console");
+    // a distribution that runs: every read of the window starts the fake wsl.exe, for the list and for the place
+    let wsl = sb.root.join("wsl");
+    fs::write(wsl.join("list"), "Fake\r\n").unwrap();
+    fs::write(wsl.join("running"), "Fake\r\n").unwrap();
+    fs::write(
+        wsl.join("answer-look"),
+        "op-reason-skill 1 missing - - /home/u/.claude/skills/op-reason/SKILL.md\n",
+    )
+    .unwrap();
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let watch = ConsoleWatch::start(&sb.root);
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(wait_until(Duration::from_secs(15), || settings_windows()
+        .len()
+        == 1));
+    let window = settings_windows()[0];
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // a job: the language, and the read after it
+    // SAFETY: a message without pointers.
+    unsafe {
+        SendMessageW(
+            control(window, ids::LANG).unwrap(),
+            CB_SETCURSEL,
+            Some(WPARAM(1)),
+            None,
+        )
+    };
+    notify(window, ids::LANG, CBN_SELCHANGE);
+    assert!(wait_until(Duration::from_secs(30), || {
+        file_value(&sb, &["lang"]) == "ja"
+    }));
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    let shown = watch.stop();
+    let calls = fs::read_to_string(wsl.join("calls.log")).unwrap_or_default();
+    assert!(
+        calls.contains("Fake op-reason-skill look"),
+        "the window ran the fake wsl.exe: {calls}"
+    );
+    assert!(
+        shown.is_empty(),
+        "no console window for the programs the window starts: {shown:?}"
     );
 }
