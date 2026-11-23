@@ -1091,16 +1091,24 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
         "a new relay of op-reason's task answers: before {before:?}, now {:?}",
         relay_json_pid()
     );
-    let log = std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("op-reason").join("log.jsonl"))
-        .and_then(|f| fs::read_to_string(f).ok())
-        .unwrap_or_default();
+    // The action writes its record once the new relay answers: wait for it
+    let log = || {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join("op-reason").join("log.jsonl"))
+            .and_then(|f| fs::read_to_string(f).ok())
+            .unwrap_or_default()
+    };
+    let recorded = || {
+        log().lines().any(|l| {
+            l.contains(r#""event":"settings""#)
+                && l.contains(r#""from":"tray""#)
+                && l.contains(r#""result":"done""#)
+        })
+    };
     assert!(
-        log.lines().any(|l| l.contains(r#""event":"settings""#)
-            && l.contains(r#""from":"tray""#)
-            && l.contains(r#""result":"done""#)),
+        wait_until(Duration::from_secs(20), recorded),
         "the restart is recorded as from the icon: {}",
-        log.lines().rev().take(5).collect::<Vec<_>>().join("\n")
+        log().lines().rev().take(5).collect::<Vec<_>>().join("\n")
     );
 }
 
