@@ -3,13 +3,15 @@
 
 pub mod catalog;
 pub mod cli;
+pub mod engine;
 pub mod file;
+pub mod relayinfo;
 pub mod skill;
 pub mod task;
 pub mod values;
 pub mod wsl;
 
 pub use file::{
-    COPY_FILE, SETTINGS_FILE, VERSION, Values, edit, parse, put, read, remove, render, replace,
-    values, write,
+    COPY_FILE, SETTINGS_FILE, VERSION, Values, edit, field, parse, put, read, remove, render,
+    replace, values, write,
 };

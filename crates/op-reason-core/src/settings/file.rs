@@ -140,6 +140,15 @@ fn object(text: &str) -> Option<Map<String, Value>> {
     }
 }
 
+/// The field at `path` in a file's text, when there is one.
+pub fn field(text: Option<&str>, path: &[&str]) -> Option<Value> {
+    let mut here = Value::Object(text.and_then(object)?);
+    for key in path {
+        here = here.as_object_mut()?.remove(*key)?;
+    }
+    Some(here)
+}
+
 /// The text of a file after `change` changed its fields: `v` first (the old one, else 1), then `lang` when there is
 /// one, then the other fields in the order of their names. A missing or broken old text starts from no fields.
 pub fn edit(old: Option<&str>, change: impl FnOnce(&mut Map<String, Value>)) -> String {
