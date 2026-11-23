@@ -19,9 +19,9 @@ pub struct TaskWant {
 /// The relay's arguments in the task.
 pub const TASK_ARGS: &str = "--ssh-agent";
 
-/// The task's definition for `ITaskFolder::RegisterTask`. `start_local` is the start of the trigger that repeats every
-/// minute, in local time (`2026-11-23T10:00:00`): the time it was made.
-pub fn xml(want: &TaskWant, start_local: &str) -> String {
+/// The task's definition for `ITaskFolder::RegisterTask`, turned on or off (`enabled`). `start_local` is the start of
+/// the trigger that repeats every minute, in local time (`2026-11-23T10:00:00`): the time it was made.
+pub fn xml(want: &TaskWant, start_local: &str, enabled: bool) -> String {
     let exe = escape(&want.exe);
     let sid = escape(&want.sid);
     let start = escape(start_local);
@@ -65,7 +65,7 @@ pub fn xml(want: &TaskWant, start_local: &str) -> String {
       <RestartOnIdle>false</RestartOnIdle>
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
+    <Enabled>{enabled}</Enabled>
     <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
@@ -220,6 +220,9 @@ pub struct TaskNow {
     pub enabled: bool,
     /// An instance runs (the relay of op-reason's task).
     pub running: bool,
+    /// The processes that its running instances started (`IRunningTask::EnginePID`): the relay that answers on the
+    /// pipe is op-reason's only when its process is one of them (design §9.5).
+    pub pids: Vec<u32>,
 }
 
 #[cfg(test)]
@@ -246,7 +249,7 @@ mod tests {
 
     #[test]
     fn the_xml_says_the_shape() {
-        let x = xml(&want(), "2026-11-23T10:00:00");
+        let x = xml(&want(), "2026-11-23T10:00:00", true);
         assert!(x.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
         for part in [
             r"<Command>C:\Program Files &amp; Co\op-reason\op-reason.exe</Command>",
@@ -275,6 +278,18 @@ mod tests {
         );
         assert!(!x.contains("<RestartOnFailure>"), "no restart on failure");
         assert!(!x.contains("<Duration>"), "the repetition has no end");
+        let off = xml(&want(), "2026-11-23T10:00:00", false);
+        assert!(
+            off.contains(
+                "<AllowStartOnDemand>true</AllowStartOnDemand>\n    <Enabled>false</Enabled>"
+            ),
+            "a task made turned off: {off}"
+        );
+        assert_eq!(
+            off.matches("<Enabled>true</Enabled>").count(),
+            2,
+            "its triggers stay on"
+        );
     }
 
     #[test]

@@ -264,7 +264,7 @@ impl Relay {
         let info = sys
             .relay_info()
             .filter(|i| Some(i.pid) == pid && i.pipe.eq_ignore_ascii_case(values::RELAY_PIPE));
-        let ours = pid.is_some() && matches!(&task, Ok(Some(t)) if t.running);
+        let ours = matches!((&task, pid), (Ok(Some(t)), Some(p)) if t.pids.contains(&p));
         let by = if pid.is_some() && !ours {
             sys.other_tasks(false)
                 .into_iter()
@@ -285,9 +285,11 @@ impl Relay {
         self.task.as_ref().ok().and_then(Option::as_ref)
     }
 
-    /// op-reason's task runs the relay that answers.
+    /// op-reason's task runs the relay that answers: the relay's process is one that a running instance of the task
+    /// started (a Running task alone is not enough: while another relay runs, the instance of every minute starts an
+    /// `op-reason.exe` that exits at once).
     fn ours(&self) -> bool {
-        self.pid.is_some() && self.task().is_some_and(|t| t.running)
+        matches!((self.task(), self.pid), (Some(t), Some(p)) if t.pids.contains(&p))
     }
 }
 
@@ -341,7 +343,10 @@ impl<'a> Now<'a> {
             }
             let (path, value, relay_value) = self.file_value(name);
             item.value = Some(value.clone());
-            item.state = if let Some(raw) = self.ignored(path) {
+            item.state = if let Some(raw) = self
+                .ignored(path)
+                .or_else(|| self.ignored(file::WHOLE_FILE))
+            {
                 State::Ignored(raw)
             } else if let Some(relay_value) = relay_value
                 && let Some(pid) = self.relay().pid
@@ -369,7 +374,7 @@ impl<'a> Now<'a> {
                             Err(e) => State::Unreadable(e),
                             Ok(d) if !d.is_empty() => State::TaskDiffers(d),
                             Ok(_) => match relay.pid {
-                                Some(pid) if t.enabled && !t.running => State::OtherRelay {
+                                Some(pid) if t.enabled && !relay.ours() => State::OtherRelay {
                                     pid,
                                     by: relay.by.clone(),
                                 },
@@ -577,8 +582,11 @@ fn same(now: &Now, name: &Name, want: &Want, item: &Item) -> bool {
     }
 }
 
-/// Makes the wanted values so, in the order of design §7.1, and records what it tried.
+/// Makes the wanted values so, in the order of design §7.1 (the file, then `relay.autostart`, then `relay.running`,
+/// then a restart for the relay's values, then the skill places, whatever the order they were given in), and records
+/// what it tried.
 pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
+    let pid_before = ctx.sys.relay_pid();
     let mut out = Vec::new();
     let file_wants: Vec<&(Name, Want)> = wants.iter().filter(|(n, _)| n.is_file()).collect();
     let relay_named = file_wants.iter().any(|(n, _)| *n != Name::Lang);
@@ -588,14 +596,13 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
         relay_changed = changed;
         out.extend(changes);
     }
-    for (name, want) in wants {
-        match (name, want) {
-            (Name::RelayAutostart, Want::On(on)) => out.extend(autostart(ctx, *on)),
-            (Name::RelayRunning, Want::On(on)) => out.push(running(ctx, *on)),
-            _ => {}
-        }
+    if let Some(on) = on_of(wants, &Name::RelayAutostart) {
+        out.extend(autostart(ctx, on));
     }
-    if relay_named && let Some(c) = restart_for_values(ctx, relay_changed) {
+    if let Some(on) = on_of(wants, &Name::RelayRunning) {
+        out.push(running(ctx, on));
+    }
+    if relay_named && let Some(c) = restart_for_values(ctx, relay_changed, pid_before) {
         out.push(c);
     }
     for (name, want) in wants {
@@ -605,6 +612,14 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
     }
     record(ctx, &out);
     out
+}
+
+/// The `on`/`off` wanted for `name`.
+fn on_of(wants: &[(Name, Want)], name: &Name) -> Option<bool> {
+    wants.iter().find_map(|(n, w)| match w {
+        Want::On(on) if n == name => Some(*on),
+        _ => None,
+    })
 }
 
 /// Writes the file settings in one write; returns the changes and whether a relay value changed in the file.
@@ -679,11 +694,11 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
-/// Makes op-reason's task from this exe.
-fn register(ctx: &Ctx) -> Result<(), Why> {
+/// Makes op-reason's task from this exe, turned on or off.
+fn register(ctx: &Ctx, enabled: bool) -> Result<(), Why> {
     let want = ctx.sys.task_want().map_err(Why::Failed)?;
     ctx.sys
-        .register_task(&task::xml(&want, &ctx.sys.now_local()))
+        .register_task(&task::xml(&want, &ctx.sys.now_local(), enabled))
         .map_err(Why::Failed)
 }
 
@@ -700,6 +715,33 @@ fn done(r: Result<(), Why>) -> Done {
     }
 }
 
+/// A held lock.
+type Held = Box<dyn std::any::Any>;
+
+/// op-reason's lock, and the relay read again under it (design §9.4): the process of op-reason's task's relay that
+/// answers (`None` when none answers now). A relay that op-reason's task did not start is refused. The lock is held
+/// while the returned value lives.
+fn lock_ours(ctx: &Ctx) -> Result<(Held, Option<u32>), Why> {
+    let held = ctx.sys.lock().ok_or(Why::Locked)?;
+    let relay = Relay::read(ctx.sys);
+    match relay.pid {
+        None => Ok((held, None)),
+        Some(pid) if relay.ours() => Ok((held, Some(pid))),
+        Some(_) => Err(Why::NotOurs(relay.by)),
+    }
+}
+
+/// With the lock and the relay read again: turns op-reason's task off (so that the trigger of every minute starts
+/// none in between) and stops its relay. Returns the lock, for a start that follows.
+fn stop_ours(ctx: &Ctx) -> Result<Held, Why> {
+    let (held, pid) = lock_ours(ctx)?;
+    ctx.sys.enable_task(false).map_err(Why::Failed)?;
+    if let Some(pid) = pid {
+        ctx.sys.stop_relay(pid).map_err(Why::Failed)?;
+    }
+    Ok(held)
+}
+
 fn autostart(ctx: &Ctx, on: bool) -> Vec<Change> {
     let sys = ctx.sys;
     let relay = Relay::read(sys);
@@ -714,41 +756,43 @@ fn autostart(ctx: &Ctx, on: bool) -> Vec<Change> {
         }
         Ok(t) => t.clone(),
     };
-    let from = Some(on_off(had.is_some()));
-    let mut change = Change::new("relay.autostart", from, on_off(on), Done::Same);
-    let mut extra = Vec::new();
+    let mut change = Change::new(
+        "relay.autostart",
+        Some(on_off(had.is_some())),
+        on_off(on),
+        Done::Same,
+    );
+    let other = relay.pid.is_some() && !relay.ours();
     if !on {
         if had.is_some() {
-            change.done = done((|| {
-                if relay.ours() {
-                    let _lock = sys.lock().ok_or(Why::Locked)?;
-                    sys.stop_relay(relay.pid.unwrap_or_default())
-                        .map_err(Why::Failed)?;
-                }
-                sys.remove_task().map_err(Why::Failed)
-            })());
+            change.done = done(if relay.ours() {
+                stop_ours(ctx).and_then(|_held| sys.remove_task().map_err(Why::Failed))
+            } else {
+                sys.enable_task(false)
+                    .and_then(|()| sys.remove_task())
+                    .map_err(Why::Failed)
+            });
         }
         return vec![change];
     }
-    let other = relay.pid.is_some() && !relay.ours();
+    let mut extra = Vec::new();
     match had {
         None => {
-            change.done = done(register(ctx).and_then(|()| {
-                if other {
-                    change.note = Some(Note::TaskMadeOff(relay.by.clone()));
-                    sys.enable_task(false).map_err(Why::Failed)
-                } else {
-                    if let Err(w) = start(ctx) {
-                        extra.push(Change::new(
-                            "relay.running",
-                            Some("off"),
-                            "on",
-                            Done::Failed(w),
-                        ));
-                    }
-                    Ok(())
-                }
-            }));
+            // While another relay answers, the task is made turned off: turned on, it would start op-reason.exe every
+            // minute, which exits at once (design §9.2)
+            change.done = done(register(ctx, !other));
+            if other {
+                change.note = Some(Note::TaskMadeOff(relay.by.clone()));
+            } else if change.done == Done::Done
+                && let Err(w) = start(ctx)
+            {
+                extra.push(Change::new(
+                    "relay.running",
+                    Some("off"),
+                    "on",
+                    Done::Failed(w),
+                ));
+            }
         }
         Some(t) => {
             let differs = match task_differences(sys, &t) {
@@ -759,24 +803,17 @@ fn autostart(ctx: &Ctx, on: bool) -> Vec<Change> {
                 }
             };
             if differs {
-                change.done = done((|| {
-                    if relay.ours() {
-                        let _lock = sys.lock().ok_or(Why::Locked)?;
-                        sys.stop_relay(relay.pid.unwrap_or_default())
-                            .map_err(Why::Failed)?;
-                        register(ctx)?;
+                change.done = done(if relay.ours() {
+                    stop_ours(ctx).and_then(|_held| {
+                        register(ctx, true)?;
                         start(ctx)
-                    } else {
-                        register(ctx)?;
-                        if other {
-                            change.note = Some(Note::TaskMadeOff(relay.by.clone()));
-                        }
-                        if !t.enabled || other {
-                            sys.enable_task(false).map_err(Why::Failed)?;
-                        }
-                        Ok(())
+                    })
+                } else {
+                    if other {
+                        change.note = Some(Note::TaskMadeOff(relay.by.clone()));
                     }
-                })());
+                    register(ctx, t.enabled && !other)
+                });
             }
         }
     }
@@ -802,23 +839,21 @@ fn running(ctx: &Ctx, on: bool) -> Change {
         change.done = match (&relay.task, enabled) {
             (Err(e), _) => Done::Failed(Why::Failed(e.clone())),
             (Ok(None), _) => Done::Failed(Why::NoTask),
-            (Ok(Some(_)), enabled) => done((|| {
+            (Ok(Some(_)), enabled) => done(
                 if enabled == Some(false) {
-                    sys.enable_task(true).map_err(Why::Failed)?;
+                    sys.enable_task(true).map_err(Why::Failed)
+                } else {
+                    Ok(())
                 }
-                start(ctx)
-            })()),
+                .and_then(|()| start(ctx)),
+            ),
         };
         return change;
     }
     change.done = match relay.pid {
         None if enabled == Some(true) => done(sys.enable_task(false).map_err(Why::Failed)),
         None => Done::Same,
-        Some(pid) if relay.ours() => done((|| {
-            let _lock = sys.lock().ok_or(Why::Locked)?;
-            sys.enable_task(false).map_err(Why::Failed)?;
-            sys.stop_relay(pid).map_err(Why::Failed)
-        })()),
+        Some(_) if relay.ours() => done(stop_ours(ctx).map(|_held| ())),
         Some(_) => {
             if enabled == Some(true) {
                 let _ = sys.enable_task(false);
@@ -830,23 +865,25 @@ fn running(ctx: &Ctx, on: bool) -> Change {
 }
 
 /// Stops op-reason's task's relay and runs the task again, holding the lock until the new relay answers.
-fn restart(ctx: &Ctx, relay: &Relay) -> Done {
-    let sys = ctx.sys;
-    done((|| {
-        let _lock = sys.lock().ok_or(Why::Locked)?;
-        if let Some(pid) = relay.pid {
-            sys.stop_relay(pid).map_err(Why::Failed)?;
+fn restart(ctx: &Ctx) -> Done {
+    done(lock_ours(ctx).and_then(|(_held, pid)| {
+        if let Some(pid) = pid {
+            ctx.sys.stop_relay(pid).map_err(Why::Failed)?;
         }
         start(ctx)
-    })())
+    }))
 }
 
 /// After the relay's file values were set: restarts op-reason's task's relay when its values differ from the file's
-/// (or are unknown and the file changed); reports another relay whose values differ.
-fn restart_for_values(ctx: &Ctx, file_changed: bool) -> Option<Change> {
+/// (or are unknown and the file changed); reports another relay whose values differ. A relay that this `set` started
+/// read the file as it was written, and is left alone.
+fn restart_for_values(ctx: &Ctx, file_changed: bool, pid_before: Option<u32>) -> Option<Change> {
     let sys = ctx.sys;
     let relay = Relay::read(sys);
-    relay.pid?;
+    let pid = relay.pid?;
+    if pid_before != Some(pid) {
+        return None;
+    }
     let v = file::values(sys.read_settings().ok().flatten().as_deref());
     let differs = relay.info.as_ref().map(|i| {
         i.mode() != Some(v.mode.unwrap_or_default())
@@ -858,7 +895,7 @@ fn restart_for_values(ctx: &Ctx, file_changed: bool) -> Option<Change> {
         if !differs.unwrap_or(file_changed) {
             return None;
         }
-        change.done = restart(ctx, &relay);
+        change.done = restart(ctx);
         change.note = Some(Note::Restarted);
     } else {
         if differs != Some(true) {
@@ -884,21 +921,20 @@ pub fn relay(ctx: &Ctx, act: RelayAct) -> Vec<Change> {
             );
             change.done = if relay.ours() {
                 change.note = Some(Note::Restarted);
-                restart(ctx, &relay)
+                restart(ctx)
             } else if relay.pid.is_some() {
                 Done::Failed(Why::NotOurs(relay.by.clone()))
             } else {
                 match relay.task() {
                     None => Done::Failed(Why::NoTask),
-                    Some(t) => {
-                        let enabled = t.enabled;
-                        done((|| {
-                            if !enabled {
-                                ctx.sys.enable_task(true).map_err(Why::Failed)?;
-                            }
-                            start(ctx)
-                        })())
-                    }
+                    Some(t) => done(
+                        if t.enabled {
+                            Ok(())
+                        } else {
+                            ctx.sys.enable_task(true).map_err(Why::Failed)
+                        }
+                        .and_then(|()| start(ctx)),
+                    ),
                 }
             };
             vec![change]
@@ -942,19 +978,34 @@ fn skill_set(ctx: &Ctx, name: &Name, place: &Place, on: bool) -> Change {
         change.done = match &now.link {
             Some(link) => Done::Failed(Why::Link(link.clone())),
             None => match sys.skill(place, act, &want) {
-                Ok(_) => Done::Done,
+                Ok(after) => skill_result(act, after),
                 Err(e) => Done::Failed(Why::Failed(e)),
             },
         };
     }
-    if let (Place::Folder(folder), false) = (place, matches!(change.done, Done::Failed(_))) {
-        remember_folder(ctx, folder, on);
+    if let (Place::Folder(folder), false) = (place, matches!(change.done, Done::Failed(_)))
+        && let Err(e) = remember_folder(ctx, folder, on)
+    {
+        change.done = Done::Failed(Why::Failed(e));
     }
     change
 }
 
+/// Whether a place did what was asked, from the state it reports after it (the WSL script refuses by reporting the
+/// state it left, not by an error).
+fn skill_result(act: SkillAct, after: SkillNow) -> Done {
+    match (&after.link, &after.state, act) {
+        (Some(link), _, _) => Done::Failed(Why::Link(link.clone())),
+        (None, SkillState::Ok, SkillAct::Place) | (None, SkillState::Missing, SkillAct::Remove) => {
+            Done::Done
+        }
+        (None, SkillState::Foreign, _) => Done::Failed(Why::Foreign(after.path)),
+        (None, _, _) => Done::Failed(Why::Failed(format!("{} was left as it was", after.path))),
+    }
+}
+
 /// Keeps `skill.folders` in step: a folder where the skill is placed is listed once (without regard to case).
-fn remember_folder(ctx: &Ctx, folder: &str, on: bool) {
+fn remember_folder(ctx: &Ctx, folder: &str, on: bool) -> Result<(), String> {
     let listed = |text: Option<&str>| {
         file::values(text)
             .folders
@@ -964,27 +1015,29 @@ fn remember_folder(ctx: &Ctx, folder: &str, on: bool) {
     if let Ok(text) = ctx.sys.read_settings()
         && listed(text.as_deref()) == on
     {
-        return;
+        return Ok(());
     }
-    let _ = ctx.sys.write_settings(&mut |current| {
-        let mut folders = file::values(current).folders;
-        if on && !listed(current) {
-            folders.push(folder.to_owned());
-        } else if !on {
-            folders.retain(|f| !f.eq_ignore_ascii_case(folder));
-        }
-        file::edit(current, |m| {
-            let value = (!folders.is_empty()).then(|| {
-                Value::from(
-                    folders
-                        .iter()
-                        .map(|f| Value::from(f.as_str()))
-                        .collect::<Vec<_>>(),
-                )
-            });
-            file::put(m, &["skill", "folders"], value);
+    ctx.sys
+        .write_settings(&mut |current| {
+            let mut folders = file::values(current).folders;
+            if on && !listed(current) {
+                folders.push(folder.to_owned());
+            } else if !on {
+                folders.retain(|f| !f.eq_ignore_ascii_case(folder));
+            }
+            file::edit(current, |m| {
+                let value = (!folders.is_empty()).then(|| {
+                    Value::from(
+                        folders
+                            .iter()
+                            .map(|f| Value::from(f.as_str()))
+                            .collect::<Vec<_>>(),
+                    )
+                });
+                file::put(m, &["skill", "folders"], value);
+            })
         })
-    });
+        .map_err(|e| format!("settings.json: {e}"))
 }
 
 /// `forget-accounts`.
@@ -1064,7 +1117,7 @@ mod tests {
     fn autostart_on_with_another_relay_makes_the_task_turned_off() {
         let f = Fake::new().other_running();
         let c = set(&f, &[on(Name::RelayAutostart)]);
-        assert_eq!(f.calls(), ["register", "disable"]);
+        assert_eq!(f.calls(), ["register"]);
         assert_eq!(c[0].done, Done::Done);
         assert_eq!(
             c[0].note,
@@ -1078,7 +1131,10 @@ mod tests {
         let f = Fake::new().ours_running();
         f.task.borrow_mut().as_mut().unwrap().shape.exe = r"D:\old\op-reason.exe".into();
         let c = set(&f, &[on(Name::RelayAutostart)]);
-        assert_eq!(f.calls(), ["lock", "stop 100", "register", "run"]);
+        assert_eq!(
+            f.calls(),
+            ["lock", "disable", "stop 100", "register", "run"]
+        );
         assert_eq!(c[0].done, Done::Done);
         assert_eq!(
             f.task.borrow().as_ref().unwrap().shape.exe,
@@ -1104,19 +1160,12 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: false,
             running: false,
+            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayAutostart)]);
         assert!(f.calls().is_empty());
         assert_eq!(c[0].done, Done::Same);
         assert!(f.records.borrow().is_empty(), "nothing to record");
-    }
-
-    #[test]
-    fn autostart_off_stops_our_relay_then_removes_the_task() {
-        let f = Fake::new().ours_running();
-        let c = set(&f, &[off(Name::RelayAutostart)]);
-        assert_eq!(f.calls(), ["lock", "stop 100", "remove"]);
-        assert_eq!(c[0].done, Done::Done);
     }
 
     // --- relay.running
@@ -1144,6 +1193,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: false,
             running: false,
+            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["enable", "run"]);
@@ -1158,6 +1208,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayRunning)]);
         assert_eq!(c[0].done, Done::Failed(Why::NoAnswer));
@@ -1179,6 +1230,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let c = set(&f, &[off(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["disable"]);
@@ -1196,6 +1248,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let c = set(&f, &[off(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["disable"]);
@@ -1212,6 +1265,176 @@ mod tests {
         let c = relay(&f.ctx(), RelayAct::Restart);
         assert!(matches!(c[0].done, Done::Failed(Why::NotOurs(_))));
         assert!(f.calls().is_empty());
+    }
+
+    // --- what the final review found
+
+    #[test]
+    fn a_relay_that_answers_while_our_task_runs_another_instance_is_not_ours() {
+        // op-reason's task is on while another relay runs: its instance of every minute starts op-reason.exe, which
+        // exits at once; for that moment the task is Running, with another process than the relay's
+        let f = Fake::new().other_running();
+        *f.task.borrow_mut() = Some(TaskNow {
+            shape: task::wanted(&f.want),
+            enabled: true,
+            running: true,
+            pids: vec![999],
+        });
+        let c = relay(&f.ctx(), RelayAct::Stop);
+        assert!(matches!(c[0].done, Done::Failed(Why::NotOurs(_))), "{c:?}");
+        assert!(
+            !f.calls().iter().any(|c| c.starts_with("stop")),
+            "{:?}",
+            f.calls()
+        );
+        let c = relay(&f.ctx(), RelayAct::Restart);
+        assert!(matches!(c[0].done, Done::Failed(Why::NotOurs(_))), "{c:?}");
+        set(&f, &[off(Name::RelayAutostart)]);
+        assert!(
+            !f.calls().iter().any(|c| c.starts_with("stop")),
+            "{:?}",
+            f.calls()
+        );
+        assert_eq!(f.pid.get(), Some(7));
+    }
+
+    #[test]
+    fn the_relay_is_read_again_under_the_lock() {
+        let f = Fake::new().ours_running();
+        f.swap_on_lock.set(Some(7));
+        let c = relay(&f.ctx(), RelayAct::Stop);
+        assert!(matches!(c[0].done, Done::Failed(Why::NotOurs(_))), "{c:?}");
+        assert!(
+            !f.calls().iter().any(|c| c.starts_with("stop")),
+            "{:?}",
+            f.calls()
+        );
+        assert!(
+            f.task.borrow().as_ref().unwrap().enabled,
+            "the task is left as it was"
+        );
+    }
+
+    #[test]
+    fn set_makes_autostart_before_running_whatever_the_order() {
+        let f = Fake::new();
+        let c = set(&f, &[on(Name::RelayRunning), on(Name::RelayAutostart)]);
+        assert!(
+            c.iter().all(|c| !matches!(c.done, Done::Failed(_))),
+            "{c:?}"
+        );
+        assert_eq!(f.calls(), ["register", "run"]);
+        assert_eq!(f.pid.get(), Some(OURS));
+    }
+
+    #[test]
+    fn autostart_off_turns_the_task_off_before_it_stops_the_relay() {
+        let f = Fake::new().ours_running();
+        set(&f, &[off(Name::RelayAutostart)]);
+        assert_eq!(f.calls(), ["lock", "disable", "stop 100", "remove"]);
+    }
+
+    #[test]
+    fn autostart_off_without_the_lock_touches_nothing() {
+        let f = Fake::new().ours_running();
+        f.locked.set(true);
+        let c = set(&f, &[off(Name::RelayAutostart)]);
+        assert_eq!(c[0].done, Done::Failed(Why::Locked));
+        assert_eq!(f.calls(), ["lock"]);
+        assert!(f.task.borrow().as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn autostart_off_with_another_relay_removes_the_task_only() {
+        let f = Fake::new().other_running();
+        *f.task.borrow_mut() = Some(TaskNow {
+            shape: task::wanted(&f.want),
+            enabled: true,
+            running: false,
+            pids: vec![],
+        });
+        let c = set(&f, &[off(Name::RelayAutostart)]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(f.calls(), ["disable", "remove"]);
+        assert_eq!(f.pid.get(), Some(7));
+    }
+
+    #[test]
+    fn a_task_made_again_is_turned_off_before_its_relay_stops() {
+        let f = Fake::new().ours_running();
+        f.task.borrow_mut().as_mut().unwrap().shape.exe = r"D:\old\op-reason.exe".into();
+        set(&f, &[on(Name::RelayAutostart)]);
+        assert_eq!(
+            f.calls(),
+            ["lock", "disable", "stop 100", "register", "run"]
+        );
+        assert!(f.task.borrow().as_ref().unwrap().enabled, "made turned on");
+    }
+
+    #[test]
+    fn with_another_relay_the_task_is_made_turned_off_in_one_step() {
+        let f = Fake::new().other_running();
+        set(&f, &[on(Name::RelayAutostart)]);
+        assert_eq!(f.calls(), ["register"], "no window in which it is on");
+        assert!(f.xml.borrow().contains("<Enabled>false</Enabled>"));
+        assert!(!f.task.borrow().as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn a_relay_started_by_the_same_set_is_not_started_again() {
+        let f = Fake::new();
+        f.info_late.set(true);
+        set(
+            &f,
+            &[
+                on(Name::RelayAutostart),
+                (Name::RelayMode, Want::Mode(RelayMode::ShowOnly)),
+            ],
+        );
+        assert_eq!(
+            f.calls(),
+            ["register", "run"],
+            "it read the new values when it started"
+        );
+    }
+
+    #[test]
+    fn a_mode_change_without_the_lock_writes_the_file_and_says_so() {
+        let f = Fake::new().ours_running();
+        f.locked.set(true);
+        let c = set(&f, &[(Name::RelayMode, Want::Mode(RelayMode::ShowOnly))]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(c[1].done, Done::Failed(Why::Locked));
+        assert_eq!(f.calls(), ["lock"]);
+        assert_eq!(f.pid.get(), Some(OURS));
+    }
+
+    #[test]
+    fn a_place_that_refuses_without_an_error_is_not_done() {
+        let f = Fake::new();
+        f.refuse_quietly.set(true);
+        let c = set(&f, &[on(Name::SkillWsl("Ubuntu".into()))]);
+        assert!(matches!(c[0].done, Done::Failed(_)), "{c:?}");
+        f.skills.borrow_mut().get_mut("wsl:Ubuntu").unwrap().state = SkillState::Ok;
+        let c = set(&f, &[off(Name::SkillWsl("Ubuntu".into()))]);
+        assert!(matches!(c[0].done, Done::Failed(_)), "{c:?}");
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_remembered_is_not_done() {
+        let f = Fake::new();
+        f.fail_write.set(true);
+        let c = set(&f, &[on(Name::SkillFolder(r"D:\agents".into()))]);
+        assert!(matches!(c[0].done, Done::Failed(Why::Failed(_))), "{c:?}");
+    }
+
+    #[test]
+    fn a_broken_file_is_named_on_its_settings() {
+        let f = Fake::new();
+        *f.settings.borrow_mut() = Some("{broken".into());
+        let i = get(&f.ctx(), &Name::RelayMode);
+        assert_eq!(i.value.as_deref(), Some("per-call"));
+        assert!(matches!(i.state, State::Ignored(_)), "{:?}", i.state);
     }
 
     // --- the relay's file values
@@ -1341,6 +1564,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let c = check(&f.ctx(), &[off(Name::RelayRunning)]);
         assert!(!c[0].same);
@@ -1354,6 +1578,7 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let i = get(&f.ctx(), &Name::RelayAutostart);
         assert_eq!(i.value.as_deref(), Some("on"));
@@ -1377,6 +1602,7 @@ mod tests {
             shape,
             enabled: true,
             running: false,
+            pids: vec![],
         });
         let c = check(&f.ctx(), &[on(Name::RelayAutostart)]);
         assert!(!c[0].same);

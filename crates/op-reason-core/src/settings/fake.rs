@@ -30,6 +30,16 @@ pub(crate) struct Fake {
     pub(crate) task_reads: Cell<usize>,
     /// When set, every skill call fails with this message.
     pub(crate) fail_skill: RefCell<Option<String>>,
+    /// The last XML registered.
+    pub(crate) xml: RefCell<String>,
+    /// When set, taking the lock replaces the relay that answers with this process (another relay took the pipe).
+    pub(crate) swap_on_lock: Cell<Option<u32>>,
+    /// The relay started by the task writes no relay.json yet when the pipe answers.
+    pub(crate) info_late: Cell<bool>,
+    /// The skill places refuse without an error (as the WSL script does): the state stays.
+    pub(crate) refuse_quietly: Cell<bool>,
+    /// Writes of settings.json fail.
+    pub(crate) fail_write: Cell<bool>,
 }
 
 impl Fake {
@@ -62,6 +72,11 @@ impl Fake {
             },
             task_reads: Cell::new(0),
             fail_skill: RefCell::new(None),
+            xml: RefCell::new(String::new()),
+            swap_on_lock: Cell::new(None),
+            info_late: Cell::new(false),
+            refuse_quietly: Cell::new(false),
+            fail_write: Cell::new(false),
         }
     }
 
@@ -71,6 +86,7 @@ impl Fake {
             shape: task::wanted(&self.want),
             enabled: true,
             running: true,
+            pids: vec![OURS],
         });
         self.pid.set(Some(OURS));
         *self.info.borrow_mut() = Some(info(OURS, "per-call"));
@@ -132,6 +148,9 @@ impl System for Fake {
         Ok(self.settings.borrow().clone())
     }
     fn write_settings(&self, edit: &mut dyn FnMut(Option<&str>) -> String) -> io::Result<()> {
+        if self.fail_write.get() {
+            return Err(io::Error::other("the disk is full"));
+        }
         let old = self.settings.borrow().clone();
         *self.settings.borrow_mut() = Some(edit(old.as_deref()));
         self.writes.set(self.writes.get() + 1);
@@ -159,10 +178,18 @@ impl System for Fake {
     fn register_task(&self, xml: &str) -> Result<(), String> {
         assert!(xml.contains("<Arguments>--ssh-agent</Arguments>"));
         self.call("register");
-        *self.task.borrow_mut() = Some(TaskNow {
+        *self.xml.borrow_mut() = xml.to_owned();
+        let enabled = !xml.contains("<Enabled>false</Enabled>");
+        let mut task = self.task.borrow_mut();
+        let (running, pids) = task
+            .as_ref()
+            .map(|t| (t.running, t.pids.clone()))
+            .unwrap_or_default();
+        *task = Some(TaskNow {
             shape: task::wanted(&self.want),
-            enabled: true,
-            running: false,
+            enabled,
+            running,
+            pids,
         });
         Ok(())
     }
@@ -184,10 +211,13 @@ impl System for Fake {
             self.pid.set(Some(OURS));
             if let Some(t) = self.task.borrow_mut().as_mut() {
                 t.running = true;
+                t.pids = vec![OURS];
             }
-            let values = crate::settings::values(self.settings.borrow().as_deref());
-            let mode = values.mode.unwrap_or_default();
-            *self.info.borrow_mut() = Some(info(OURS, mode.as_str()));
+            if !self.info_late.get() {
+                let values = crate::settings::values(self.settings.borrow().as_deref());
+                let mode = values.mode.unwrap_or_default();
+                *self.info.borrow_mut() = Some(info(OURS, mode.as_str()));
+            }
         }
         Ok(())
     }
@@ -202,6 +232,10 @@ impl System for Fake {
     }
     fn lock(&self) -> Option<Box<dyn std::any::Any>> {
         self.call("lock");
+        if let Some(other) = self.swap_on_lock.take() {
+            self.pid.set(Some(other));
+            *self.info.borrow_mut() = None;
+        }
         (!self.locked.get()).then(|| Box::new(()) as Box<dyn std::any::Any>)
     }
     fn stop_relay(&self, pid: u32) -> Result<(), String> {
@@ -210,6 +244,7 @@ impl System for Fake {
         *self.info.borrow_mut() = None;
         if let Some(t) = self.task.borrow_mut().as_mut() {
             t.running = false;
+            t.pids.clear();
         }
         Ok(())
     }
@@ -228,6 +263,9 @@ impl System for Fake {
             link: None,
             path: "p".into(),
         });
+        if self.refuse_quietly.get() && act != SkillAct::Look {
+            return Ok(now.clone());
+        }
         match act {
             SkillAct::Look => {}
             SkillAct::Place => {
