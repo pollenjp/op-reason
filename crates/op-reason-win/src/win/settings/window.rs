@@ -21,8 +21,8 @@ use windows::Win32::Foundation::{
     WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, COLOR_WINDOWTEXT, GetSysColor, GetSysColorBrush, HBRUSH, HDC, SetBkColor,
-    SetTextColor,
+    COLOR_BTNFACE, COLOR_WINDOWTEXT, GetMonitorInfoW, GetSysColor, GetSysColorBrush, HBRUSH, HDC,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, SetBkColor, SetTextColor,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED,
@@ -46,14 +46,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, BN_CLICKED, CBN_SELCHANGE, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
-    FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, IDC_ARROW, IDOK,
-    IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, MB_ICONERROR, MB_ICONQUESTION, MB_OK,
-    MB_OKCANCEL, MINMAXINFO, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SW_RESTORE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DPICHANGED, WM_GETMINMAXINFO, WM_NCDESTROY, WM_NOTIFY, WM_SIZE, WM_TIMER, WNDCLASSEXW,
-    WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW,
+    FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW,
+    IDC_ARROW, IDOK, IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, MB_ICONERROR,
+    MB_ICONQUESTION, MB_OK, MB_OKCANCEL, MINMAXINFO, MSG, MessageBoxW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SW_RESTORE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_NCDESTROY, WM_NOTIFY, WM_SIZE, WM_TIMER,
+    WNDCLASSEXW, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -65,8 +65,9 @@ use crate::settings_ui::{self, SkillRow, ids};
 const CLASS_NAME: PCWSTR = w!("op-reason-settings");
 /// Held by the window's process while it runs: one window per logon session.
 const ONE_WINDOW: &str = r"Local\op-reason-settings-window";
-/// The window's style.
-const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 | WS_CLIPCHILDREN.0);
+/// The window's style. Without `WS_CLIPCHILDREN`, as a dialog: the window paints its background inside the group boxes,
+/// which paint only their frames.
+const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 const EX_STYLE: WINDOW_EX_STYLE = WS_EX_CONTROLPARENT;
 /// The window's width, in pixels at 96 DPI (its height follows from the layout).
 const WIDTH: i32 = 700;
@@ -462,30 +463,24 @@ impl App {
         })
     }
 
-    /// Sizes the window to its layout, shows it in front and reads everything.
+    /// Reads everything (the controls are greyed before the window shows), and shows the window in front, in the middle
+    /// of the work area where the pointer is, as high as its layout wants and the work area allows.
     fn start(&self) {
+        self.run(Job::Load);
         let dpi = self.dpi.get();
-        let need = self
-            .ui
-            .arrange(controls::scale(WIDTH, dpi), 0, &self.metrics());
-        let (w, h) = self.outer(controls::scale(WIDTH, dpi), need);
-        // SAFETY: sizes and shows this window, and puts the focus in it.
+        let width = controls::scale(WIDTH, dpi);
+        let (w, h) = self.outer(width, self.ui.preferred_height(width, &self.metrics()));
+        let area = work_area();
+        let h = h.min(area.bottom - area.top);
+        let x = area.left + ((area.right - area.left) - w).max(0) / 2;
+        let y = area.top + ((area.bottom - area.top) - h).max(0) / 2;
+        // SAFETY: places and shows this window.
         unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                None,
-                0,
-                0,
-                w,
-                h,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+            let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
             let _ = ShowWindow(self.hwnd, SW_SHOWNORMAL);
             let _ = SetForegroundWindow(self.hwnd);
-            let _ = SetFocus(Some(self.ui.lang));
         }
         self.arrange();
-        self.run(Job::Load);
     }
 
     fn metrics(&self) -> Metrics {
@@ -619,7 +614,12 @@ impl App {
         if sent {
             // SAFETY: reads this thread's focus.
             let focus = unsafe { GetFocus() };
-            self.focus.set((!focus.is_invalid()).then_some(focus));
+            // nothing has it before the first read: the language then
+            self.focus.set(Some(if focus.is_invalid() {
+                self.ui.lang
+            } else {
+                focus
+            }));
             self.busy.set(true);
             for hwnd in self.ui.inputs() {
                 controls::enable(hwnd, false);
@@ -927,5 +927,28 @@ fn pick_folder(owner: HWND) -> Option<String> {
         let text = path.to_string().ok();
         CoTaskMemFree(Some(path.0 as *const c_void));
         text
+    }
+}
+
+/// The work area of the screen where the pointer is (the user just clicked the Start menu, the icon or a terminal there).
+fn work_area() -> RECT {
+    let mut point = POINT::default();
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the structures outlive the calls.
+    unsafe {
+        let _ = GetCursorPos(&mut point);
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return info.rcWork;
+        }
+    }
+    RECT {
+        left: 0,
+        top: 0,
+        right: 1024,
+        bottom: 768,
     }
 }

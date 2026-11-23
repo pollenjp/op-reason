@@ -444,22 +444,27 @@ impl Controls {
         }
     }
 
-    /// Places the controls in a client area `width` × `height`; returns the height the layout needs with the
-    /// smallest skill list.
-    pub fn arrange(&self, width: i32, height: i32, m: &Metrics) -> i32 {
-        let need = self.layout(width, 0, m, false);
-        let list = (height - need).max(self.min_list(m));
+    /// Places the controls in a client area `width` × `height`: the skill list takes the height that is left.
+    pub fn arrange(&self, width: i32, height: i32, m: &Metrics) {
+        let rest = self.layout(width, 0, m, false);
+        let list = (height - rest).max(self.list_rows(m, 2));
         self.layout(width, list, m, true);
-        need + self.min_list(m)
     }
 
-    /// The height the layout needs with the smallest skill list.
+    /// The smallest client height: a skill list of two rows.
     pub fn arrange_need(&self, width: i32, m: &Metrics) -> i32 {
-        self.layout(width, 0, m, false) + self.min_list(m)
+        self.layout(width, 0, m, false) + self.list_rows(m, 2)
     }
 
-    fn min_list(&self, m: &Metrics) -> i32 {
-        (m.char_height + scale(10, m.dpi)) * 5
+    /// The client height the window opens with: a skill list of six rows.
+    pub fn preferred_height(&self, width: i32, m: &Metrics) -> i32 {
+        self.layout(width, 0, m, false) + self.list_rows(m, 6)
+    }
+
+    /// The height of the skill list with its header and `rows` rows.
+    fn list_rows(&self, m: &Metrics, rows: i32) -> i32 {
+        let s = |v| scale(v, m.dpi);
+        m.char_height + s(12) + (m.char_height + s(10)) * rows + s(4)
     }
 
     /// The width a button needs for its text.
@@ -620,14 +625,17 @@ impl Controls {
         put(self.other_group, rect(x, top, w, y - top));
         y += gap;
 
-        // What the last action did, Refresh and Close
-        put(self.status, rect(x, y, w, line * 2));
-        y += line * 2 + s(4);
+        // What the last action did, with Refresh and Close at its right
         let cw = self.button_width(self.close, m);
         let rw = self.button_width(self.refresh, m);
-        put(self.close, rect(x + w - cw, y, cw, button));
-        put(self.refresh, rect(x + w - cw - gap - rw, y, rw, button));
-        y += button + margin;
+        let row = (line * 2).max(button);
+        put(self.status, rect(x, y, w - cw - rw - gap * 2, row));
+        put(
+            self.refresh,
+            rect(x + w - cw - gap - rw, y + row - button, rw, button),
+        );
+        put(self.close, rect(x + w - cw, y + row - button, cw, button));
+        y += row + margin;
         y - list
     }
 }
