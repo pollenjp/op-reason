@@ -139,6 +139,11 @@ pub fn run() -> i32 {
     let (parsed, plan) = args::plan(name, &rest, &env);
     let (mode, kind) = match plan {
         Plan::Usage => {
+            // A double click on op-reason.exe: the settings window, rather than the usage in a console that closes at
+            // once (design 2026-11-23-settings-design.md §11.1)
+            if rest.is_empty() && console::of_its_own() {
+                return super::settings::launch(lang);
+            }
             out(&crate::messages::usage_full(lang, VERSION));
             return 0;
         }

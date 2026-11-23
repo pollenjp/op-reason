@@ -24,6 +24,7 @@ pub mod relay_front;
 pub mod relay_opts;
 pub mod relay_ui;
 pub mod relay_watch;
+pub mod settings_ui;
 pub mod ui;
 
 #[cfg(windows)]

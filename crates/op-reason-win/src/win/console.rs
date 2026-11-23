@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
-    CTRL_SHUTDOWN_EVENT, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
-    STD_INPUT_HANDLE, SetConsoleCtrlHandler,
+    CTRL_SHUTDOWN_EVENT, GetConsoleMode, GetConsoleProcessList, GetStdHandle, STD_ERROR_HANDLE,
+    STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler,
 };
 use windows::core::BOOL;
 
@@ -87,6 +87,17 @@ pub fn stdin_is_readable() -> bool {
     let present = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
         .is_ok_and(|h| h != HANDLE::default() && !h.is_invalid());
     present && !is_console(STD_INPUT_HANDLE)
+}
+
+/// This process has a console of its own that shows its output: Windows made the console for it (a double click in
+/// Explorer), not a terminal that runs other programs too. `op-reason.exe` without arguments then opens the settings
+/// window instead of printing its usage into a console that closes at once (design `2026-11-23-settings-design.md`
+/// §11.1).
+pub fn of_its_own() -> bool {
+    let mut list = [0u32; 4];
+    // SAFETY: a valid buffer.
+    let n = unsafe { GetConsoleProcessList(&mut list) };
+    n == 1 && is_console(STD_OUTPUT_HANDLE)
 }
 
 fn is_console(which: STD_HANDLE) -> bool {

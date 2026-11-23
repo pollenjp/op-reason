@@ -1,11 +1,13 @@
 //! `op-reason.exe --settings …` (design `2026-11-23-settings-design.md`): the core's engine on Windows. [`WinSystem`]
 //! implements the core's `System` with Task Scheduler ([`taskschd`]), the relay's pipe and named objects
-//! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records.
+//! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records. Without
+//! more words it opens the settings window ([`window`]).
 
 mod relayctl;
 mod shortcut;
 mod taskschd;
 mod user;
+mod window;
 mod wslexe;
 
 use std::cell::OnceCell;
@@ -72,6 +74,11 @@ pub fn run(args: &[OsString], lang: Lang) -> i32 {
             return contract::EXIT_USAGE;
         }
     };
+    match cmd {
+        cli::Command::Window => return launch(lang),
+        cli::Command::WindowHere => return window::run(lang),
+        _ => {}
+    }
     // SAFETY: initializes COM for this thread (Task Scheduler); a thread initialized already is fine.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let sys = WinSystem::new();
@@ -84,6 +91,23 @@ pub fn run(args: &[OsString], lang: Lang) -> i32 {
     let mut out = io::stdout().lock();
     let mut err = io::stderr().lock();
     cli::run(cmd, &ctx, lang, &mut out, &mut err)
+}
+
+/// `op-reason --settings` without more words, and a double click on `op-reason.exe` (design §11.1): brings an open
+/// settings window to the front, or starts one in a process of its own without a console, and returns at once.
+pub fn launch(lang: Lang) -> i32 {
+    match window::launch() {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "{}{}",
+                messages::PREFIX,
+                crate::settings_ui::not_started(lang, &e)
+            );
+            contract::EXIT_USAGE
+        }
+    }
 }
 
 /// The system on Windows.

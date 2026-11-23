@@ -7,7 +7,10 @@
 //! real `LOCALAPPDATA`: they run only where `CI` is set (GitHub's runners), and remove the task at the end.
 #![cfg(windows)]
 
+use std::collections::BTreeMap;
+use std::ffi::{OsString, c_void};
 use std::fs;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -99,21 +102,28 @@ impl Sandbox {
             .join("SKILL.md")
     }
 
-    /// `op-reason.exe --settings <args>` with this sandbox's profile and state, and the fake `wsl.exe`.
-    fn settings(&self, args: &[&str]) -> Output {
+    /// The variables that point op-reason at this sandbox: its profile and state, and the fake `wsl.exe`.
+    fn vars(&self) -> Vec<(&'static str, OsString)> {
         let wsl = self.root.join("wsl.exe");
         if !wsl.exists() {
             fs::copy(fake_ssh(), &wsl).unwrap();
         }
+        vec![
+            ("USERPROFILE", self.profile().into()),
+            ("APPDATA", self.root.join("appdata").into()),
+            ("LOCALAPPDATA", self.root.join("lad").into()),
+            ("OPREASON_LANG", "en".into()),
+            ("OPREASON_WSL_EXE", wsl.into()),
+            ("FAKE_WSL_DIR", self.root.join("wsl").into()),
+        ]
+    }
+
+    /// `op-reason.exe --settings <args>` with this sandbox's profile and state, and the fake `wsl.exe`.
+    fn settings(&self, args: &[&str]) -> Output {
         Command::new(exe())
             .arg("--settings")
             .args(args)
-            .env("USERPROFILE", self.profile())
-            .env("APPDATA", self.root.join("appdata"))
-            .env("LOCALAPPDATA", self.root.join("lad"))
-            .env("OPREASON_LANG", "en")
-            .env("OPREASON_WSL_EXE", &wsl)
-            .env("FAKE_WSL_DIR", self.root.join("wsl"))
+            .envs(self.vars())
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .stdin(Stdio::null())
@@ -498,4 +508,190 @@ fn a_relay_outside_the_task_is_named_and_never_stopped() {
     let out = s(&["relay", "start"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(relay_answers());
+}
+
+// --- The settings window (on CI only: there is one per logon session, and a desktop may have its own open)
+
+/// The class of the settings window.
+const WINDOW_CLASS: &str = "op-reason-settings";
+
+unsafe extern "system" fn each_window(
+    hwnd: windows::Win32::Foundation::HWND,
+    found: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    let mut name = [0u16; 64];
+    // SAFETY: `found` points at the vector of `settings_windows` for the length of EnumWindows; the buffer outlives
+    // the call.
+    unsafe {
+        let n = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut name);
+        if n > 0 && String::from_utf16_lossy(&name[..n as usize]) == WINDOW_CLASS {
+            (*(found.0 as *mut Vec<windows::Win32::Foundation::HWND>)).push(hwnd);
+        }
+    }
+    true.into()
+}
+
+/// The top-level windows of the settings window's class.
+fn settings_windows() -> Vec<windows::Win32::Foundation::HWND> {
+    let mut found: Vec<windows::Win32::Foundation::HWND> = Vec::new();
+    // SAFETY: the callback pushes into `found`, which outlives the call.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
+            Some(each_window),
+            windows::Win32::Foundation::LPARAM(
+                &mut found as *mut Vec<windows::Win32::Foundation::HWND> as isize,
+            ),
+        );
+    }
+    found
+}
+
+/// Closes every settings window when a window test ends, and waits for their processes to end.
+struct CloseWindows;
+
+impl Drop for CloseWindows {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{CloseHandle, LPARAM, WPARAM};
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+        };
+        for hwnd in settings_windows() {
+            // SAFETY: plain calls on a window handle, and a process handle closed here.
+            unsafe {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                let process = OpenProcess(PROCESS_SYNCHRONIZE, false, pid);
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                if let Ok(p) = process {
+                    let _ = WaitForSingleObject(p, 30_000);
+                    let _ = CloseHandle(p);
+                }
+            }
+        }
+    }
+}
+
+/// Starts `op-reason.exe` without arguments in a console of its own (hidden), as a double click in Explorer does, with
+/// the sandbox's variables. Returns its exit code once it ended (within 10 seconds).
+fn start_alone(sb: &Sandbox) -> Option<u32> {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess,
+        PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW, WaitForSingleObject,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+    let mut vars: BTreeMap<String, (OsString, OsString)> = std::env::vars_os()
+        .map(|(k, v)| (k.to_string_lossy().to_uppercase(), (k, v)))
+        .collect();
+    for k in ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"] {
+        vars.remove(k);
+    }
+    for (k, v) in sb.vars() {
+        vars.insert(k.to_owned(), (k.into(), v));
+    }
+    let mut block: Vec<u16> = Vec::new();
+    for (k, v) in vars.values() {
+        block.extend(k.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(v.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    let app = HSTRING::from(exe().as_os_str());
+    let mut line: Vec<u16> = format!("\"{}\"", exe().display())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: SW_HIDE.0 as u16,
+        ..Default::default()
+    };
+    let mut info = PROCESS_INFORMATION::default();
+    // SAFETY: the strings, the block and the structures outlive the calls; the handles are closed here.
+    unsafe {
+        CreateProcessW(
+            &app,
+            Some(PWSTR(line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+            Some(block.as_ptr() as *const c_void),
+            PCWSTR::null(),
+            &startup,
+            &mut info,
+        )
+        .ok()?;
+        let ended = WaitForSingleObject(info.hProcess, 10_000) == WAIT_OBJECT_0;
+        let mut code = 0u32;
+        let got = GetExitCodeProcess(info.hProcess, &mut code).is_ok();
+        let _ = CloseHandle(info.hThread);
+        let _ = CloseHandle(info.hProcess);
+        (ended && got).then_some(code)
+    }
+}
+
+#[test]
+fn op_reason_settings_opens_one_window_and_returns_at_once() {
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let t0 = Instant::now();
+    let out = sb.settings(&[]);
+    let took = t0.elapsed();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        took < Duration::from_secs(2),
+        "op-reason --settings returns at once, not when the window closes (took {took:?})"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+    // Again: the open window comes to the front, and no second one opens
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    // A second window's process (two launches at the same moment) finds the first window and ends
+    let out = sb.settings(&["window"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(settings_windows().len(), 1, "one settings window");
+}
+
+#[test]
+fn a_double_click_opens_the_window_instead_of_the_usage() {
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("double-click");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    assert_eq!(
+        start_alone(&sb),
+        Some(0),
+        "op-reason.exe in a console of its own ends at once"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
 }

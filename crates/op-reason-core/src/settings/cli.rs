@@ -16,8 +16,10 @@ pub use crate::settings::text::{usage, usage_error};
 /// What `op-reason --settings …` asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// No more arguments: the window.
+    /// No more arguments: the window (on Windows, a process of its own is started for it).
     Window,
+    /// `window`: be the settings window (the process that `Window` starts; not in the usage).
+    WindowHere,
     /// `help`: the usage of `--settings`.
     Help,
     /// `list`.
@@ -79,6 +81,11 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
         None => Ok(()),
     };
     match word.as_str() {
+        "window" => {
+            no_json()?;
+            none_left(0)?;
+            Ok(Command::WindowHere)
+        }
         "help" | "--help" | "-h" => {
             no_json()?;
             none_left(0)?;
@@ -163,7 +170,7 @@ fn pairs(args: &[&String]) -> Result<Vec<(Name, Want)>, Usage> {
 /// Runs a command on the engine, prints what it found or did, and returns the exit code (design §7.3).
 pub fn run(cmd: Command, ctx: &Ctx, lang: Lang, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match cmd {
-        Command::Window | Command::Help => {
+        Command::Window | Command::WindowHere | Command::Help => {
             let _ = out.write_all(usage(lang).as_bytes());
             0
         }
@@ -362,6 +369,12 @@ mod tests {
     #[test]
     fn words() {
         assert_eq!(p(&[]), Ok(Command::Window));
+        assert_eq!(
+            p(&["window"]),
+            Ok(Command::WindowHere),
+            "the window process that op-reason --settings starts"
+        );
+        assert!(p(&["window", "x"]).is_err());
         assert_eq!(p(&["help"]), Ok(Command::Help));
         assert_eq!(p(&["--help"]), Ok(Command::Help));
         assert_eq!(p(&["list"]), Ok(Command::List { json: false }));

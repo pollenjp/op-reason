@@ -1,5 +1,6 @@
-//! Embeds the manifest into op-reason.exe: per-monitor DPI awareness (V2), run as the invoker, and the version
-//! from Cargo.toml. No rc.exe is needed, so cross builds work too.
+//! Embeds the manifest into op-reason.exe: per-monitor DPI awareness (V2), run as the invoker, the version from
+//! Cargo.toml, and comctl32 version 6 (the settings window's standard controls in today's look). No rc.exe is needed,
+//! so cross builds work too.
 
 use embed_manifest::manifest::DpiAwareness;
 use embed_manifest::{embed_manifest, new_manifest};
@@ -21,7 +22,6 @@ fn main() {
                 part("CARGO_PKG_VERSION_PATCH"),
                 0,
             )
-            .remove_dependency("Microsoft.Windows.Common-Controls")
             .dpi_awareness(DpiAwareness::PerMonitorV2);
         embed_manifest(manifest).expect("could not embed the manifest");
     }
