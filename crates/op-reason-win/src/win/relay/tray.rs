@@ -24,10 +24,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
-    PROCESS_CREATE_PROCESS, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
-    UpdateProcThreadAttribute,
+    DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROCESS_CREATE_PROCESS, PROCESS_INFORMATION,
+    STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
@@ -292,10 +292,11 @@ fn hide(hwnd: HWND) {
     remove();
 }
 
-/// Runs a menu item: `op-reason.exe --settings …` in a process of its own, with a console that is never shown
-/// (`CREATE_NO_WINDOW`: the console programs it starts share it), recorded as from the icon. op-reason's task runs its relay in a job of Task Scheduler, which counts the task as running while any process
-/// of the job lives ("Do not start a new instance" would then ignore the start of a new relay): the action runs with
-/// Explorer as its parent, which takes it out of that job, and otherwise leaves the job when the job lets it go.
+/// Runs a menu item: `op-reason.exe --settings …` in a process of its own, recorded as from the icon, with no console
+/// window for it or the console programs it starts. op-reason's task runs its relay in a job of Task Scheduler, which
+/// counts the task as running while any process of the job lives ("Do not start a new instance" would then ignore the
+/// start of a new relay): the action runs with Explorer as its parent, which takes it out of that job, and otherwise
+/// with a console that is never shown (`CREATE_NO_WINDOW`), out of the job when the job lets it go.
 fn act(item: Item) {
     let ours = with_tray(|t| t.ours).unwrap_or(false);
     if item.needs_ours() && !ours {
@@ -349,7 +350,9 @@ fn env_block() -> Vec<u16> {
 }
 
 /// Starts `<exe> <args>` with Explorer (the taskbar's process) as its parent (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`):
-/// in Explorer's job rather than this process's, with a console that is never shown, with this process's variables and
+/// in Explorer's job rather than this process's, without a console (a new console with another parent did not start on
+/// GitHub's runner; the console programs it starts, `wsl.exe`, are started with `CREATE_NO_WINDOW` themselves), with
+/// this process's variables and
 /// `SETTINGS_FROM=tray`, in the exe's folder.
 fn under_explorer(exe: &std::path::Path, args: &[&str]) -> Result<u32, String> {
     // SAFETY: the handles opened here are closed here; the attribute list, the strings and the structures outlive the
@@ -405,7 +408,7 @@ fn under_explorer(exe: &std::path::Path, args: &[&str]) -> Result<u32, String> {
                     None,
                     None,
                     false,
-                    CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                    DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
                     Some(env.as_ptr() as *const c_void),
                     dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
                     &startup.StartupInfo,
