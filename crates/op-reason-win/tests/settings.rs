@@ -695,3 +695,139 @@ fn a_double_click_opens_the_window_instead_of_the_usage() {
         "a window of class {WINDOW_CLASS} appears"
     );
 }
+
+/// The control `id` of the settings window.
+fn control(
+    window: windows::Win32::Foundation::HWND,
+    id: u16,
+) -> Option<windows::Win32::Foundation::HWND> {
+    // SAFETY: a plain call on a window handle.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(window), i32::from(id)) }.ok()
+}
+
+fn enabled(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    // SAFETY: a plain call on a window handle.
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(hwnd) }.as_bool()
+}
+
+fn title(hwnd: windows::Win32::Foundation::HWND) -> String {
+    let mut buf = [0u16; 128];
+    // SAFETY: the buffer's length is passed.
+    let n = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf) };
+    String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)])
+}
+
+/// Posts a control's notification to the settings window, as a click or a choice of the user does.
+fn notify(window: windows::Win32::Foundation::HWND, id: u16, code: u32) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    let ctl = control(window, id).expect("the control");
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(window),
+            windows::Win32::UI::WindowsAndMessaging::WM_COMMAND,
+            WPARAM(((code as usize) << 16) | usize::from(id)),
+            LPARAM(ctl.0 as isize),
+        );
+    }
+}
+
+#[test]
+fn the_window_changes_the_settings_with_its_controls() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::Controls::LVM_GETITEMCOUNT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BN_CLICKED, CB_SETCURSEL, CBN_SELCHANGE, SendMessageW,
+    };
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-controls");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+    let window = settings_windows()[0];
+    assert_eq!(title(window), "op-reason settings");
+    for id in [
+        ids::LANG,
+        ids::RELAY_LINE,
+        ids::START,
+        ids::STOP,
+        ids::RESTART,
+        ids::AUTOSTART,
+        ids::TRAY_ICON,
+        ids::MODE,
+        ids::TIME_LIMIT,
+        ids::ANSWER_WAIT,
+        ids::APPLY,
+        ids::SKILLS,
+        ids::PLACE,
+        ids::REMOVE,
+        ids::CHECK,
+        ids::ADD_FOLDER,
+        ids::START_MENU,
+        ids::RECORDS,
+        ids::OPEN_RECORDS,
+        ids::ACCOUNTS,
+        ids::FORGET,
+        ids::STATUS,
+        ids::REFRESH,
+        ids::CLOSE,
+    ] {
+        assert!(control(window, id).is_some(), "the control {id}");
+    }
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(60), || enabled(refresh)),
+        "the window read the settings (Refresh acts again)"
+    );
+    // The skill list shows the temporary profile's place, and Place or update places SKILL.md there
+    let skills = control(window, ids::SKILLS).unwrap();
+    // SAFETY: a message without pointers.
+    let rows = unsafe { SendMessageW(skills, LVM_GETITEMCOUNT, None, None) }.0;
+    assert!(rows >= 1, "the Windows place at least: {rows}");
+    assert!(!sb.skill_file().exists());
+    notify(window, ids::PLACE, BN_CLICKED);
+    assert!(
+        wait_until(Duration::from_secs(30), || sb.skill_file().is_file()),
+        "Place or update placed {}",
+        sb.skill_file().display()
+    );
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // Choosing 日本語 writes lang ja, and the window speaks Japanese
+    let lang = control(window, ids::LANG).unwrap();
+    // SAFETY: a message without pointers.
+    unsafe { SendMessageW(lang, CB_SETCURSEL, Some(WPARAM(1)), None) };
+    notify(window, ids::LANG, CBN_SELCHANGE);
+    let file = sb.root.join("lad").join("op-reason").join("settings.json");
+    let lang_is_ja = || {
+        fs::read_to_string(&file)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .is_some_and(|v| v["lang"] == "ja")
+    };
+    assert!(
+        wait_until(Duration::from_secs(30), lang_is_ja),
+        "{}",
+        fs::read_to_string(&file).unwrap_or_default()
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || title(window)
+            == "op-reason の設定"),
+        "{}",
+        title(window)
+    );
+    let log = sb.log();
+    assert!(log.contains(r#""from":"window""#), "{log}");
+}

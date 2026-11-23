@@ -673,15 +673,9 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
     let relay_named = file_wants.iter().any(|(n, _)| relay_value(n));
     let mut relay_changed = false;
     if !file_wants.is_empty() {
-        let (changes, changed) = set_file(ctx, &file_wants);
+        let (changes, changed) = write_file(ctx, &file_wants);
         relay_changed = changed;
-        let icon_changed = changes
-            .iter()
-            .any(|c| c.name == Name::RelayTrayIcon.text() && c.done == Done::Done);
         out.extend(changes);
-        if icon_changed {
-            ctx.sys.changed();
-        }
     }
     if let Some(on) = on_of(wants, &Name::RelayAutostart) {
         out.extend(autostart(ctx, on));
@@ -702,6 +696,31 @@ pub fn set(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
     }
     record(ctx, &out);
     out
+}
+
+/// Writes file settings without starting the relay again: the window writes a value when it changes, and its Apply
+/// restarts the relay (design §11.2). Names that are not kept in `settings.json` are left out.
+pub fn write(ctx: &Ctx, wants: &[(Name, Want)]) -> Vec<Change> {
+    let file_wants: Vec<&(Name, Want)> = wants.iter().filter(|(n, _)| n.is_file()).collect();
+    if file_wants.is_empty() {
+        return Vec::new();
+    }
+    let (out, _) = write_file(ctx, &file_wants);
+    record(ctx, &out);
+    out
+}
+
+/// Writes the file settings and tells the relay's icon window when its setting changed; returns the changes and
+/// whether a relay value changed in the file.
+fn write_file(ctx: &Ctx, wants: &[&(Name, Want)]) -> (Vec<Change>, bool) {
+    let (changes, changed) = set_file(ctx, wants);
+    if changes
+        .iter()
+        .any(|c| c.name == Name::RelayTrayIcon.text() && c.done == Done::Done)
+    {
+        ctx.sys.changed();
+    }
+    (changes, changed)
 }
 
 /// A value that the relay reads when it starts (its mode and times): a change starts it again.
@@ -1700,6 +1719,41 @@ mod tests {
         assert_eq!(c[0].done, Done::Done, "the file is written");
         assert!(matches!(c[1].done, Done::Failed(Why::NotOurs(_))));
         assert!(!f.calls().iter().any(|c| c.starts_with("stop")));
+    }
+
+    #[test]
+    fn the_window_writes_the_relay_values_and_leaves_the_restart_to_apply() {
+        // design §11.2: changing the mode or the times writes them; Apply restarts the relay
+        let f = Fake::new().ours_running();
+        let c = write(
+            &f.ctx(),
+            &[
+                (Name::RelayMode, Want::Mode(RelayMode::ShowOnly)),
+                (Name::RelayTimeLimit, Want::Secs(1800)),
+            ],
+        );
+        assert!(f.calls().is_empty(), "no restart: {:?}", f.calls());
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert!(c.iter().all(|c| c.done == Done::Done), "{c:?}");
+        assert_eq!(
+            f.settings.borrow().as_deref(),
+            Some(r#"{"v":1,"relay":{"mode":"show-only","timeLimit":1800}}"#)
+        );
+        assert_eq!(f.records.borrow().len(), 1, "recorded");
+        let c = write(&f.ctx(), &[(Name::RelayTrayIcon, Want::On(false))]);
+        assert_eq!(c[0].done, Done::Done);
+        assert_eq!(
+            f.calls(),
+            ["changed"],
+            "the relay's icon window is told at once"
+        );
+        let same = write(&f.ctx(), &[(Name::RelayTrayIcon, Want::On(false))]);
+        assert_eq!(same[0].done, Done::Same);
+        assert_eq!(
+            f.records.borrow().len(),
+            2,
+            "nothing done, nothing recorded"
+        );
     }
 
     #[test]

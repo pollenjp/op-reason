@@ -3,6 +3,7 @@
 //! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records. Without
 //! more words it opens the settings window ([`window`]).
 
+mod controls;
 mod relayctl;
 mod shortcut;
 mod taskschd;

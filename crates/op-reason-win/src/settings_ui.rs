@@ -2,10 +2,69 @@
 //! cover them. The window itself is `win::settings::window`.
 
 use op_reason_core::lang::Lang;
-use op_reason_core::settings::catalog::Name;
+use op_reason_core::settings::catalog::{self, Name, Want};
 use op_reason_core::settings::engine::{Change, Item, State};
 use op_reason_core::settings::skill::SkillState;
 use op_reason_core::settings::text;
+use op_reason_core::settings::values::{self, RelayMode};
+
+/// The IDs of the window's controls (the Windows tests find them by these).
+pub mod ids {
+    /// The language combo box.
+    pub const LANG: u16 = 101;
+    /// The relay's line.
+    pub const RELAY_LINE: u16 = 110;
+    /// Start.
+    pub const START: u16 = 111;
+    /// Stop.
+    pub const STOP: u16 = 112;
+    /// Restart.
+    pub const RESTART: u16 = 113;
+    /// `relay.autostart`.
+    pub const AUTOSTART: u16 = 114;
+    /// `relay.tray-icon`.
+    pub const TRAY_ICON: u16 = 115;
+    /// `relay.mode`.
+    pub const MODE: u16 = 116;
+    /// `relay.time-limit` (minutes).
+    pub const TIME_LIMIT: u16 = 117;
+    /// Its up-down.
+    pub const TIME_LIMIT_SPIN: u16 = 118;
+    /// `relay.answer-wait` (seconds).
+    pub const ANSWER_WAIT: u16 = 119;
+    /// Its up-down.
+    pub const ANSWER_WAIT_SPIN: u16 = 120;
+    /// The note by Apply.
+    pub const APPLY_NOTE: u16 = 121;
+    /// Apply.
+    pub const APPLY: u16 = 122;
+    /// The skill places.
+    pub const SKILLS: u16 = 131;
+    /// Place or update.
+    pub const PLACE: u16 = 132;
+    /// Remove.
+    pub const REMOVE: u16 = 133;
+    /// Check.
+    pub const CHECK: u16 = 134;
+    /// Add a folder.
+    pub const ADD_FOLDER: u16 = 135;
+    /// `start-menu`.
+    pub const START_MENU: u16 = 141;
+    /// The records folder.
+    pub const RECORDS: u16 = 142;
+    /// Open the records folder.
+    pub const OPEN_RECORDS: u16 = 143;
+    /// The accounts remembered for links.
+    pub const ACCOUNTS: u16 = 144;
+    /// Forget them.
+    pub const FORGET: u16 = 145;
+    /// What the last action did.
+    pub const STATUS: u16 = 151;
+    /// Refresh.
+    pub const REFRESH: u16 = 152;
+    /// Close: `IDCANCEL`, so that Esc closes the window too.
+    pub const CLOSE: u16 = 2;
+}
 
 /// The window's fixed texts in one language.
 pub struct Texts {
@@ -266,6 +325,166 @@ pub fn skill_state(lang: Lang, item: &Item, version: &str) -> String {
     }
 }
 
+/// The note by Apply: when the relay runs with other values than the file's, it says so.
+pub fn apply_note(lang: Lang, items: &[Item]) -> &'static str {
+    let differs = items.iter().any(|i| {
+        matches!(
+            i.name,
+            Name::RelayMode | Name::RelayTimeLimit | Name::RelayAnswerWait
+        ) && matches!(i.state, State::RelayDiffers { .. })
+    });
+    match (differs, lang) {
+        (false, _) => texts(lang).apply_note,
+        (true, Lang::En) => "The relay runs with other values until Apply starts it again.",
+        (true, Lang::Ja) => "中継は別の値で動いています。適用で起こし直すと、この値になります。",
+    }
+}
+
+/// The language combo box's item of the file's `lang` (English, Japanese, from `OPREASON_LANG`).
+pub fn lang_index(items: &[Item]) -> usize {
+    match find(items, &Name::Lang).and_then(|i| i.value.as_deref()) {
+        Some("en") => 0,
+        Some("ja") => 1,
+        _ => 2,
+    }
+}
+
+/// What the language combo box's item `index` writes.
+pub fn lang_want(index: usize) -> Want {
+    match index {
+        0 => Want::Lang(Some(Lang::En)),
+        1 => Want::Lang(Some(Lang::Ja)),
+        _ => Want::Lang(None),
+    }
+}
+
+/// The mode combo box's item (`per-call`, `show-only`).
+pub fn mode_index(items: &[Item]) -> usize {
+    match find(items, &Name::RelayMode).and_then(|i| i.value.as_deref()) {
+        Some("show-only") => 1,
+        _ => 0,
+    }
+}
+
+/// What the mode combo box's item `index` writes.
+pub fn mode_want(index: usize) -> Want {
+    match index {
+        1 => Want::Mode(RelayMode::ShowOnly),
+        _ => Want::Mode(RelayMode::PerCall),
+    }
+}
+
+/// An on-or-off setting is on (one that is not in the list is off).
+pub fn is_on(items: &[Item], name: &Name) -> bool {
+    find(items, name).and_then(|i| i.value.as_deref()) == Some("on")
+}
+
+/// The time limit in whole minutes, for its field (seconds round up).
+pub fn time_limit_text(items: &[Item]) -> String {
+    find(items, &Name::RelayTimeLimit)
+        .and_then(|i| i.value.as_deref())
+        .and_then(values::time_limit)
+        .map_or_else(String::new, |s| s.div_ceil(60).to_string())
+}
+
+/// The answer wait in seconds, for its field.
+pub fn answer_wait_text(items: &[Item]) -> String {
+    find(items, &Name::RelayAnswerWait)
+        .and_then(|i| i.value.as_deref())
+        .and_then(values::answer_wait)
+        .map_or_else(String::new, |s| s.to_string())
+}
+
+/// What the time limit's field writes (minutes, 1 to 1440), when it holds such a number.
+pub fn time_limit_want(text: &str) -> Option<Want> {
+    let n = text.trim();
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    catalog::want(&Name::RelayTimeLimit, &format!("{n}m")).ok()
+}
+
+/// What the answer wait's field writes (seconds, 1 to 3600), when it holds such a number.
+pub fn answer_wait_want(text: &str) -> Option<Want> {
+    let n = text.trim();
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    catalog::want(&Name::RelayAnswerWait, &format!("{n}s")).ok()
+}
+
+/// A time field that holds no number within its bounds.
+pub fn out_of_range(lang: Lang, name: &Name) -> String {
+    let max_minutes = values::MAX_TIME_LIMIT / 60;
+    let max_seconds = values::MAX_ANSWER_WAIT;
+    match (name, lang) {
+        (Name::RelayTimeLimit, Lang::En) => {
+            format!("Time limit: a whole number of minutes from 1 to {max_minutes}")
+        }
+        (Name::RelayTimeLimit, Lang::Ja) => {
+            format!("答えの有効な時間: 1 から {max_minutes} までの分")
+        }
+        (_, Lang::En) => format!("Answer wait: a whole number of seconds from 1 to {max_seconds}"),
+        (_, Lang::Ja) => format!("窓が待つ時間: 1 から {max_seconds} までの秒"),
+    }
+}
+
+/// A row of the skill list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRow {
+    /// The setting it changes.
+    pub name: Name,
+    /// The place, as the list names it.
+    pub place: String,
+    /// Its state, short.
+    pub state: String,
+    /// The folder.
+    pub where_: String,
+}
+
+/// The skill places of the list, in its order.
+pub fn skill_rows(lang: Lang, items: &[Item], version: &str) -> Vec<SkillRow> {
+    items
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.name,
+                Name::SkillWindows | Name::SkillWsl(_) | Name::SkillFolder(_)
+            )
+        })
+        .map(|i| SkillRow {
+            name: i.name.clone(),
+            place: place_label(lang, &i.name),
+            state: skill_state(lang, i, version),
+            where_: i.where_.clone(),
+        })
+        .collect()
+}
+
+/// Which of Place or update, Remove and Check may act on the chosen skill place: nothing is done to a `SKILL.md` that
+/// op-reason did not place or behind a link; a place not looked at yet is looked at by the action first.
+pub fn skill_buttons(item: Option<&Item>) -> (bool, bool, bool) {
+    let Some(item) = item else {
+        return (false, false, false);
+    };
+    match &item.state {
+        State::Skill { link: Some(_), .. }
+        | State::Skill {
+            state: SkillState::Foreign,
+            ..
+        } => (false, false, true),
+        State::Skill {
+            state: SkillState::Ok,
+            ..
+        } => (false, true, true),
+        State::Skill {
+            state: SkillState::Missing,
+            ..
+        } => (true, false, true),
+        _ => (true, true, true),
+    }
+}
+
 /// What an action did, for the window's last line (empty when it did nothing).
 pub fn result_line(lang: Lang, changes: &[Change]) -> String {
     changes
@@ -280,8 +499,10 @@ mod tests {
     use super::*;
     use op_reason_core::lang::Lang;
     use op_reason_core::settings::catalog::Name;
+    use op_reason_core::settings::catalog::Want;
     use op_reason_core::settings::engine::{Change, Done, Item, State, Why};
     use op_reason_core::settings::skill::SkillState;
+    use op_reason_core::settings::values::RelayMode;
 
     fn item(name: Name, value: Option<&str>, state: State) -> Item {
         Item {
@@ -349,6 +570,144 @@ mod tests {
             assert_eq!(t.columns.len(), 3);
         }
         assert_ne!(texts(Lang::En).title, texts(Lang::Ja).title);
+    }
+
+    fn file_values(lang: &str, mode: &str, limit: &str, wait: &str) -> Vec<Item> {
+        vec![
+            item(Name::Lang, Some(lang), State::Ok),
+            item(Name::RelayMode, Some(mode), State::Ok),
+            item(Name::RelayTimeLimit, Some(limit), State::Ok),
+            item(Name::RelayAnswerWait, Some(wait), State::Ok),
+            item(Name::RelayTrayIcon, Some("off"), State::Ok),
+            item(Name::StartMenu, Some("on"), State::Ok),
+        ]
+    }
+
+    #[test]
+    fn the_choices_follow_the_file_and_write_what_they_show() {
+        let items = file_values("ja", "show-only", "90m", "45s");
+        assert_eq!(lang_index(&items), 1);
+        assert_eq!(lang_index(&file_values("en", "per-call", "60m", "60s")), 0);
+        assert_eq!(
+            lang_index(&file_values("default", "per-call", "60m", "60s")),
+            2
+        );
+        assert_eq!(lang_want(0), Want::Lang(Some(Lang::En)));
+        assert_eq!(lang_want(1), Want::Lang(Some(Lang::Ja)));
+        assert_eq!(lang_want(2), Want::Lang(None));
+        assert_eq!(mode_index(&items), 1);
+        assert_eq!(mode_want(0), Want::Mode(RelayMode::PerCall));
+        assert_eq!(mode_want(1), Want::Mode(RelayMode::ShowOnly));
+        assert!(!is_on(&items, &Name::RelayTrayIcon));
+        assert!(is_on(&items, &Name::StartMenu));
+        assert!(
+            !is_on(&items, &Name::RelayAutostart),
+            "not in the list: off"
+        );
+    }
+
+    #[test]
+    fn the_times_are_minutes_and_seconds_within_their_bounds() {
+        let items = file_values("en", "per-call", "90m", "45s");
+        assert_eq!(time_limit_text(&items), "90");
+        assert_eq!(answer_wait_text(&items), "45");
+        assert_eq!(
+            time_limit_text(&file_values("en", "per-call", "90s", "60s")),
+            "2",
+            "seconds round up to whole minutes"
+        );
+        assert_eq!(time_limit_want("30"), Some(Want::Secs(1800)));
+        assert_eq!(time_limit_want("1440"), Some(Want::Secs(86_400)));
+        assert_eq!(time_limit_want("1441"), None, "at most a day");
+        assert_eq!(time_limit_want("0"), None);
+        assert_eq!(time_limit_want(""), None);
+        assert_eq!(answer_wait_want("90"), Some(Want::Secs(90)));
+        assert_eq!(answer_wait_want("3601"), None, "at most an hour");
+        assert!(out_of_range(Lang::En, &Name::RelayTimeLimit).contains("1440"));
+        assert!(out_of_range(Lang::Ja, &Name::RelayAnswerWait).contains("3600"));
+    }
+
+    #[test]
+    fn the_skill_rows_and_what_their_buttons_may_do() {
+        let placed = |state: SkillState, link: Option<&str>| {
+            item(
+                Name::SkillWindows,
+                Some("on"),
+                State::Skill {
+                    state,
+                    link: link.map(str::to_owned),
+                },
+            )
+        };
+        let mut items = file_values("en", "per-call", "60m", "60s");
+        items.push(Item {
+            where_: r"C:\Users\<you>\.claude\skills".into(),
+            ..placed(SkillState::Ok, None)
+        });
+        items.push(item(
+            Name::SkillWsl("Debian".into()),
+            None,
+            State::NotRunning,
+        ));
+        let rows = skill_rows(Lang::En, &items, "0.7.0");
+        assert_eq!(rows.len(), 2, "the skill places only, in the list's order");
+        assert_eq!(rows[0].name, Name::SkillWindows);
+        assert_eq!(rows[0].place, "Windows (Claude Code)");
+        assert_eq!(rows[0].state, "placed (0.7.0)");
+        assert_eq!(rows[0].where_, r"C:\Users\<you>\.claude\skills");
+        assert_eq!(rows[1].place, "WSL: Debian");
+
+        assert_eq!(skill_buttons(None), (false, false, false), "no row chosen");
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Ok, None))),
+            (false, true, true)
+        );
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Missing, None))),
+            (true, false, true)
+        );
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Old("0.6.0".into()), None))),
+            (true, true, true)
+        );
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Changed, None))),
+            (true, true, true)
+        );
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Foreign, None))),
+            (false, false, true),
+            "never touched"
+        );
+        assert_eq!(
+            skill_buttons(Some(&placed(SkillState::Ok, Some(r"C:\x")))),
+            (false, false, true),
+            "a link on the way: refused"
+        );
+        assert_eq!(
+            skill_buttons(Some(&item(
+                Name::SkillWsl("Debian".into()),
+                None,
+                State::NotRunning
+            ))),
+            (true, true, true),
+            "not looked at: the engine looks first"
+        );
+    }
+
+    #[test]
+    fn the_note_by_apply_says_when_the_relay_runs_with_other_values() {
+        let items = file_values("en", "show-only", "60m", "60s");
+        assert_eq!(apply_note(Lang::En, &items), texts(Lang::En).apply_note);
+        let mut differs = items.clone();
+        differs[1].state = State::RelayDiffers {
+            relay: "per-call".into(),
+            pid: 42,
+        };
+        let note = apply_note(Lang::En, &differs);
+        assert_ne!(note, texts(Lang::En).apply_note);
+        assert!(note.contains("other values"), "{note}");
+        assert!(apply_note(Lang::Ja, &differs).contains("適用"));
     }
 
     #[test]
