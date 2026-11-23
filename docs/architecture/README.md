@@ -301,7 +301,8 @@ changes op-reason's settings through one layer:
 - The relay shows an icon in the notification area (`win/relay/tray.rs`; its texts, menu and drawn key in
   `tray_ui.rs`): a hidden window of class `op-reason-ssh-relay-tray` that writers of `settings.json` tell with the
   registered message `op-reason-settings-changed`; its menu runs `op-reason.exe --settings …` with
-  `OPREASON_SETTINGS_FROM=tray` (`from: tray`). `start-menu` makes `op-reason.lnk` through `IShellLinkW`.
+  `OPREASON_SETTINGS_FROM=tray` (`from: tray`), for the relay of op-reason's task with Explorer as the parent process
+  (out of Task Scheduler's job). `start-menu` makes `op-reason.lnk` through `IShellLinkW`.
 
 ## The runner contract
 

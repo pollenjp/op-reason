@@ -91,7 +91,8 @@ allow it in op-reason's window, which shows you as the caller, the command, the 
 `op-reason --settings` (`list`, `get`, `set`, `check`, `relay start|stop|restart`) reads and changes op-reason's own
 settings: the relay's mode and times, its scheduled task, the language, where this guide is placed.
 
-- Reading is fine: `op-reason --settings list`, `get`, `check`.
+- Reading is fine: `op-reason --settings list`, `get`, `check`. `op-reason --settings` without a word opens the settings
+  window on the user's desktop; for its words, `op-reason --settings help`.
 - Change a setting (`set`, `relay stop`, `relay restart`, `forget-accounts`) only when the user asks for that change.
   Never change one to get past a window, a refusal or a prompt (for example, never switch the relay to `show-only`
   or stop it because a call was denied). Every change is recorded in the log with you as its caller.

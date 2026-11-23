@@ -10,6 +10,8 @@ pub fn usage(lang: Lang) -> String {
     match lang {
         Lang::En => r"Usage: op-reason --settings <word> …
 
+  op-reason --settings                              the settings window, on the Windows desktop
+  op-reason --settings help                         this text
   op-reason --settings list [--json]                every setting: its value now, its default,
                                                     where it is kept
   op-reason --settings get <name> [--json]          the value of one setting now
@@ -39,6 +41,8 @@ Every change is recorded in the log (op-reason --log).
         .to_owned(),
         Lang::Ja => r"使い方: op-reason --settings <語> …
 
+  op-reason --settings                              設定の窓 (Windows のデスクトップに開く)
+  op-reason --settings help                         この文
   op-reason --settings list [--json]                すべての設定: 今の値・既定・置き場
   op-reason --settings get <名前> [--json]          1 つの設定の今の値
   op-reason --settings set <名前> <値>              そうする。<名前>=<値> … も

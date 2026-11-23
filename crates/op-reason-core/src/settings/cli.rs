@@ -651,4 +651,19 @@ mod run_tests {
         assert!(usage(Lang::En).contains("op-reason --settings check"));
         assert!(usage(Lang::Ja).contains("op-reason --settings check"));
     }
+
+    #[test]
+    fn the_usage_says_that_no_word_opens_a_window() {
+        // an agent that runs op-reason --settings for its help must learn that it opens a window on the desktop
+        let en = usage(Lang::En);
+        assert!(
+            en.contains("op-reason --settings                    ")
+                && en.contains("the settings window"),
+            "{en}"
+        );
+        assert!(en.contains("op-reason --settings help"), "{en}");
+        let ja = usage(Lang::Ja);
+        assert!(ja.contains("設定の窓"), "{ja}");
+        assert!(ja.contains("op-reason --settings help"), "{ja}");
+    }
 }

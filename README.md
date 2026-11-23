@@ -518,12 +518,13 @@ and changes it at once:
   boxes are `relay.autostart` and `relay.tray-icon`. The mode and the times are written when they change and used when
   the relay starts again: **Apply** restarts op-reason's relay with them, after a question (1Password asks once more,
   and remembered answers are forgotten).
-- **Skill for AI agents**: the places and their states. **Place or update**, **Remove**, **Check** (a WSL distribution
-  that does not run is looked at only then, which starts it) and **Add a folder…**.
+- **Skill for AI agents**: the places and their states. **Place or update**, **Remove**, **Check** and **Add a
+  folder…**. A WSL distribution that does not run is not looked at when the window opens; an action on its row starts
+  it.
 - **Start menu and records**: `start-menu`, the records folder (**Open**) and the accounts remembered for links
   (**Forget**).
-- Every action is the same `set` as on the command line, run on a thread of its own, and is recorded with
-  `from: window`.
+- Every action goes through the same layer as the command line (`set`; the values kept in `settings.json` are
+  written without starting the relay again), on a thread of its own, and is recorded with `from: window`.
 
 `set start-menu on` puts **op-reason** in the Start menu, so that Windows' search finds the window: `op-reason.lnk`
 starts this `op-reason.exe` with `--settings` (its console shows for a moment in the taskbar). After the exe moves,

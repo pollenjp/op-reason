@@ -31,8 +31,8 @@
   mode and the times with Apply), the skill places (with a folder picker), the Start menu entry and the records.
 - **`start-menu`**: `op-reason.lnk` in the Start menu, so that Windows' search finds the settings window.
 - **The relay's icon in the notification area** (`relay.tray-icon`, on by default, applied at once): a click opens the
-  settings window; its menu opens the records folder, restarts or stops op-reason's relay and hides the icon, recorded
-  with `from: tray`. It comes back when Explorer starts again.
+  settings window; its menu opens the records folder, restarts or stops op-reason's relay and hides the icon (the
+  changes are recorded with `from: tray`). It comes back when Explorer starts again.
 
 ## 0.6.0 — 2026-11-22
 
