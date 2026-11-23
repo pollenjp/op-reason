@@ -12,6 +12,7 @@ skinparam file {
   BorderColor #3A6EA5
 }
 
+rectangle "How do I change op-reason's settings?\n(the relay's task, the skill, the language)" as Q7
 rectangle "Where do the SSH relay's windows,\ntoasts and notifications appear?" as Q6
 rectangle "How should an AI agent call op?" as Q4
 rectangle "How do I check it with\nthe real 1Password app?" as Q3
@@ -19,6 +20,7 @@ rectangle "How does it work now?\nWhat do the entries and the runners exchange?"
 rectangle "日本語で読みたい\n(Japanese)" as Q5
 rectangle "What is op-reason?\nHow do I install and use it?" as Q1
 
+file "README.md: Settings\n(op-reason --settings)" as P7
 file "docs/html/relay-screens.html\n(README: SSH keys: the relay)" as P6
 file "skill/SKILL.md\n(op-reason --skill)" as P4
 file "docs/manual-verification.md\ndocs/manual-verification.ja.md" as P3
@@ -26,6 +28,7 @@ file "docs/architecture/README.md" as P2
 file "README.ja.md" as P5
 file "README.md" as P1
 
+Q7 --> P7
 Q6 --> P6
 Q4 --> P4
 Q3 --> P3

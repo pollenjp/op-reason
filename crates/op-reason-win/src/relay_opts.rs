@@ -2,34 +2,21 @@
 //! A mode is changed by starting the relay again with another option; the window has no switch for it.
 
 use op_reason_core::lang::Lang;
+use op_reason_core::settings::values;
 
 /// The first argument that chooses the relay's face.
 pub const RELAY_ARG: &str = "--ssh-agent";
 /// The relay's own pipe.
-pub const DEFAULT_PIPE: &str = r"\\.\pipe\op-reason-ssh-agent";
+pub const DEFAULT_PIPE: &str = values::RELAY_PIPE;
 /// The 1Password agent's pipe (the one Windows OpenSSH uses by default).
-pub const DEFAULT_UPSTREAM: &str = r"\\.\pipe\openssh-ssh-agent";
+pub const DEFAULT_UPSTREAM: &str = values::RELAY_UPSTREAM;
 /// How long an answer covers its call: 60 minutes.
-pub const DEFAULT_LIMIT: u64 = 60 * 60;
+pub const DEFAULT_LIMIT: u64 = values::DEFAULT_TIME_LIMIT;
 /// How long a window waits for an answer: 60 seconds.
-pub const DEFAULT_ANSWER_WAIT: u64 = 60;
+pub const DEFAULT_ANSWER_WAIT: u64 = values::DEFAULT_ANSWER_WAIT;
 
-/// `per-call` (the relay decides) or `show-only` (1Password decides).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    PerCall,
-    ShowOnly,
-}
-
-impl Mode {
-    /// The word of the option, the records and the window.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Mode::PerCall => "per-call",
-            Mode::ShowOnly => "show-only",
-        }
-    }
-}
+/// `per-call` (the relay decides) or `show-only` (1Password decides): the core's, which settings hold too.
+pub use values::RelayMode as Mode;
 
 /// What the relay was started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +32,10 @@ pub struct Opts {
     pub answer_secs: u64,
     /// `--status`: say whether a relay answers on the pipe, and exit.
     pub status: bool,
+    /// `--task <name>`: the scheduled task that started the relay (op-reason's task passes its name), written into
+    /// `relay.json` so that `op-reason --settings` knows the relay for its own (design `2026-11-23-settings-design.md`
+    /// §9.5).
+    pub task: Option<String>,
 }
 
 impl Default for Opts {
@@ -56,6 +47,7 @@ impl Default for Opts {
             limit_secs: DEFAULT_LIMIT,
             answer_secs: DEFAULT_ANSWER_WAIT,
             status: false,
+            task: None,
         }
     }
 }
@@ -97,11 +89,27 @@ impl OptError {
     }
 }
 
-/// The options after `--ssh-agent`: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`, `--time-limit
-/// <n>[s|m|h]` (a bare number is minutes), `--answer-wait <n>[s|m]` (a bare number is seconds), `--status`; each value
-/// also as `--option=value`.
+/// The relay's values in `settings.json` (design `2026-11-23-settings-design.md` §8.1), on the defaults: what the
+/// relay starts with before its options.
+pub fn base(values: &op_reason_core::settings::Values) -> Opts {
+    Opts {
+        mode: values.mode.unwrap_or_default(),
+        limit_secs: values.time_limit.unwrap_or(DEFAULT_LIMIT),
+        answer_secs: values.answer_wait.unwrap_or(DEFAULT_ANSWER_WAIT),
+        ..Opts::default()
+    }
+}
+
+/// [`parse_with`] on the defaults.
 pub fn parse(args: &[String]) -> Result<Opts, OptError> {
-    let mut o = Opts::default();
+    parse_with(args, Opts::default())
+}
+
+/// The options after `--ssh-agent`, on `base`: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
+/// `--time-limit <n>[s|m|h]` (a bare number is minutes), `--answer-wait <n>[s|m]` (a bare number is seconds),
+/// `--status`; each value also as `--option=value`. An option wins over `base`.
+pub fn parse_with(args: &[String], base: Opts) -> Result<Opts, OptError> {
+    let mut o = base;
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
         if a == "--status" {
@@ -114,7 +122,7 @@ pub fn parse(args: &[String]) -> Result<Opts, OptError> {
         };
         if !matches!(
             name,
-            "--mode" | "--pipe" | "--upstream" | "--time-limit" | "--answer-wait"
+            "--mode" | "--pipe" | "--upstream" | "--time-limit" | "--answer-wait" | "--task"
         ) {
             return Err(OptError::Unknown(a.clone()));
         }
@@ -126,51 +134,21 @@ pub fn parse(args: &[String]) -> Result<Opts, OptError> {
                 .ok_or_else(|| OptError::Missing(name.to_owned()))?,
         };
         match name {
-            "--mode" => {
-                o.mode = match value.as_str() {
-                    "per-call" => Mode::PerCall,
-                    "show-only" => Mode::ShowOnly,
-                    _ => return Err(OptError::BadMode(value)),
-                }
-            }
+            "--mode" => o.mode = Mode::parse(&value).ok_or(OptError::BadMode(value))?,
             "--pipe" => o.pipe = pipe_path(&value),
+            "--task" => o.task = Some(value),
             "--upstream" => o.upstream = pipe_path(&value),
             "--time-limit" => {
-                o.limit_secs = duration(&value, 60, true)
+                o.limit_secs = values::time_limit(&value)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
             _ => {
-                o.answer_secs = duration(&value, 1, false)
+                o.answer_secs = values::answer_wait(&value)
                     .ok_or_else(|| OptError::BadDuration(name.to_owned(), value.clone()))?
             }
         }
     }
     Ok(o)
-}
-
-/// Seconds of `<n>`, `<n>s`, `<n>m` (and `<n>h` when `hours`); a bare number counts `bare` seconds each. Zero is no
-/// duration.
-fn duration(text: &str, bare: u64, hours: bool) -> Option<u64> {
-    let (digits, unit) = match text.char_indices().last() {
-        Some((at, c)) if c.is_ascii_alphabetic() => (
-            &text[..at],
-            match c {
-                's' => 1,
-                'm' => 60,
-                'h' if hours => 3600,
-                _ => return None,
-            },
-        ),
-        _ => (text, bare),
-    };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits
-        .parse::<u64>()
-        .ok()
-        .and_then(|n| n.checked_mul(unit))
-        .filter(|s| *s > 0)
 }
 
 /// A pipe's full name: `\\.\pipe\` in front of a bare name.
@@ -224,6 +202,7 @@ mod tests {
                 limit_secs: 90,
                 answer_secs: 120,
                 status: true,
+                task: None,
             }
         );
         assert_eq!(p(&["--mode=per-call"]).unwrap().mode, Mode::PerCall);
@@ -267,6 +246,16 @@ mod tests {
             p(&["--time-limit", "0m"]),
             Err(OptError::BadDuration(..))
         ));
+        for (opt, bad) in [
+            ("--time-limit", "25h"),
+            ("--answer-wait", "61m"),
+            ("--answer-wait", "99999999999"),
+        ] {
+            assert!(
+                matches!(p(&[opt, bad]), Err(OptError::BadDuration(..))),
+                "{opt} {bad}"
+            );
+        }
         let e = OptError::BadMode("later".into());
         assert!(e.message(Lang::En).contains("later") && e.message(Lang::En).contains("per-call"));
         assert!(e.message(Lang::Ja).contains("later"));
@@ -285,6 +274,47 @@ mod tests {
                 .message(Lang::En)
                 .contains("5x")
         );
+    }
+
+    #[test]
+    fn settings_are_the_base_and_options_win() {
+        let values = op_reason_core::settings::values(Some(
+            r#"{"relay":{"mode":"show-only","timeLimit":5400,"answerWait":5}}"#,
+        ));
+        let b = base(&values);
+        assert_eq!(
+            (b.mode, b.limit_secs, b.answer_secs),
+            (Mode::ShowOnly, 5400, 5)
+        );
+        assert_eq!(b.pipe, DEFAULT_PIPE);
+        let o = parse_with(&["--mode".into(), "per-call".into()], b.clone()).unwrap();
+        assert_eq!(
+            (o.mode, o.limit_secs),
+            (Mode::PerCall, 5400),
+            "the option wins, the rest stays"
+        );
+        assert_eq!(parse_with(&[], b.clone()).unwrap(), b);
+        let ignored =
+            op_reason_core::settings::values(Some(r#"{"relay":{"mode":"later","timeLimit":0}}"#));
+        assert_eq!(
+            base(&ignored),
+            Opts::default(),
+            "values that are not accepted count as not set"
+        );
+        assert_eq!(parse(&[]).unwrap(), Opts::default());
+    }
+
+    #[test]
+    fn the_task_that_started_the_relay() {
+        assert_eq!(p(&[]).unwrap().task, None);
+        let o = p(&["--task", "op-reason-ssh-relay-S-1-5-21-1"]).unwrap();
+        assert_eq!(o.task.as_deref(), Some("op-reason-ssh-relay-S-1-5-21-1"));
+        assert_eq!(
+            p(&["--task=t"]).unwrap().task.as_deref(),
+            Some("t"),
+            "also as --task=<name>"
+        );
+        assert_eq!(p(&["--task"]), Err(OptError::Missing("--task".into())));
     }
 
     #[test]

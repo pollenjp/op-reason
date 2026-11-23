@@ -200,6 +200,7 @@ op --reason "staging の VM を作るのに Proxmox の API の token を読む"
 | `op-reason --skill` | AI エージェント向けの手引き (SKILL.md)。断るときの文からも案内します |
 | `op-reason --completion fish [<コマンド>]` | `op` (か `<コマンド>`) の fish の補完 |
 | `op-reason-log`・`op-reason --log` | 記録を見る (下) |
+| `op-reason --settings …` | op-reason の設定: `list`・`get`・`set`・`check`・SSH の中継 ([設定](#設定)) |
 
 ### 記録
 
@@ -247,14 +248,17 @@ token は書かず、`--session`・`--secret-key` と `name=value` の引数の�
 ### AI エージェント
 
 op-reason を初めて使うエージェントは、最初に `op-reason --skill` を打ってください。理由をつけた `op` の呼び方と、
-拒否・時間切れのときにすること (打ち直さず、ユーザーに聞く) が書いてあります。
+拒否・時間切れのときにすること (打ち直さず、ユーザーに聞く) が書いてあります。Claude Code が自分で見つける所へ置くには、
+Windows なら `op-reason --settings set skill.windows on`、WSL の distro なら `set skill.wsl.<distro> on` です
+([設定](#設定))。
 
 ### 表示の言語
 
 既定は英語です。窓の右下の **日本語** (か **English**) を押すと切り替わります。窓はその場で変わり、1Password の承認の
 画面からフォーカスを奪いません。次の呼び出しからは、窓・通知・文・`op-reason-log` がその言語になります (Windows でも
-WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残ります。消すと `OPREASON_LANG` に戻ります (WSL
-では控えの `~/.local/state/op-reason/lang.json` も消すか、次の呼び出しが消すのを待ってください)。
+WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残ります。`op-reason --settings set lang ja` でも
+選べ、`set lang default` で `OPREASON_LANG` に戻ります (WSL の控え `~/.local/state/op-reason/lang.json` は
+`op-reason --settings` が直します。そうでなければ次の呼び出しが直します)。
 
 ![アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、選んだ言語は %LOCALAPPDATA%\op-reason\settings.json に残る。許可したあとの次の呼び出しは、窓が日本語で開く。](docs/images/readme-5-language.ja.svg)
 
@@ -369,7 +373,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 ```
 
 - **ログオンのときにタスク スケジューラーのタスクから起こしてください** (隠して、1 分ごとに繰り返す trigger も付ける)。
-  タスクの「失敗したら起こし直す」では、止まった中継は起き直りませんでした。タスクが既に実行中の場合の規則は
+  タスクの「失敗したら起こし直す」では、止まった中継は起き直りませんでした。`op-reason --settings set relay.autostart on`
+  がこの形のタスク (op-reason 自身のもの) を作って中継を起こします ([設定](#設定))。以下はその形です。タスクが既に実行中の場合の規則は
   **新しいインスタンスを開始しない** (既定。`-MultipleInstances IgnoreNew`) のままにします:「既存のインスタンスの停止」では
   中継が 1 分ごとに止められて起こし直され、中継が動いている間に起こした 2 つ目はすぐに終了コード 1 で終わって、タスクは
   それを最後の結果に出します。自分だけのコンソール (タスク・ダブルクリック) ではコンソールの窓を残しません。
@@ -382,7 +387,9 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   「1Password が確認しています」の最後の行にもそう出ます ([設計](docs/superpowers/specs/2026-11-22-front-after-allow-design.md))。
   中継は、親が無いとき・終わったときに toast と記録でそう知らせます。
 - 中継はログオン セッションに 1 つです。option: `--mode per-call|show-only`・`--pipe <名前>`・`--upstream <名前>`・
-  `--time-limit <数>[s|m|h]` (既定 60m)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s)。
+  `--time-limit <数>[s|m|h]` (既定 60m、24h まで)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s、60m まで)。
+  option が無ければ、中継はこれらの値を `settings.json` から取ります ([設定](#設定))。op-reason のタスクは
+  `--task <タスクの名前>` も渡し、中継はそれを `relay.json` に書きます (`op-reason --settings` が自分の中継と分かるように)。
 - 窓を出している間、中継は op-reason の lock を持ちます。中継の窓と 1Password の画面は、`op` の呼び出しのものと混ざらずに
   組で出ます。
 
@@ -428,6 +435,56 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 - Smart App Control が `op-reason.exe` を止める所では、中継はありません (PowerShell の代わりもありません)。Git Bash の
   `ssh` (MSYS2) は Windows のパイプを使いません。`op-ssh-sign` による git の commit の署名は 1Password のアプリに直に話し
   (`op-ssh-sign-wsl.exe` で確かめた)、中継の外にあります。
+
+## 設定
+
+`op-reason --settings` は op-reason の設定を読み、変えます。op-reason が自分で読む値 (`%LOCALAPPDATA%\op-reason\settings.json`
+に置く) と、Windows・タスク スケジューラー・Claude Code がほかの所から読むもの (中継のタスク・動いている中継・skill の
+ファイル) です。どの設定にも同じ 3 つの操作があります: `get` が今の値を読み、`set` がそうし (打ち直しても何も変わりません)、
+`check` が望む値と今の値を比べます。設計: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md) (英語)。
+
+| 設定 | 値 (既定) | 置き場 |
+| --- | --- | --- |
+| `lang` | `en`・`ja`・`default` (`default`: `OPREASON_LANG`、無ければ英語) | `settings.json` |
+| `relay.mode` | `per-call`・`show-only` (`per-call`) | `settings.json`。中継が起きるときに読み、中継の option が勝ちます |
+| `relay.time-limit` | `<数>[s\|m\|h]`。数だけなら分。`24h` まで (`60m`) | `settings.json` |
+| `relay.answer-wait` | `<数>[s\|m]`。数だけなら秒。`60m` まで (`60s`) | `settings.json` |
+| `relay.autostart` | `on`・`off` (`off`) | op-reason のタスク `\op-reason-ssh-relay-<あなたの SID>` |
+| `relay.running` | `on`・`off` | `\\.\pipe\op-reason-ssh-agent` で答える中継 |
+| `skill.windows` | `on`・`off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Windows の Claude Code) |
+| `skill.wsl.<distro>` | `on`・`off` (`off`) | その WSL の distro の `~/.claude/skills/op-reason/SKILL.md` |
+| `skill.folder.<フォルダ>` | `on`・`off` (`off`) | `<フォルダ>\op-reason\SKILL.md` (ほかのエージェントやプロジェクト向け) |
+
+```powershell
+op-reason --settings list                          # すべての設定: 今の値・既定・置き場
+op-reason --settings get relay.mode                # per-call
+op-reason --settings set relay.autostart on        # op-reason のタスクを作って中継を起こす
+op-reason --settings set relay.mode=show-only relay.time-limit=30m
+op-reason --settings check relay.autostart=on relay.running=on --json
+op-reason --settings relay stop                    # relay start まで止まったまま (ログオンし直しても)
+op-reason --settings set skill.windows on          # Claude Code が見つける所へ手引きを置く
+```
+
+- **終了コード**: `check` はどの値も望みどおりなら 0、違うものがあれば 1、読めないものがあれば (か打ち方の誤りなら) 2。
+  `set` と `relay …` は、できなかったことがあれば 1 (行ごとにわけを出します)、打ち方の誤りなら 2 (何もしません)。
+  `list`・`get`・`check` は `--json` で JSON を出します。`state` は符号 (`ok`・`relay-differs`・`task-differs`・`task-off`・
+  `other-relay`・`old`・`foreign`・`link` など) で、事実は `detail` に入ります。
+- **op-reason のタスク**の形は [起こし方](#起こし方) のとおりです: ログオンで中継を起こし、止まれば 1 分以内に起こし直し、
+  あなたの権限で動き、隠してあります (タスク スケジューラーの **表示 → 隠しタスクの表示** で見えます)。中継は起きるときに
+  `settings.json` からモードと時間を読みます。値が変わると `set` が op-reason の中継を起こし直します (1Password はもう一度
+  尋ね、覚えた答えは忘れます)。**`relay stop`** はタスクを無効にして中継を止めます。`relay start` まで、ログオンし直しても
+  止まったままです。止める・起こし直すときは先に op-reason の lock を取ります: 中継の窓が開いている間や、呼び出しが
+  1Password を待っている間は断り、1Password に渡った依頼には終わるまで 25 秒まで待ちます。
+- ほかのタスクや端末が起こした中継は、出すだけで止めません。それが動いている間は、`set relay.autostart on` が op-reason の
+  タスクを無効で作ります (それが止まってから `relay start`)。
+- **skill** は `op-reason --skill` の写しに、front matter の後ろへ印 (`<!-- placed by op-reason <版>: … -->`) を付けた
+  ものです。`set … on` が置き (古ければ更新し)、`off` が消します。印の無い `SKILL.md` には触らず、junction や symbolic link
+  の先には書きません (home-manager が `~/.claude/skills` をそうしていることがあります)。WSL の distro へは `wsl.exe` で
+  届きます (動いていない distro を名指しすると起こします。`list` は起こしません)。
+- WSL の `op-reason --settings` は `op-reason.exe --settings` を起こします (WSL のパスで渡したフォルダは Windows のパスに
+  して渡します)。PowerShell の入口では設定を変えられません。
+- 変えたことはすべて、打った人とともにログに残ります (`op-reason --log`)。エージェントには、ユーザーに頼まれたときだけ
+  設定を変えるよう伝えてあります。`op` と同じく、あなたのアカウントのプログラムは変えられてしまいます。
 
 ## 知っておくこと
 
@@ -478,7 +535,8 @@ python3 docs/images/make_readme_svgs.py      # README の動く図 (docs/images/
   窓の表示の言語は [docs/superpowers/specs/2026-11-15-language-toggle-design.md](docs/superpowers/specs/2026-11-15-language-toggle-design.md) (英語)、
   SSH の中継は [docs/superpowers/specs/2026-11-17-ssh-relay-design.md](docs/superpowers/specs/2026-11-17-ssh-relay-design.md) (英語)、
   中継のトースト・窓の出る画面・通知は [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md) (英語)、
-  許可の後に前面に出る中継の窓と、伏せた画面の待つ所は [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md) (英語)
+  許可の後に前面に出る中継の窓と、伏せた画面の待つ所は [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md) (英語)、
+  設定は [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md) (英語)
 - 版ごとに変わったこと: [CHANGELOG.md](CHANGELOG.md) (英語)
 - どこに何があるか: [docs/README.md](docs/README.md)
 

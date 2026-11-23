@@ -108,7 +108,7 @@ impl Lookup<'_> {
     }
 
     /// `op-reason.exe`: the path of `OPREASON_EXE` (whether a file is there or not), else the one in `PATH`.
-    fn exe(&self) -> Option<PathBuf> {
+    pub fn exe(&self) -> Option<PathBuf> {
         match self.var(ENV_EXE) {
             Some(p) => Some(PathBuf::from(p)),
             None => (self.which)("op-reason.exe"),

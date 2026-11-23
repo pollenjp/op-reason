@@ -167,6 +167,10 @@ fn relay_label(lang: Lang, what: &str, mode: &str, detail: &str) -> String {
         (Lang::En, "parent-ended") => "SSH relay's parent process ended".to_string(),
         (Lang::En, "window-stuck") => format!("SSH: op-reason's window stuck ({detail})"),
         (Lang::En, "window-unstuck") => format!("SSH: op-reason's window went on ({detail})"),
+        (Lang::En, "stop") if detail.is_empty() => {
+            "SSH relay stopped by op-reason --settings".to_string()
+        }
+        (Lang::En, "stop") => format!("SSH relay stopped by op-reason --settings ({detail})"),
         (Lang::Ja, "start") => format!("SSH の中継を開始 ({mode})"),
         (Lang::Ja, "exit") => "SSH の中継を終了".to_string(),
         (Lang::Ja, "no-prompt") => format!("SSH: 1Password が確認しなかった ({mode})"),
@@ -174,6 +178,10 @@ fn relay_label(lang: Lang, what: &str, mode: &str, detail: &str) -> String {
         (Lang::Ja, "parent-ended") => "SSH の中継の親の process が終わった".to_string(),
         (Lang::Ja, "window-stuck") => format!("SSH: op-reason の窓が止まっている ({detail})"),
         (Lang::Ja, "window-unstuck") => format!("SSH: op-reason の窓が動き出した ({detail})"),
+        (Lang::Ja, "stop") if detail.is_empty() => {
+            "SSH の中継を op-reason --settings が止めた".to_string()
+        }
+        (Lang::Ja, "stop") => format!("SSH の中継を op-reason --settings が止めた ({detail})"),
         _ => format!("SSH relay {what}"),
     }
 }
@@ -415,6 +423,38 @@ fn row(lang: Lang, rec: &Value, today: &str, decisions: &HashMap<String, Value>)
                 command(lang, rec),
             ]
         }
+        "settings" => {
+            let ja = lang == Lang::Ja;
+            let changes = rec["changes"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|c| {
+                            let mut s = text(&c["name"]);
+                            if !c["from"].is_null() {
+                                s.push(' ');
+                                s.push_str(&text(&c["from"]));
+                            }
+                            s.push_str(" → ");
+                            s.push_str(&text(&c["to"]));
+                            if c["result"] == "failed" {
+                                s.push_str(if ja { " (失敗)" } else { " (failed)" });
+                            }
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            [
+                when,
+                if ja { "設定" } else { "settings" }.to_string(),
+                "-".into(),
+                who(lang, rec),
+                "-".into(),
+                cell(&clip(&changes, 200, "…")),
+            ]
+        }
         "refused" => [
             when,
             format!("{} ({})", l.refused, why_label(lang, &text(&rec["why"]))),
@@ -551,7 +591,9 @@ pub fn run(
         .filter(|r| {
             matches!(
                 r["event"].as_str(),
-                Some("start" | "refused" | "shared-approval" | "ssh-sign" | "ssh-relay")
+                Some(
+                    "start" | "refused" | "shared-approval" | "ssh-sign" | "ssh-relay" | "settings"
+                )
             ) && r["epoch"].as_i64().unwrap_or(0) >= cutoff
         })
         .map(|mut r| {
@@ -790,6 +832,33 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_record_is_one_line_with_its_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "op-reason-logview-settings-{}",
+            crate::log::random_u64()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = r#"{"v":1,"id":"c1","event":"settings","time":"t","epoch":4500,"session":null,"from":"window","caller":{"type":"claude","claude_pid":3,"herdr":null,"cwd":"~","repo":null,"branch":null},"changes":[{"name":"relay.mode","from":"per-call","to":"show-only","result":"done"},{"name":"relay.running","from":"on","to":"off","result":"failed","why":"locked"}]}"#;
+        std::fs::write(dir.join("log.jsonl"), format!("{rec}\n")).unwrap();
+        let lines = view(&dir, Lang::En, &["--all"]);
+        let line = lines.iter().find(|l| l.contains("relay.mode")).unwrap();
+        assert!(line.contains("settings"), "{line}");
+        assert!(line.contains("Claude"), "{line}");
+        assert!(
+            line.contains("relay.mode per-call → show-only; relay.running on → off (failed)"),
+            "{line}"
+        );
+        let lines = view(&dir, Lang::Ja, &["--all"]);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("設定") && l.contains("(失敗)")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_window_that_does_not_appear_names_its_step() {
         assert_eq!(
             relay_label(Lang::En, "window-stuck", "per-call", "draw"),
@@ -807,6 +876,14 @@ mod tests {
             relay_label(Lang::En, "start", "per-call", ""),
             "SSH relay started (per-call)",
             "the others have no detail"
+        );
+        assert_eq!(
+            relay_label(Lang::En, "stop", "per-call", ""),
+            "SSH relay stopped by op-reason --settings"
+        );
+        assert_eq!(
+            relay_label(Lang::Ja, "stop", "per-call", "1 requests still in progress"),
+            "SSH の中継を op-reason --settings が止めた (1 requests still in progress)"
         );
     }
 

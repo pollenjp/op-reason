@@ -5,7 +5,8 @@
 CI runs op-reason with fake `op-reason.exe`, `powershell.exe` and `op.exe` only: the 1Password desktop app cannot run
 there, and the Windows runners have no WSL2. These checks need a person, a Windows machine with the 1Password app and
 the 1Password CLI, and WSL. The WSL checks (1–14 and R) take about 30 minutes and show about fifteen approval prompts.
-The checks of the references (F) add about ten minutes, the checks of the SSH relay (S) about an hour.
+The checks of the references (F) add about ten minutes, the checks of the SSH relay (S) about an hour, the checks of
+the settings (G) about twenty minutes.
 
 ## Rules while checking
 
@@ -327,6 +328,41 @@ in a terminal program. Three builds of that pull request:
 With the third build no window stopped answering (six windows), and 1Password showed no prompt and no dot before a
 click. The notification that comes with the window names "Windows PowerShell" as its sender (op-reason borrows that
 AppUserModelID). At the end the task was removed and the relays stopped.
+
+## Checks of the settings (G1–G11)
+
+`op-reason --settings` ([2026-11-23-settings-design.md](superpowers/specs/2026-11-23-settings-design.md)). CI makes a
+scheduled task under a test name on GitHub's runners, which run as an administrator, and fakes `wsl.exe`; these checks
+are for a user without administrator rights, a real logon, a real WSL and the real 1Password. About 20 minutes, with
+one logoff and two 1Password prompts.
+
+Preparation:
+
+1. The Windows zip of this pull request, unpacked as in the preparation of the SSH relay; below `$exe`. Run every
+   command in a PowerShell **without administrator rights**, with `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`.
+2. No relay may run: `& $exe --ssh-agent --status` exits 1. **Where another scheduled task starts the relay** (a task
+   of your own, or of your dotfiles), turn it off and stop its relay first, and turn it on again after the checks:
+   `Disable-ScheduledTask -TaskPath '<its folder>' -TaskName '<its name>'` and
+   `Stop-ScheduledTask -TaskPath '<its folder>' -TaskName '<its name>'` (afterwards `Enable-ScheduledTask` and
+   `Start-ScheduledTask`).
+3. Keep a copy of `%LOCALAPPDATA%\op-reason\settings.json` if there is one.
+4. **Skills**: if you do not want op-reason's guide in `%USERPROFILE%\.claude\skills` (or in a WSL distribution's
+   `~/.claude/skills`), run G9 with a chosen folder instead (`skill.folder.$env:TEMP\op-reason-skill-check`) and skip
+   G10.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| G1 | `& $exe --settings list` | One line per setting: `relay.autostart off`, `relay.running off`, a line per WSL distribution (those that do not run: "not checked"); the records folder and the accounts at the end. If another task starts a relay (preparation 2), `relay.autostart` names it |
+| G2 | `& $exe --settings set relay.autostart on` | `relay.autostart: off → on`; then `& $exe --ssh-agent --status` exits 0. Task Scheduler (**View → Show Hidden Tasks**) has `op-reason-ssh-relay-<your SID>` in its root folder: at log on of your user, and every minute; "Do not start a new instance"; your user, "Run only when user is logged on", not with highest privileges |
+| G3 | `& $exe --settings check relay.autostart=on relay.running=on --json; $LASTEXITCODE` | `"same":true`, then 0 |
+| G4 | Lock 1Password and unlock it. `$env:OPREASON_SSH_REASON = 'check G4'; ssh -T git@github.com`; **Allow this call**; approve 1Password | As S25: op-reason's window comes to the front at the click and 1Password's prompt comes at once, naming op-reason; `Hi <user>!` |
+| G5 | `$env:OPREASON_SSH_REASON = 'check G5'; ssh -T git@github.com`, and while op-reason's window waits, in another PowerShell: `& $exe --settings relay stop; $LASTEXITCODE`. Then click **Allow this call** | `relay.running: not changed (off): the relay has a window open, …`, then 1; the relay still serves: the Allow goes through |
+| G6 | `& $exe --settings relay stop`; wait two minutes; `& $exe --ssh-agent --status` | Exit 1 after two minutes: the trigger of every minute does not start a stopped relay. `& $exe --settings get relay.running --json` says `task-off`; `& $exe --log --since 10m` has "SSH relay stopped by op-reason --settings" and a `settings` line with you as the caller |
+| G7 | Log off and on again; `& $exe --ssh-agent --status`. Then `& $exe --settings relay start` | Still stopped after the logon. `relay start` answers within 15 seconds |
+| G8 | `& $exe --settings set relay.mode show-only`; then an ssh as in G4 | `relay.mode: per-call → show-only` and a line that the relay was started again; `get relay.mode --json` has no `relay-differs`. 1Password asks for the signature (show-only), with op-reason's window showing who and why. `set relay.mode default` to go back |
+| G9 | `& $exe --settings set skill.windows on` (or the chosen folder of preparation 4); open the `SKILL.md` it names; in Claude Code on Windows, `/skills` | The guide, with `<!-- placed by op-reason <version>: …` on the line after the closing `---`; Claude Code lists the skill op-reason. `set skill.windows off` removes it (and the empty `op-reason` folder) |
+| G10 | In WSL, with this branch's `op-reason`: `op-reason --settings set "skill.wsl.$WSL_DISTRO_NAME" on`, then `off` | `~/.claude/skills/op-reason/SKILL.md` with the mark, then gone. Where `~/.claude/skills` is a symbolic link (home-manager): refused, nothing written |
+| G11 | `& $exe --settings set relay.autostart off`; restore the `settings.json` of preparation 3; turn the other task of preparation 2 on again | The task is gone and no relay of op-reason's task answers |
 
 ## Open question: does plain `signout` close only one process's session?
 

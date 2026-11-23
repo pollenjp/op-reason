@@ -404,6 +404,57 @@
       }
     },
     {
+      "name": "--settings is the wrapper's option, also under op",
+      "invokedAs": "op",
+      "argv": [
+        "--settings",
+        "list"
+      ],
+      "expect": {
+        "action": "settings"
+      }
+    },
+    {
+      "name": "--settings alone (the settings window) is the wrapper's",
+      "invokedAs": "op-reason",
+      "argv": [
+        "--settings"
+      ],
+      "expect": {
+        "action": "settings"
+      }
+    },
+    {
+      "name": "--settings after a reason goes to op",
+      "invokedAs": "op",
+      "argv": [
+        "--reason",
+        "X",
+        "--settings"
+      ],
+      "expect": {
+        "action": "run",
+        "mode": "desktop",
+        "opArgs": [
+          "--settings"
+        ],
+        "reason": "X"
+      }
+    },
+    {
+      "name": "--settings that is not the first argument is op's",
+      "invokedAs": "op-reason",
+      "argv": [
+        "vault",
+        "--settings"
+      ],
+      "expect": {
+        "action": "refuse",
+        "why": "no-reason",
+        "exit": 2
+      }
+    },
+    {
       "name": "a service account token makes a service call",
       "invokedAs": "op",
       "argv": [

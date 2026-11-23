@@ -4,7 +4,7 @@
 
 ![What you want to know → where to read](plantuml/out/01_map.svg)
 
-- [README.md](../README.md): what op-reason is, installation, usage, things to know
+- [README.md](../README.md): what op-reason is, installation, usage, settings (`op-reason --settings`), things to know
 - [README.ja.md](../README.ja.md): the same in Japanese
 - [architecture/README.md](architecture/README.md): how it works now, the runner contract (op-reason.exe --run and the launcher), the log format
 - [manual-verification.md](manual-verification.md) / [manual-verification.ja.md](manual-verification.ja.md): checks

@@ -244,6 +244,12 @@ fn its_program_in_front(shared: &Shared) -> bool {
     pid != 0 && relay_front::front_is_its_program(&shared.ancestors, pid, procs::created(pid))
 }
 
+/// The request's client went away, or the relay was asked to stop (design `2026-11-23-settings-design.md` §8.2): a
+/// request that waits for its turn or for op-reason's lock gives up, so that a stop does not wait for it.
+fn quit(shared: &Shared, client: &File) -> bool {
+    pipe::gone(client) || shared.stopping.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// op-reason's lock, waiting up to `OPREASON_LOCK_WAIT` seconds (none when the mutex cannot be used at all, as
 /// `op-reason.exe` does).
 fn lock(shared: &Shared, stop: &dyn Fn() -> bool) -> Result<Option<mutex::Held>, Outcome<'static>> {
@@ -278,7 +284,7 @@ pub(super) fn per_call<'a>(
             let following = Following { shared, t };
             while st.queue.active(t) {
                 st = wait(shared, st);
-                if pipe::gone(client) {
+                if quit(shared, client) {
                     following.leave(&mut st);
                     return Outcome::Gone;
                 }
@@ -304,7 +310,7 @@ pub(super) fn per_call<'a>(
         let ticket = Ticket { shared, t };
         while !st.queue.turn(t) {
             st = wait(shared, st);
-            if pipe::gone(client) {
+            if quit(shared, client) {
                 drop(st);
                 drop(ticket);
                 return Outcome::Gone;
@@ -320,7 +326,7 @@ pub(super) fn per_call<'a>(
                 Outcome::Refused(d)
             };
         }
-        if pipe::gone(client) {
+        if quit(shared, client) {
             drop(st);
             drop(ticket);
             return Outcome::Gone;
@@ -352,12 +358,12 @@ fn ask<'a>(
     waiting: usize,
     id: &str,
 ) -> Outcome<'a> {
-    let held = match lock(shared, &|| pipe::gone(client)) {
+    let held = match lock(shared, &|| quit(shared, client)) {
         Ok(h) => h,
         Err(o) => return o,
     };
     // the client may have gone while the lock was busy
-    if pipe::gone(client) {
+    if quit(shared, client) {
         return Outcome::Gone;
     }
     facts.waiting = waiting;
@@ -398,7 +404,7 @@ fn ask<'a>(
             shown.keep_notification();
             return Outcome::Timeout;
         }
-        if pipe::gone(client) {
+        if quit(shared, client) {
             let t = shown.ticket();
             if shared.lock().followers.get(&t).copied().unwrap_or(0) == 0 {
                 return Outcome::Gone;
@@ -430,18 +436,18 @@ pub(super) fn show_only<'a>(
 ) -> Result<Shown<'a>, Outcome<'static>> {
     let ticket = join(shared);
     while !turn(&ticket) {
-        if pipe::gone(client) {
+        if quit(shared, client) {
             return Err(Outcome::Gone);
         }
         let st = shared.lock();
         drop(wait(shared, st));
     }
     // the client may have gone in the last wait, or while the lock was busy
-    if pipe::gone(client) {
+    if quit(shared, client) {
         return Err(Outcome::Gone);
     }
-    let held = lock(shared, &|| pipe::gone(client))?;
-    if pipe::gone(client) {
+    let held = lock(shared, &|| quit(shared, client))?;
+    if quit(shared, client) {
         return Err(Outcome::Gone);
     }
     Shown::open(shared, ticket, held, facts, Phase::Asking).map_err(|_| Outcome::NoWindow)

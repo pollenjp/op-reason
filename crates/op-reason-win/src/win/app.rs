@@ -28,7 +28,7 @@ use crate::{cmdline, ui};
 /// The version of op-reason.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The skill file for AI agents (the same file the WSL binary prints).
-const SKILL: &str = include_str!("../../../../skill/SKILL.md");
+pub(super) const SKILL: &str = include_str!("../../../../skill/SKILL.md");
 /// The fish completion; `__OPREASON_CMD__` is the command name.
 const COMPLETION_FISH: &str = include_str!("../../../../completions/op.fish");
 /// How long op.exe gets to exit by itself after Ctrl+C before it is terminated.
@@ -72,7 +72,9 @@ pub(super) fn chosen() -> Option<Lang> {
 /// `2026-11-15-language-toggle-design.md` §4).
 pub(super) fn remember(lang: Lang) {
     if let Some(file) = settings_file() {
-        let _ = settings::write(&file, lang);
+        super::settings::with_lock(|| {
+            let _ = settings::write(&file, lang);
+        });
     }
 }
 
@@ -157,6 +159,7 @@ pub fn run() -> i32 {
             return contract::EXIT_USAGE;
         }
         Plan::Log(rest) => return log_viewer(&rest, lang),
+        Plan::Settings(rest) => return super::settings::run(&rest, lang),
         Plan::Refuse(refusal) => {
             let line = match refusal {
                 Refusal::EmptyReason => messages::empty_reason(lang),

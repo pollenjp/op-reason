@@ -11,7 +11,7 @@
 - op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it, with the texts of
   crates/op-reason-win/src/ui.rs (and its language switch). The refusal and the log table are op-reason's output
   (the texts of crates/op-reason-core/src/messages.rs and logview.rs), the saved choice of a language is the file of
-  crates/op-reason-core/src/settings.rs. The 1Password approval prompt is a plain box: it copies neither the look
+  crates/op-reason-core/src/settings/file.rs. The 1Password approval prompt is a plain box: it copies neither the look
   nor the words of 1Password's screen.
 - The SSH relay's scene: its window with the texts of crates/op-reason-win/src/relay_ui.rs, the toasts of signatures
   that passed without a window as crates/op-reason-win/src/win/pass_window.rs draws them, moving by the rules and
@@ -129,7 +129,7 @@ FOOTER_LINES = {
     "ja": ("この窓が出ていない 1Password の承認は拒否してください",),
 }
 JA_WIDTH = 3 * SWITCH_SIZE  # 日本語: three full-width characters, the end of the switch
-SETTINGS = ("%LOCALAPPDATA%\\op-reason\\settings.json", '{"v":1,"lang":"ja"}')  # crates/op-reason-core/src/settings.rs
+SETTINGS = ("%LOCALAPPDATA%\\op-reason\\settings.json", '{"v":1,"lang":"ja"}')  # crates/op-reason-core/src/settings/file.rs
 PREFIX = "op-reason: "  # crates/op-reason-core/src/messages.rs
 USAGE_SHORT = {  # messages.rs: usage_short, printed with a refusal
     "en": (
@@ -314,7 +314,7 @@ def sources() -> dict:
         SETTINGS[0],
         'pub const SETTINGS_FILE: &str = "settings.json";',
         "pub const VERSION: u64 = 1;",
-        'format!(r#"{{"v":{VERSION},"lang":{lang_json}}}"#)',
+        'assert_eq!(render(None, Lang::Ja), r#"{"v":1,"lang":"ja"}"#);',
     ]
     relay_ui = [f'"{v}"' for t in RELAY.values() for v in t.values()]
     ui += [f'"{v}"' for t in NOTIFY.values() for v in t.values()]
@@ -373,7 +373,7 @@ def sources() -> dict:
         "crates/op-reason-win/src/win/window.rs": window,
         "crates/op-reason-core/src/messages.rs": messages,
         "crates/op-reason-core/src/logview.rs": logview,
-        "crates/op-reason-core/src/settings.rs": settings,
+        "crates/op-reason-core/src/settings/file.rs": settings,
     }
 
 

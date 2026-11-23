@@ -36,6 +36,8 @@ Wrapper options (first argument only)
   op-reason --completion fish [<name>]   the fish completion for op (or <name>)
   op-reason-log (or op-reason --log)     who called op and why: the last hour
                                          by default; --since 1d, --all, --json
+  op-reason --settings [<word> …]        op-reason's settings, through op-reason.exe:
+                                         list, get, set, check (--settings help)
 
 AI agents: run `op-reason --skill` once to learn how to call op here.
 
@@ -69,6 +71,8 @@ wrapper の option (最初の引数のときだけ)
   op-reason --completion fish [<名前>]   op (か <名前>) の fish の補完
   op-reason-log (か op-reason --log)     誰が何の理由で op を呼んだか。既定は直近
                                          1 時間 (--since 1d・--all・--json)
+  op-reason --settings [<語> …]          op-reason の設定 (op-reason.exe が扱う):
+                                         list・get・set・check (--settings help)
 
 AI エージェントは、最初に `op-reason --skill` を打って呼び方を読んでください。
 
@@ -464,6 +468,13 @@ pub fn shared_notice(lang: Lang, when: &str, cleared: bool) -> (String, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usages_mention_the_settings() {
+        for lang in [Lang::En, Lang::Ja] {
+            assert!(usage_full(lang, "9.9.9").contains("op-reason --settings"));
+        }
+    }
 
     #[test]
     fn usages_mention_the_essentials() {

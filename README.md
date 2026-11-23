@@ -202,6 +202,7 @@ The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves t
 | `op-reason --skill` | a guide for AI agents (a SKILL.md file); refusals point agents to it |
 | `op-reason --completion fish [<command>]` | the fish completion for `op` (or `<command>`) |
 | `op-reason-log`, `op-reason --log` | the log viewer (below) |
+| `op-reason --settings …` | op-reason's settings: `list`, `get`, `set`, `check`, the SSH relay ([Settings](#settings)) |
 
 ### The log
 
@@ -252,15 +253,18 @@ References to read (10, from app.env.tpl):
 ### AI agents
 
 Agents that have not seen op-reason before should run `op-reason --skill` once: it explains how to call `op` with a
-reason and what to do when a call is denied or times out (do not retry; ask the user).
+reason and what to do when a call is denied or times out (do not retry; ask the user). To place it where Claude Code
+finds it by itself: `op-reason --settings set skill.windows on` on Windows, `set skill.wsl.<distribution> on` for a WSL
+distribution ([Settings](#settings)).
 
 ### Language
 
 English by default. Click **日本語** (or **English**) at the bottom right of the window to switch: the window changes
 at once, without taking the focus from the 1Password prompt, and every later call uses that language for the window,
 the notification, the messages and `op-reason-log`, on Windows and on WSL. The choice is kept in
-`%LOCALAPPDATA%\op-reason\settings.json`; delete it to go back to `OPREASON_LANG` (on WSL, also delete the copy
-`~/.local/state/op-reason/lang.json`, or let the next call remove it).
+`%LOCALAPPDATA%\op-reason\settings.json`; `op-reason --settings set lang ja` sets it too, and `set lang default` goes back
+to `OPREASON_LANG` (on WSL, `op-reason --settings` updates the copy `~/.local/state/op-reason/lang.json`; otherwise the
+next call does).
 
 ![Animation: op-reason's window opens in English, its default, at the top right of the screen, with English | 日本語 at the right of its last line, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now bold and English is the link. The prompt keeps the focus, and the choice is kept in %LOCALAPPDATA%\op-reason\settings.json. After the approval, the next call opens its window in Japanese.](docs/images/readme-5-language.en.svg)
 
@@ -379,7 +383,8 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
 ```
 
 - **Start it at logon from a scheduled task** (hidden), with a trigger that also repeats every minute: the task's
-  "restart on failure" did not start a relay that had been stopped again. Keep the task's rule "If the task is already
+  "restart on failure" did not start a relay that had been stopped again. `op-reason --settings set relay.autostart on`
+  makes such a task, op-reason's own, and starts the relay ([Settings](#settings)); the points below are its shape. Keep the task's rule "If the task is already
   running" at **Do not start a new instance** (the default; `-MultipleInstances IgnoreNew`): with "Stop the existing
   instance" the relay would be stopped and started again every minute, and a relay started while another one runs
   exits at once (exit code 1), which the task would show as its last result. Without a console of its own (a task, a
@@ -395,7 +400,9 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
   ([design](docs/superpowers/specs/2026-11-22-front-after-allow-design.md)). The relay says in a toast and a record
   when its parent is missing or ends.
 - One relay per logon session. Options: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
-  `--time-limit <n>[s|m|h]` (60m), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s).
+  `--time-limit <n>[s|m|h]` (60m, at most 24h), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s, at
+  most 60m). Without them, the relay takes these values from `settings.json` ([Settings](#settings)). op-reason's task
+  adds `--task <its name>`, which the relay writes into `relay.json` so that `op-reason --settings` knows it for its own.
 - While its window is open, the relay holds op-reason's lock, so that its windows and 1Password's prompts come in pairs
   with those of `op` calls.
 
@@ -444,6 +451,58 @@ Time      Result       Secs  Caller           Reason              Command
 - Where Smart App Control blocks `op-reason.exe`, there is no relay (there is no PowerShell fallback for it). Git Bash's
   `ssh` (MSYS2) does not use the Windows pipe, and git commit signing with `op-ssh-sign` talks to the 1Password app
   directly (seen with `op-ssh-sign-wsl.exe`): it stays outside the relay.
+
+## Settings
+
+`op-reason --settings` reads and changes op-reason's settings: the values that op-reason reads itself, kept in
+`%LOCALAPPDATA%\op-reason\settings.json`, and what Windows, Task Scheduler and Claude Code read elsewhere (the relay's
+scheduled task, the running relay, the skill files). Every setting has the same three operations: `get` reads the value
+now, `set` makes it so (running it again changes nothing), and `check` compares a wanted value with the value now.
+Design: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md).
+
+| Setting | Values (default) | Kept in |
+| --- | --- | --- |
+| `lang` | `en`, `ja`, `default` (`default`: `OPREASON_LANG`, else English) | `settings.json` |
+| `relay.mode` | `per-call`, `show-only` (`per-call`) | `settings.json`, read by the relay when it starts; its options win |
+| `relay.time-limit` | `<n>[s\|m\|h]`, a bare number is minutes, at most `24h` (`60m`) | `settings.json` |
+| `relay.answer-wait` | `<n>[s\|m]`, a bare number is seconds, at most `60m` (`60s`) | `settings.json` |
+| `relay.autostart` | `on`, `off` (`off`) | op-reason's scheduled task `\op-reason-ssh-relay-<your SID>` |
+| `relay.running` | `on`, `off` | the relay that answers on `\\.\pipe\op-reason-ssh-agent` |
+| `skill.windows` | `on`, `off` (`off`) | `%USERPROFILE%\.claude\skills\op-reason\SKILL.md` (Claude Code on Windows) |
+| `skill.wsl.<distribution>` | `on`, `off` (`off`) | `~/.claude/skills/op-reason/SKILL.md` in that WSL distribution |
+| `skill.folder.<folder>` | `on`, `off` (`off`) | `<folder>\op-reason\SKILL.md`, for another agent or a project |
+
+```powershell
+op-reason --settings list                          # every setting: its value now, its default, where it is kept
+op-reason --settings get relay.mode                # per-call
+op-reason --settings set relay.autostart on        # make op-reason's task and start the relay
+op-reason --settings set relay.mode=show-only relay.time-limit=30m
+op-reason --settings check relay.autostart=on relay.running=on --json
+op-reason --settings relay stop                    # stopped until relay start, also after a logon
+op-reason --settings set skill.windows on          # place the guide where Claude Code finds it
+```
+
+- **Exit codes**: `check` exits 0 when every value is as wanted, 1 when one differs and 2 when one could not be read
+  (or the command was wrong); `set` and `relay …` exit 1 when something could not be done, each line saying why, and
+  2 for a wrong command (nothing done). `list`, `get` and `check` print JSON with `--json`: `state` is a code (`ok`,
+  `relay-differs`, `task-differs`, `task-off`, `other-relay`, `old`, `foreign`, `link`, …) with its facts in `detail`.
+- **op-reason's scheduled task** has the shape that [Starting it](#starting-it) describes: the relay at logon and again
+  within a minute when it stops, your own rights, hidden (Task Scheduler shows it with **View → Show Hidden Tasks**).
+  The relay reads its mode and times from `settings.json` when it starts; `set` starts op-reason's relay again when its
+  values change (1Password then asks once more, and remembered answers are forgotten). **`relay stop`** turns the task
+  off and ends the relay: it stays stopped, also after the next logon, until `relay start`. A stop or a restart takes
+  op-reason's lock first: while the relay's window is open or a call waits for 1Password, it is refused, and the
+  requests that are with 1Password get up to 25 seconds to finish.
+- A relay that another scheduled task or a terminal started is shown, never stopped. While one runs,
+  `set relay.autostart on` makes op-reason's task turned off: `relay start` once the other one has stopped.
+- **The skill** is a copy of `op-reason --skill` with a mark after its front matter (`<!-- placed by op-reason <version>:
+  … -->`): `set … on` places it or updates an older copy, `off` removes it, and neither touches a `SKILL.md` without the
+  mark nor writes through a junction or a symbolic link (home-manager may make `~/.claude/skills` one). A WSL
+  distribution is reached through `wsl.exe` (naming one that does not run starts it; `list` never does).
+- From WSL, `op-reason --settings` runs `op-reason.exe --settings` (a folder given as a WSL path is passed as its
+  Windows path). The PowerShell entry does not change settings.
+- Every change is recorded in the log with its caller (`op-reason --log` shows it). Agents are told to change settings
+  only when the user asks; as for `op`, a program of your account can still change them.
 
 ## Things to know
 
@@ -500,7 +559,8 @@ python3 docs/images/make_readme_svgs.py      # the animations of the READMEs (do
   its toasts, the screen of the windows and the notifications:
   [docs/superpowers/specs/2026-11-18-pass-toasts-design.md](docs/superpowers/specs/2026-11-18-pass-toasts-design.md);
   its window in front after Allow, and where a hidden prompt waits:
-  [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md).
+  [docs/superpowers/specs/2026-11-22-front-after-allow-design.md](docs/superpowers/specs/2026-11-22-front-after-allow-design.md);
+  the settings: [docs/superpowers/specs/2026-11-23-settings-design.md](docs/superpowers/specs/2026-11-23-settings-design.md).
 - What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 - Where to read what: [docs/README.md](docs/README.md).
 
