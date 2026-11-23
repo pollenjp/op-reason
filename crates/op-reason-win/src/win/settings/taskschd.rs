@@ -82,24 +82,10 @@ impl Scheduler {
             let enabled = task.Enabled().map_err(|e| err(name, &e))?.as_bool();
             let running = task.State().map_err(|e| err(name, &e))? == TASK_STATE_RUNNING;
             let def = task.Definition().map_err(|e| err(name, &e))?;
-            // The processes its running instances started: the relay that answers is op-reason's only when it is one
-            // of them (design §9.5)
-            let mut pids = Vec::new();
-            if let Ok(instances) = task.GetInstances(0) {
-                let n = instances.Count().unwrap_or(0);
-                for i in 1..=n {
-                    if let Ok(pid) = instances.get_Item(&int(i)).and_then(|r| r.EnginePID())
-                        && pid != 0
-                    {
-                        pids.push(pid);
-                    }
-                }
-            }
             Ok(Some(TaskNow {
                 shape: shape(&def).map_err(|e| err(name, &e))?,
                 enabled,
                 running,
-                pids,
             }))
         }
     }

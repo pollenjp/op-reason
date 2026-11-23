@@ -365,6 +365,7 @@ fn write_info(shared: &Shared, args: &[String]) {
         time_limit: shared.opts.limit_secs,
         answer_wait: shared.opts.answer_secs,
         args: args.to_vec(),
+        task: shared.opts.task.clone(),
     };
     let _ = settings::replace(&dir.join(RELAY_INFO_FILE), &info.render());
 }

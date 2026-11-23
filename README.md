@@ -401,7 +401,8 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
   when its parent is missing or ends.
 - One relay per logon session. Options: `--mode per-call|show-only`, `--pipe <name>`, `--upstream <name>`,
   `--time-limit <n>[s|m|h]` (60m, at most 24h), `--answer-wait <n>[s|m]` (how long a window waits for a click, 60s, at
-  most 60m). Without them, the relay takes these values from `settings.json` ([Settings](#settings)).
+  most 60m). Without them, the relay takes these values from `settings.json` ([Settings](#settings)). op-reason's task
+  adds `--task <its name>`, which the relay writes into `relay.json` so that `op-reason --settings` knows it for its own.
 - While its window is open, the relay holds op-reason's lock, so that its windows and 1Password's prompts come in pairs
   with those of `op` calls.
 

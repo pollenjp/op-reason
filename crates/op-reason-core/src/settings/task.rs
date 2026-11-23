@@ -7,23 +7,29 @@ pub fn task_name(sid: &str) -> String {
     format!("op-reason-ssh-relay-{sid}")
 }
 
-/// What the task is made from: the exe that runs `set relay.autostart on`, and the user's SID.
+/// What the task is made from: the exe that runs `set relay.autostart on`, the user's SID, and the task's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskWant {
     /// `op-reason.exe`'s full path.
     pub exe: String,
     /// The user's security identifier (`S-1-5-…`).
     pub sid: String,
+    /// The task's name (`task_name(sid)`, or a test's).
+    pub name: String,
 }
 
-/// The relay's arguments in the task.
-pub const TASK_ARGS: &str = "--ssh-agent";
+/// The relay's arguments in the task: `--ssh-agent --task <name>`, so that the relay tells in `relay.json` that
+/// op-reason's task started it (design §9.5).
+pub fn task_args(name: &str) -> String {
+    format!("--ssh-agent --task {name}")
+}
 
 /// The task's definition for `ITaskFolder::RegisterTask`, turned on or off (`enabled`). `start_local` is the start of
 /// the trigger that repeats every minute, in local time (`2026-11-23T10:00:00`): the time it was made.
 pub fn xml(want: &TaskWant, start_local: &str, enabled: bool) -> String {
     let exe = escape(&want.exe);
     let sid = escape(&want.sid);
+    let args = escape(&task_args(&want.name));
     let start = escape(start_local);
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
@@ -75,7 +81,7 @@ pub fn xml(want: &TaskWant, start_local: &str, enabled: bool) -> String {
   <Actions Context="Author">
     <Exec>
       <Command>{exe}</Command>
-      <Arguments>{TASK_ARGS}</Arguments>
+      <Arguments>{args}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -145,7 +151,7 @@ pub struct TaskShape {
 pub fn wanted(want: &TaskWant) -> TaskShape {
     TaskShape {
         exe: want.exe.clone(),
-        args: TASK_ARGS.to_owned(),
+        args: task_args(&want.name),
         triggers: vec![
             Trigger::Logon {
                 user: want.sid.clone(),
@@ -220,9 +226,6 @@ pub struct TaskNow {
     pub enabled: bool,
     /// An instance runs (the relay of op-reason's task).
     pub running: bool,
-    /// The processes that its running instances started (`IRunningTask::EnginePID`): the relay that answers on the
-    /// pipe is op-reason's only when its process is one of them (design §9.5).
-    pub pids: Vec<u32>,
 }
 
 #[cfg(test)]
@@ -235,6 +238,7 @@ mod tests {
         TaskWant {
             exe: r"C:\Program Files & Co\op-reason\op-reason.exe".into(),
             sid: SID.into(),
+            name: task_name(SID),
         }
     }
 
@@ -253,7 +257,7 @@ mod tests {
         assert!(x.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
         for part in [
             r"<Command>C:\Program Files &amp; Co\op-reason\op-reason.exe</Command>",
-            "<Arguments>--ssh-agent</Arguments>",
+            "<Arguments>--ssh-agent --task op-reason-ssh-relay-S-1-5-21-1-2-3-1001</Arguments>",
             "<LogonTrigger>",
             "<UserId>S-1-5-21-1-2-3-1001</UserId>",
             "<Interval>PT1M</Interval>",
@@ -295,7 +299,10 @@ mod tests {
     #[test]
     fn the_wanted_shape() {
         let s = wanted(&want());
-        assert_eq!(s.args, "--ssh-agent");
+        assert_eq!(
+            s.args, "--ssh-agent --task op-reason-ssh-relay-S-1-5-21-1-2-3-1001",
+            "the relay tells that op-reason's task started it"
+        );
         assert_eq!(
             s.triggers,
             vec![
@@ -345,7 +352,7 @@ mod tests {
             "users compared by the system"
         );
         let mut h = w.clone();
-        h.args = "--ssh-agent --mode show-only".into();
+        h.args = "--ssh-agent".into();
         h.stop_on_batteries = true;
         h.restart_count = 3;
         assert_eq!(differences(&h, &w, &eq), ["args", "batteries", "restart"]);

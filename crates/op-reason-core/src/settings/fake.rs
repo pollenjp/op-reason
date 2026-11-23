@@ -69,6 +69,7 @@ impl Fake {
             want: TaskWant {
                 exe: r"C:\op\op-reason.exe".into(),
                 sid: "S-1-5-21-9".into(),
+                name: TASK.into(),
             },
             task_reads: Cell::new(0),
             fail_skill: RefCell::new(None),
@@ -86,7 +87,6 @@ impl Fake {
             shape: task::wanted(&self.want),
             enabled: true,
             running: true,
-            pids: vec![OURS],
         });
         self.pid.set(Some(OURS));
         *self.info.borrow_mut() = Some(info(OURS, "per-call"));
@@ -122,8 +122,13 @@ impl Fake {
     }
 }
 
+/// The name of op-reason's task on the fake system.
+pub(crate) const TASK: &str = "op-reason-ssh-relay-S-1-5-21-9";
+
+/// relay.json of a relay that op-reason's task started.
 pub(crate) fn info(pid: u32, mode: &str) -> RelayInfo {
     RelayInfo {
+        task: Some(TASK.into()),
         v: 1,
         pid,
         exe: r"C:\op\op-reason.exe".into(),
@@ -162,6 +167,9 @@ impl System for Fake {
     fn task_where(&self) -> String {
         r"\op-reason-ssh-relay-S-1-5-21-9".into()
     }
+    fn task_name(&self) -> Result<String, String> {
+        Ok(TASK.into())
+    }
     fn task(&self) -> Result<Option<TaskNow>, String> {
         self.task_reads.set(self.task_reads.get() + 1);
         Ok(self.task.borrow().clone())
@@ -176,20 +184,16 @@ impl System for Fake {
         "2026-11-23T10:00:00".into()
     }
     fn register_task(&self, xml: &str) -> Result<(), String> {
-        assert!(xml.contains("<Arguments>--ssh-agent</Arguments>"));
+        assert!(xml.contains(&format!("<Arguments>--ssh-agent --task {TASK}</Arguments>")));
         self.call("register");
         *self.xml.borrow_mut() = xml.to_owned();
         let enabled = !xml.contains("<Enabled>false</Enabled>");
         let mut task = self.task.borrow_mut();
-        let (running, pids) = task
-            .as_ref()
-            .map(|t| (t.running, t.pids.clone()))
-            .unwrap_or_default();
+        let running = task.as_ref().is_some_and(|t| t.running);
         *task = Some(TaskNow {
             shape: task::wanted(&self.want),
             enabled,
             running,
-            pids,
         });
         Ok(())
     }
@@ -211,7 +215,6 @@ impl System for Fake {
             self.pid.set(Some(OURS));
             if let Some(t) = self.task.borrow_mut().as_mut() {
                 t.running = true;
-                t.pids = vec![OURS];
             }
             if !self.info_late.get() {
                 let values = crate::settings::values(self.settings.borrow().as_deref());
@@ -244,7 +247,6 @@ impl System for Fake {
         *self.info.borrow_mut() = None;
         if let Some(t) = self.task.borrow_mut().as_mut() {
             t.running = false;
-            t.pids.clear();
         }
         Ok(())
     }

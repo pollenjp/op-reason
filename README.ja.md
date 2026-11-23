@@ -388,7 +388,8 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   中継は、親が無いとき・終わったときに toast と記録でそう知らせます。
 - 中継はログオン セッションに 1 つです。option: `--mode per-call|show-only`・`--pipe <名前>`・`--upstream <名前>`・
   `--time-limit <数>[s|m|h]` (既定 60m、24h まで)・`--answer-wait <数>[s|m]` (窓がクリックを待つ長さ。既定 60s、60m まで)。
-  option が無ければ、中継はこれらの値を `settings.json` から取ります ([設定](#設定))。
+  option が無ければ、中継はこれらの値を `settings.json` から取ります ([設定](#設定))。op-reason のタスクは
+  `--task <タスクの名前>` も渡し、中継はそれを `relay.json` に書きます (`op-reason --settings` が自分の中継と分かるように)。
 - 窓を出している間、中継は op-reason の lock を持ちます。中継の窓と 1Password の画面は、`op` の呼び出しのものと混ざらずに
   組で出ます。
 

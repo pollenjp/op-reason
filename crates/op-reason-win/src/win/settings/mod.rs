@@ -115,7 +115,7 @@ impl WinSystem {
 
     /// op-reason's task: `op-reason-ssh-relay-<SID>`, or the test's name (`OPREASON_RELAY_TASK`, honored where `CI`
     /// is set).
-    fn task_name(&self) -> Result<String, String> {
+    fn name_of_task(&self) -> Result<String, String> {
         if std::env::var_os("CI").is_some()
             && let Some(name) = std::env::var("OPREASON_RELAY_TASK")
                 .ok()
@@ -179,14 +179,18 @@ impl System for WinSystem {
     }
 
     fn task_where(&self) -> String {
-        match self.task_name() {
+        match self.name_of_task() {
             Ok(n) => format!(r"Task Scheduler \{n}"),
             Err(e) => e,
         }
     }
 
+    fn task_name(&self) -> Result<String, String> {
+        self.name_of_task()
+    }
+
     fn task(&self) -> Result<Option<TaskNow>, String> {
-        self.scheduler()?.get(&self.task_name()?)
+        self.scheduler()?.get(&self.name_of_task()?)
     }
 
     fn task_want(&self) -> Result<TaskWant, String> {
@@ -194,6 +198,7 @@ impl System for WinSystem {
         Ok(TaskWant {
             exe: exe.display().to_string(),
             sid: self.sid()?.to_owned(),
+            name: self.name_of_task()?,
         })
     }
 
@@ -206,23 +211,23 @@ impl System for WinSystem {
     }
 
     fn register_task(&self, xml: &str) -> Result<(), String> {
-        self.scheduler()?.register(&self.task_name()?, xml)
+        self.scheduler()?.register(&self.name_of_task()?, xml)
     }
 
     fn remove_task(&self) -> Result<(), String> {
-        self.scheduler()?.delete(&self.task_name()?)
+        self.scheduler()?.delete(&self.name_of_task()?)
     }
 
     fn enable_task(&self, on: bool) -> Result<(), String> {
-        self.scheduler()?.set_enabled(&self.task_name()?, on)
+        self.scheduler()?.set_enabled(&self.name_of_task()?, on)
     }
 
     fn run_task(&self) -> Result<(), String> {
-        self.scheduler()?.run(&self.task_name()?)
+        self.scheduler()?.run(&self.name_of_task()?)
     }
 
     fn other_tasks(&self, all: bool) -> Vec<OtherTask> {
-        match (self.scheduler(), self.task_name()) {
+        match (self.scheduler(), self.name_of_task()) {
             (Ok(s), Ok(name)) => s.relay_tasks(&name, all),
             _ => Vec::new(),
         }
@@ -254,7 +259,7 @@ impl System for WinSystem {
     }
 
     fn wait_relay(&self) -> Option<u32> {
-        relayctl::wait_up()
+        relayctl::wait_up(self.state_dir.as_deref())
     }
 
     fn skill(&self, place: &Place, act: SkillAct, want: &str) -> Result<SkillNow, String> {

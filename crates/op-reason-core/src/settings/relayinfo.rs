@@ -28,6 +28,10 @@ pub struct RelayInfo {
     pub answer_wait: u64,
     /// Its arguments after `--ssh-agent` (the options that won over `settings.json`).
     pub args: Vec<String>,
+    /// The task that started it (`--task <name>`: op-reason's task passes its name); none for a relay started
+    /// otherwise, or by an op-reason that did not write it.
+    #[serde(default)]
+    pub task: Option<String>,
 }
 
 impl RelayInfo {
@@ -64,12 +68,19 @@ mod tests {
             time_limit: 3600,
             answer_wait: 60,
             args: vec!["--ssh-agent".into()],
+            task: Some("op-reason-ssh-relay-S-1".into()),
         };
         let text = info.render();
         assert!(text.contains(r#""timeLimit":3600"#), "{text}");
         assert_eq!(RelayInfo::parse(&text), Some(info.clone()));
         assert_eq!(info.mode(), Some(RelayMode::ShowOnly));
         assert_eq!(RelayInfo::parse("junk"), None);
+        let older = r#"{"v":1,"pid":5,"exe":"x","pipe":"p","mode":"per-call","timeLimit":60,"answerWait":60,"args":[]}"#;
+        assert_eq!(
+            RelayInfo::parse(older).map(|i| i.task),
+            Some(None),
+            "a relay started without --task"
+        );
         assert_eq!(RelayInfo::parse(r#"{"v":2,"pid":1}"#), None);
     }
 }

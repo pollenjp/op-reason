@@ -11,7 +11,9 @@
   `op-reason.exe`.
 - **op-reason's own scheduled task for the SSH relay** (`relay.autostart`): `\op-reason-ssh-relay-<SID>` in the root
   folder, with the shape the README recommends (at logon and again every minute, "Do not start a new instance", hidden,
-  priority 5). `relay stop` turns it off and ends the relay until `relay start`. Stops and restarts take op-reason's lock
+  priority 5), which starts `op-reason.exe --ssh-agent --task <its name>`: the relay writes the name into `relay.json`, and
+  only a relay that does so is op-reason's to stop. `relay stop` turns the task off and ends the relay until
+  `relay start`. Stops and restarts take op-reason's lock
   first, and a relay that another task or a terminal started is shown, never stopped; while one runs, op-reason's task is
   made turned off.
 - **The relay reads its mode and times from `settings.json`**; its options still win. `--time-limit` takes at most a

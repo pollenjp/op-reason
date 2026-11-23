@@ -32,6 +32,10 @@ pub struct Opts {
     pub answer_secs: u64,
     /// `--status`: say whether a relay answers on the pipe, and exit.
     pub status: bool,
+    /// `--task <name>`: the scheduled task that started the relay (op-reason's task passes its name), written into
+    /// `relay.json` so that `op-reason --settings` knows the relay for its own (design `2026-11-23-settings-design.md`
+    /// §9.5).
+    pub task: Option<String>,
 }
 
 impl Default for Opts {
@@ -43,6 +47,7 @@ impl Default for Opts {
             limit_secs: DEFAULT_LIMIT,
             answer_secs: DEFAULT_ANSWER_WAIT,
             status: false,
+            task: None,
         }
     }
 }
@@ -117,7 +122,7 @@ pub fn parse_with(args: &[String], base: Opts) -> Result<Opts, OptError> {
         };
         if !matches!(
             name,
-            "--mode" | "--pipe" | "--upstream" | "--time-limit" | "--answer-wait"
+            "--mode" | "--pipe" | "--upstream" | "--time-limit" | "--answer-wait" | "--task"
         ) {
             return Err(OptError::Unknown(a.clone()));
         }
@@ -131,6 +136,7 @@ pub fn parse_with(args: &[String], base: Opts) -> Result<Opts, OptError> {
         match name {
             "--mode" => o.mode = Mode::parse(&value).ok_or(OptError::BadMode(value))?,
             "--pipe" => o.pipe = pipe_path(&value),
+            "--task" => o.task = Some(value),
             "--upstream" => o.upstream = pipe_path(&value),
             "--time-limit" => {
                 o.limit_secs = values::time_limit(&value)
@@ -196,6 +202,7 @@ mod tests {
                 limit_secs: 90,
                 answer_secs: 120,
                 status: true,
+                task: None,
             }
         );
         assert_eq!(p(&["--mode=per-call"]).unwrap().mode, Mode::PerCall);
@@ -295,6 +302,19 @@ mod tests {
             "values that are not accepted count as not set"
         );
         assert_eq!(parse(&[]).unwrap(), Opts::default());
+    }
+
+    #[test]
+    fn the_task_that_started_the_relay() {
+        assert_eq!(p(&[]).unwrap().task, None);
+        let o = p(&["--task", "op-reason-ssh-relay-S-1-5-21-1"]).unwrap();
+        assert_eq!(o.task.as_deref(), Some("op-reason-ssh-relay-S-1-5-21-1"));
+        assert_eq!(
+            p(&["--task=t"]).unwrap().task.as_deref(),
+            Some("t"),
+            "also as --task=<name>"
+        );
+        assert_eq!(p(&["--task"]), Err(OptError::Missing("--task".into())));
     }
 
     #[test]

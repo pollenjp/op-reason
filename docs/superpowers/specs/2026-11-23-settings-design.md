@@ -239,7 +239,8 @@ icon setting (second pull request) applies at once (§12).
 ### 8.2 What it tells
 
 - At start, once its pipe is made, the relay writes `%LOCALAPPDATA%\op-reason\relay.json`: its process ID, its exe, its
-  pipe, the mode and times it runs with, and its arguments. It removes the file when it exits by itself. A reader trusts
+  pipe, the mode and times it runs with, its arguments, and the task that started it (`--task <name>`, which only
+  op-reason's task passes). It removes the file when it exits by itself. A reader trusts
   the file only when its process ID is the one that answers on the pipe (`GetNamedPipeServerProcessId`); a relay of
   0.6.0 writes none, and its values are then unknown.
 - The relay waits on a named event, `Local\op-reason-ssh-relay-stop-<pid>`. When it is set, the relay fails new
@@ -258,8 +259,9 @@ icon setting (second pull request) applies at once (§12).
 - **Name**: `\op-reason-ssh-relay-<SID>` in the root folder, `<SID>` the user's security identifier (as per-user tasks
   of other programs are named): a user without administrator rights may make tasks in the root folder but not new
   folders, and task names are shared by the users of a machine. It does not meet the dotfiles' `\pjp\…`.
-- **Shape** (the README's recommendation, the same as the dotfiles' task): the action `<op-reason.exe> --ssh-agent`,
-  the exe being the one that ran `set`; a trigger at the logon of this user, and a trigger from the time it was made
+- **Shape** (the README's recommendation, the same as the dotfiles' task): the action
+  `<op-reason.exe> --ssh-agent --task <its name>`, the exe being the one that ran `set` (the relay writes the name into
+  `relay.json`: §9.5); a trigger at the logon of this user, and a trigger from the time it was made
   that repeats every minute without end; the user's interactive token, least privilege; no time limit; on batteries
   too, not stopped when going on batteries; "Do not start a new instance" (`IgnoreNew`); hidden; priority 5; no restart
   on failure. Its description says that op-reason made it and how to change it.
@@ -303,7 +305,8 @@ The relay ends through its stop event (§8.2); op-reason waits up to 30 seconds 
 
 ### 9.5 Other tasks
 
-A relay that answers while op-reason's task does not run it was started otherwise. op-reason looks among the running
+The relay that answers is op-reason's when its `relay.json` names op-reason's task (`--task`) and its process ID is the
+one that answers. A relay that answers otherwise was started otherwise. op-reason looks among the running
 tasks (`GetRunningTasks`) for one whose action is an `op-reason.exe --ssh-agent` (the dotfiles' task, for example) and
 names it; else it says "started outside op-reason's task" (a terminal). It never stops, changes or removes such a relay
 or task. `list` and the window also name tasks that are not running but would start a relay (a walk through all task
@@ -494,7 +497,7 @@ task code:
 | --- | --- |
 | `Get-OpReasonRelayWant`, `Get-OpReasonRelayTask`, `Get-OpReasonRelayTriggerText`, `Compare-OpReasonRelayTask` (the wanted task, read and compared) | `op-reason.exe --settings check relay.autostart=on relay.mode=<mode> relay.running=on --json` (0 same, 1 different, 2 failed) |
 | `Get-OpReasonRelayPlan` and `Register-OpReasonRelayTask` (register, update, start, restart), `Unregister-OpReasonRelayTask` (off) | `op-reason.exe --settings set relay.autostart=on relay.mode=<mode> relay.running=on`; `-SshRelay off`: `set relay.autostart=off` |
-| the mode in the task's arguments (`--ssh-agent --mode show-only`) | `relay.mode` in `settings.json`; the task's arguments are `--ssh-agent` |
+| the mode in the task's arguments (`--ssh-agent --mode show-only`) | `relay.mode` in `settings.json`; the task's arguments are `--ssh-agent --task <its name>` |
 | `Get-OpReasonRelayPid` (`--ssh-agent --status`) | unchanged, or `get relay.running --json` (its process ID) |
 | `Stop-OpReasonRelayLocked` before replacing the folder (the lock, the task off, the process stopped) and the start after it | `op-reason.exe --settings relay stop` before (exit 1 while a window is open), `<new folder>\op-reason.exe --settings relay start` after. The script may take the lock itself after the stop to keep calls out while it replaces the folder; `relay start` does not need it |
 | `Format-OpReasonRelayState` (the lines of the state) | the lines of `check` |
@@ -540,7 +543,7 @@ words (`--settings window`). Each goes into the table below.
 | The test name of the task (`OPREASON_RELAY_TASK`) is honored only where `CI` is set | the tests on GitHub's runners must not meet a user's task, and a desktop must not take a variable for it |
 | The guard for links covers the chosen folder's parent too (`guard_parent` for every place) | the same rule as `.claude` of `.claude\skills`: a chosen folder whose parent is a junction is refused |
 | `docker-desktop` and `docker-desktop-data` (any name starting with `docker-desktop`) are left out of the distributions, and lines that are not names (a message of `wsl.exe`) too | they are not shells of the user; `wsl.exe --list` prints a message instead of names when there are none |
-| The relay that answers is op-reason's only when its process is one that a running instance of op-reason's task started (`IRegisteredTask::GetInstances`, `IRunningTask::EnginePID`), and every stop reads the relay again once it holds the lock (final review) | a Running task alone is not enough: while another relay runs, the trigger of every minute starts an `op-reason.exe` that exits at once, and for that moment the task is Running; a relay replaced between the first read and the lock must not be stopped |
+| The relay that answers is op-reason's only when its `relay.json` names op-reason's task: the task starts `op-reason.exe --ssh-agent --task <its name>`, and the relay writes the name; every stop reads the relay again once it holds the lock (final review, then CI) | a Running task alone is not enough: while another relay runs, the trigger of every minute starts an `op-reason.exe` that exits at once, and for that moment the task is Running. `IRunningTask::EnginePID` was tried first and did not name the relay's process on GitHub's runner: a relay of op-reason's task was taken for another's and left running. A relay replaced between the first read and the lock must not be stopped |
 | `set` makes `relay.autostart` before `relay.running` whatever their order on the command line (final review) | §7.1's fixed order; `set relay.running=on relay.autostart=on` must not fail for a task it makes itself |
 | A stop turns op-reason's task off before it ends the relay, under the lock; a task made again is turned off before its relay stops and made turned on; a task to be off is made off in its XML (`<Enabled>false</Enabled>`) rather than made on and turned off (final review) | the trigger of every minute must find no moment to start a relay that would outlive the task or run the old exe |
 | A relay that the same `set` started (another process ID than before the `set`) is not started again for the relay's values (final review) | the file was written before the start, so it runs with them; restarting it would make 1Password ask once more, right after a first install |

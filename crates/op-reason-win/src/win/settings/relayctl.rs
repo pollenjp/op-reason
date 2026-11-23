@@ -31,18 +31,24 @@ pub fn info(state_dir: Option<&Path>) -> Option<RelayInfo> {
     RelayInfo::parse(&text)
 }
 
-/// Waits up to 15 seconds for a relay to answer on the pipe.
-pub fn wait_up() -> Option<u32> {
+/// Waits up to 15 seconds for a relay to answer on the pipe, and then up to two seconds for its `relay.json` (it writes
+/// the file just after its pipe), so that the settings read the relay that just started as op-reason's.
+pub fn wait_up(state_dir: Option<&Path>) -> Option<u32> {
     let t0 = Instant::now();
-    loop {
+    let pid = loop {
         if let Some(pid) = pid() {
-            return Some(pid);
+            break pid;
         }
         if t0.elapsed() >= START_WAIT {
             return None;
         }
         std::thread::sleep(Duration::from_millis(250));
+    };
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_secs(2) && info(state_dir).is_none_or(|i| i.pid != pid) {
+        std::thread::sleep(Duration::from_millis(50));
     }
+    Some(pid)
 }
 
 /// Ends the relay `pid`: its stop event (a relay of 0.6.0 has none), then `TerminateProcess` after 30 seconds; returns

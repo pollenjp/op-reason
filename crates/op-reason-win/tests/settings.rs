@@ -362,7 +362,18 @@ fn op_reasons_task_starts_stops_and_goes() {
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let out = s(&["get", "relay.running", "--json"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["settings"][0]["detail"]["ours"], true, "{v}");
+    let info = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("op-reason").join("relay.json"))
+        .and_then(|f| fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    assert_eq!(
+        v["settings"][0]["detail"]["ours"], true,
+        "{v}; relay.json: {info}"
+    );
+    assert!(
+        info.contains(&format!(r#""task":"{task}""#)),
+        "relay.json: {info}"
+    );
 
     // The lock held elsewhere: nothing is stopped
     {

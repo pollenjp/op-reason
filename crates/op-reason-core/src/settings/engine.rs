@@ -49,6 +49,8 @@ pub trait System {
     fn settings_where(&self) -> String;
     /// Where op-reason's task is (its path in Task Scheduler).
     fn task_where(&self) -> String;
+    /// op-reason's task's name (what its relay tells in `relay.json`).
+    fn task_name(&self) -> Result<String, String>;
     /// op-reason's task, when it is there.
     fn task(&self) -> Result<Option<TaskNow>, String>;
     /// What op-reason's task is made from (this exe, the user).
@@ -255,6 +257,7 @@ struct Relay {
     pid: Option<u32>,
     info: Option<RelayInfo>,
     by: Option<String>,
+    ours: bool,
 }
 
 impl Relay {
@@ -264,7 +267,9 @@ impl Relay {
         let info = sys
             .relay_info()
             .filter(|i| Some(i.pid) == pid && i.pipe.eq_ignore_ascii_case(values::RELAY_PIPE));
-        let ours = matches!((&task, pid), (Ok(Some(t)), Some(p)) if t.pids.contains(&p));
+        let name = sys.task_name().ok();
+        let ours =
+            matches!((&task, &info), (Ok(Some(_)), Some(i)) if i.task.is_some() && i.task == name);
         let by = if pid.is_some() && !ours {
             sys.other_tasks(false)
                 .into_iter()
@@ -278,6 +283,7 @@ impl Relay {
             pid,
             info,
             by,
+            ours,
         }
     }
 
@@ -285,11 +291,11 @@ impl Relay {
         self.task.as_ref().ok().and_then(Option::as_ref)
     }
 
-    /// op-reason's task runs the relay that answers: the relay's process is one that a running instance of the task
-    /// started (a Running task alone is not enough: while another relay runs, the instance of every minute starts an
-    /// `op-reason.exe` that exits at once).
+    /// op-reason's task runs the relay that answers: the relay that answers wrote `relay.json` with op-reason's task
+    /// in it (`--task <name>`, which only op-reason's task passes; design §9.5). A Running task alone is not enough:
+    /// while another relay runs, the instance of every minute starts an `op-reason.exe` that exits at once.
     fn ours(&self) -> bool {
-        matches!((self.task(), self.pid), (Some(t), Some(p)) if t.pids.contains(&p))
+        self.ours
     }
 }
 
@@ -1160,7 +1166,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: false,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayAutostart)]);
         assert!(f.calls().is_empty());
@@ -1193,7 +1198,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: false,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["enable", "run"]);
@@ -1208,7 +1212,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[on(Name::RelayRunning)]);
         assert_eq!(c[0].done, Done::Failed(Why::NoAnswer));
@@ -1230,7 +1233,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[off(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["disable"]);
@@ -1248,7 +1250,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[off(Name::RelayRunning)]);
         assert_eq!(f.calls(), ["disable"]);
@@ -1278,7 +1279,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: true,
-            pids: vec![999],
         });
         let c = relay(&f.ctx(), RelayAct::Stop);
         assert!(matches!(c[0].done, Done::Failed(Why::NotOurs(_))), "{c:?}");
@@ -1296,6 +1296,25 @@ mod tests {
             f.calls()
         );
         assert_eq!(f.pid.get(), Some(7));
+    }
+
+    #[test]
+    fn a_relay_without_the_mark_of_our_task_is_not_ours() {
+        // Started by hand with the same pipe, or by another task: relay.json has no task, or another one
+        for task in [None, Some("op-reason-test-other".to_owned())] {
+            let f = Fake::new().ours_running();
+            f.info.borrow_mut().as_mut().unwrap().task = task.clone();
+            let c = relay(&f.ctx(), RelayAct::Stop);
+            assert!(
+                matches!(c[0].done, Done::Failed(Why::NotOurs(_))),
+                "{task:?}: {c:?}"
+            );
+            assert!(
+                !f.calls().iter().any(|c| c.starts_with("stop")),
+                "{:?}",
+                f.calls()
+            );
+        }
     }
 
     #[test]
@@ -1351,7 +1370,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = set(&f, &[off(Name::RelayAutostart)]);
         assert_eq!(c[0].done, Done::Done);
@@ -1464,7 +1482,9 @@ mod tests {
     }
 
     #[test]
-    fn a_relay_without_its_values_is_restarted_only_when_the_file_changes() {
+    fn a_relay_that_does_not_tell_its_values_is_left_alone() {
+        // A relay of 0.6.0 (no relay.json): never started by op-reason's task, which passes --task to relays that write
+        // relay.json
         let f = Fake::new().ours_running();
         *f.info.borrow_mut() = None;
         *f.settings.borrow_mut() = Some(r#"{"relay":{"mode":"show-only"}}"#.into());
@@ -1478,8 +1498,13 @@ mod tests {
             checked[0].same,
             "a relay of 0.6.0 does not make it different"
         );
-        set(&f, &[(Name::RelayMode, Want::Mode(RelayMode::PerCall))]);
-        assert_eq!(f.calls(), ["lock", "stop 100", "run"]);
+        let c = set(&f, &[(Name::RelayMode, Want::Mode(RelayMode::PerCall))]);
+        assert!(f.calls().is_empty(), "not op-reason's: never stopped");
+        assert_eq!(
+            c.len(),
+            1,
+            "and its values are unknown, so nothing to report: {c:?}"
+        );
     }
 
     #[test]
@@ -1564,7 +1589,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = check(&f.ctx(), &[off(Name::RelayRunning)]);
         assert!(!c[0].same);
@@ -1578,7 +1602,6 @@ mod tests {
             shape: task::wanted(&f.want),
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let i = get(&f.ctx(), &Name::RelayAutostart);
         assert_eq!(i.value.as_deref(), Some("on"));
@@ -1602,7 +1625,6 @@ mod tests {
             shape,
             enabled: true,
             running: false,
-            pids: vec![],
         });
         let c = check(&f.ctx(), &[on(Name::RelayAutostart)]);
         assert!(!c[0].same);
