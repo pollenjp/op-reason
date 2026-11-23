@@ -46,14 +46,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, BN_CLICKED, CBN_SELCHANGE, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
-    FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    IDC_ARROW, IDOK, IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, MB_ICONERROR,
-    MB_ICONQUESTION, MB_OK, MB_OKCANCEL, MINMAXINFO, MSG, MessageBoxW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SW_RESTORE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_NCDESTROY, WM_NOTIFY, WM_SIZE, WM_TIMER,
-    WNDCLASSEXW, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW,
+    EN_KILLFOCUS, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
+    GetWindowLongPtrW, IDC_ARROW, IDOK, IsDialogMessageW, IsIconic, IsWindow, KillTimer,
+    LoadCursorW, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_OKCANCEL, MINMAXINFO, MSG, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SW_RESTORE, SW_SHOWNORMAL, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_NCDESTROY, WM_NOTIFY,
+    WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -71,6 +71,8 @@ const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 const EX_STYLE: WINDOW_EX_STYLE = WS_EX_CONTROLPARENT;
 /// The window's width, in pixels at 96 DPI (its height follows from the layout).
 const WIDTH: i32 = 700;
+/// The narrowest the window may be made.
+const MIN_WIDTH: i32 = 480;
 /// The worker finished a job.
 const WM_APP_DONE: u32 = WM_APP + 1;
 /// The time fields are written this long after their last change.
@@ -364,6 +366,11 @@ fn work(jobs: Receiver<Job>, done: Sender<Outcome>, hwnd: usize) {
                 Job::Forget => engine::forget_accounts(&ctx),
                 Job::OpenRecords => engine::open_records(&ctx),
             };
+            // A window that is gone (closed while jobs waited) needs no read: the process ends sooner
+            // SAFETY: a plain question about a window handle.
+            if !unsafe { IsWindow(Some(HWND(hwnd as *mut c_void))) }.as_bool() {
+                continue;
+            }
             let outcome = Outcome {
                 changes,
                 checked,
@@ -401,8 +408,16 @@ struct App {
     items: RefCell<Vec<Item>>,
     rows: RefCell<Vec<SkillRow>>,
     accounts: Cell<usize>,
-    /// A job runs: the controls that act are greyed out.
-    busy: Cell<bool>,
+    /// Jobs handed to the worker and not done yet: the controls that act are greyed out until none is left. A job
+    /// asked for meanwhile (by a question's answer, the folder picker, a field's timer) waits for its turn.
+    pending: Cell<usize>,
+    /// What the jobs since the window was last idle did, shown when the last one is done.
+    batch: RefCell<Vec<Change>>,
+    batch_checked: RefCell<Option<Item>>,
+    /// A time field was changed and is not written yet.
+    times_dirty: Cell<bool>,
+    /// A line to show with the next result (a time field out of its bounds).
+    note: RefCell<Option<String>>,
     /// The window fills its controls: their notifications are not the user's.
     updating: Cell<bool>,
     /// The control that had the focus when the job started (greyed out, it lost it).
@@ -454,7 +469,11 @@ impl App {
             items: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             accounts: Cell::new(0),
-            busy: Cell::new(false),
+            pending: Cell::new(0),
+            batch: RefCell::new(Vec::new()),
+            batch_checked: RefCell::new(None),
+            times_dirty: Cell::new(false),
+            note: RefCell::new(None),
             updating: Cell::new(false),
             focus: Cell::new(None),
             jobs: RefCell::new(Some(jobs)),
@@ -523,11 +542,11 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_GETMINMAXINFO => {
+                // at its narrowest the mode and the times take two rows: the smallest height is measured there
                 let dpi = self.dpi.get();
-                let need = self
-                    .ui
-                    .arrange_need(controls::scale(WIDTH, dpi), &self.metrics());
-                let (w, h) = self.outer(controls::scale(480, dpi), need);
+                let narrowest = controls::scale(MIN_WIDTH, dpi);
+                let need = self.ui.arrange_need(narrowest, &self.metrics());
+                let (w, h) = self.outer(narrowest, need);
                 // SAFETY: lparam points at the MINMAXINFO of this message.
                 let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
                 info.ptMinTrackSize = POINT { x: w, y: h };
@@ -566,6 +585,11 @@ impl App {
                 self.on_times();
                 Some(LRESULT(0))
             }
+            WM_CLOSE => {
+                // a value typed a moment ago is written before the window goes (the worker ends after its jobs)
+                self.flush_times();
+                None
+            }
             WM_APP_DONE => {
                 self.on_done();
                 Some(LRESULT(0))
@@ -601,17 +625,31 @@ impl App {
         settings_ui::texts(self.lang.get())
     }
 
-    /// Hands a job to the worker; the controls that act are greyed out until it is done.
+    fn busy(&self) -> bool {
+        self.pending.get() > 0
+    }
+
+    /// Hands a job to the worker, after the time fields' edits that are not written yet (Apply carries them itself).
     fn run(&self, job: Job) {
-        if self.busy.get() {
-            return;
+        if !matches!(job, Job::Apply(_)) {
+            self.flush_times();
         }
+        self.send(job);
+    }
+
+    /// Hands a job to the worker; the controls that act are greyed out until every job is done.
+    fn send(&self, job: Job) {
         let sent = self
             .jobs
             .borrow()
             .as_ref()
             .is_some_and(|jobs| jobs.send(job).is_ok());
-        if sent {
+        if !sent {
+            return;
+        }
+        let first = !self.busy();
+        self.pending.set(self.pending.get() + 1);
+        if first {
             // SAFETY: reads this thread's focus.
             let focus = unsafe { GetFocus() };
             // nothing has it before the first read: the language then
@@ -620,7 +658,6 @@ impl App {
             } else {
                 focus
             }));
-            self.busy.set(true);
             for hwnd in self.ui.inputs() {
                 controls::enable(hwnd, false);
             }
@@ -628,9 +665,43 @@ impl App {
         }
     }
 
+    /// Writes the time fields' edits that are not written yet: before another job, a question or the folder picker, and
+    /// before the window closes.
+    fn flush_times(&self) {
+        if !self.times_dirty.replace(false) {
+            return;
+        }
+        // SAFETY: the timer of this window.
+        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMES) };
+        match self.time_wants() {
+            Ok(wants) if wants.is_empty() => {}
+            Ok(wants) => self.send(Job::Write(wants)),
+            Err(line) => {
+                controls::set_text(self.ui.status, &line);
+                *self.note.borrow_mut() = Some(line);
+            }
+        }
+    }
+
     fn on_command(&self, id: u16, code: u32) {
         if self.updating.get() {
             return;
+        }
+        if matches!(id, ids::TIME_LIMIT | ids::ANSWER_WAIT) {
+            match code {
+                EN_CHANGE => {
+                    self.times_dirty.set(true);
+                    // SAFETY: a timer of this window.
+                    unsafe { SetTimer(Some(self.hwnd), TIMER_TIMES, TIMES_DELAY_MS, None) };
+                }
+                EN_KILLFOCUS => self.flush_times(),
+                _ => {}
+            }
+            return;
+        }
+        // A click or a choice (and Enter, Esc) writes what was typed before it acts
+        if code == BN_CLICKED || code == CBN_SELCHANGE {
+            self.flush_times();
         }
         let checked = |hwnd| Want::On(controls::is_checked(hwnd));
         match (id, code) {
@@ -653,10 +724,6 @@ impl App {
                 Name::RelayMode,
                 settings_ui::mode_want(controls::chosen(self.ui.mode)),
             )])),
-            (ids::TIME_LIMIT | ids::ANSWER_WAIT, EN_CHANGE) => {
-                // SAFETY: a timer of this window.
-                unsafe { SetTimer(Some(self.hwnd), TIMER_TIMES, TIMES_DELAY_MS, None) };
-            }
             (ids::APPLY, BN_CLICKED) => self.apply(),
             (ids::PLACE, BN_CLICKED) => self.skill(true),
             (ids::REMOVE, BN_CLICKED) => self.skill(false),
@@ -721,22 +788,25 @@ impl App {
         Ok(wants)
     }
 
-    /// The time fields' last change was a moment ago: writes them (later when a job runs).
+    /// The time fields' last change was a moment ago (the up-down's arrows): writes them, unless the user is still typing
+    /// in one; that one is written when it loses the focus, at Enter, or before the next action.
     fn on_times(&self) {
-        if self.busy.get() {
+        // SAFETY: the timer of this window; reads this thread's focus.
+        let focus = unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_TIMES);
+            GetFocus()
+        };
+        if focus == self.ui.time_limit || focus == self.ui.answer_wait {
             return;
         }
-        // SAFETY: the timer of this window.
-        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMES) };
-        match self.time_wants() {
-            Ok(wants) if wants.is_empty() => {}
-            Ok(wants) => self.run(Job::Write(wants)),
-            Err(line) => controls::set_text(self.ui.status, &line),
-        }
+        self.flush_times();
     }
 
-    /// Apply: the fields as they are, then op-reason's relay starts again, after the question.
+    /// Apply: the fields as they are, then op-reason's relay starts again, after the question. Without the answer OK the
+    /// fields are still written (the relay uses them when it starts again).
     fn apply(&self) {
+        // SAFETY: the timer of this window: Apply writes the fields itself.
+        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMES) };
         let wants = match self.time_wants() {
             Ok(w) => w,
             Err(line) => {
@@ -744,10 +814,11 @@ impl App {
                 return;
             }
         };
+        self.times_dirty.set(false);
         if self.confirm(self.texts().confirm_apply) {
-            // SAFETY: the timer of this window: Apply writes the fields itself.
-            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMES) };
-            self.run(Job::Apply(wants));
+            self.send(Job::Apply(wants));
+        } else if !wants.is_empty() {
+            self.send(Job::Write(wants));
         }
     }
 
@@ -789,10 +860,25 @@ impl App {
         }
     }
 
+    /// A job is done: when it was the last one handed over, the window shows what was read and what the jobs did.
     fn on_done(&self) {
         while let Ok(outcome) = self.done.try_recv() {
-            self.busy.set(false);
-            self.show(outcome);
+            self.pending.set(self.pending.get().saturating_sub(1));
+            self.batch
+                .borrow_mut()
+                .extend(outcome.changes.iter().cloned());
+            if outcome.checked.is_some() {
+                *self.batch_checked.borrow_mut() = outcome.checked.clone();
+            }
+            if !self.busy() {
+                let changes = self.batch.take();
+                let checked = self.batch_checked.take();
+                self.show(Outcome {
+                    changes,
+                    checked,
+                    ..outcome
+                });
+            }
         }
     }
 
@@ -862,6 +948,11 @@ impl App {
             ),
             None => settings_ui::result_line(lang, &changes),
         };
+        let status = match self.note.take() {
+            Some(note) if status.is_empty() => note,
+            Some(note) => format!("{note} / {status}"),
+            None => status,
+        };
         controls::set_text(self.ui.status, &status);
         self.updating.set(false);
         *self.rows.borrow_mut() = rows;
@@ -896,7 +987,7 @@ impl App {
     }
 
     fn enable_skill_buttons(&self) {
-        if self.busy.get() {
+        if self.busy() {
             return;
         }
         let items = self.items.borrow();

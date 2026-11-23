@@ -759,6 +759,36 @@ fn the_window_changes_the_settings_with_its_controls() {
     );
     let window = settings_windows()[0];
     assert_eq!(title(window), "op-reason settings");
+    // The window lies within the work area of its screen (the runner's screen is 768 pixels high)
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        };
+        let mut r = RECT::default();
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: the structures outlive the calls.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(window, &mut r);
+            let _ = GetMonitorInfoW(
+                MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                &mut info,
+            );
+        }
+        let work = info.rcWork;
+        assert!(
+            r.top >= work.top
+                && r.bottom <= work.bottom
+                && r.left >= work.left
+                && r.right <= work.right,
+            "window {:?} in the work area {:?}",
+            (r.left, r.top, r.right, r.bottom),
+            (work.left, work.top, work.right, work.bottom)
+        );
+    }
     for id in [
         ids::LANG,
         ids::RELAY_LINE,
@@ -830,4 +860,222 @@ fn the_window_changes_the_settings_with_its_controls() {
     );
     let log = sb.log();
     assert!(log.contains(r#""from":"window""#), "{log}");
+}
+
+/// The value at `path` (`relay.timeLimit`) of the sandbox's `settings.json`.
+fn file_value(sb: &Sandbox, path: &[&str]) -> Value {
+    let text = fs::read_to_string(sb.root.join("lad").join("op-reason").join("settings.json"))
+        .unwrap_or_default();
+    let mut v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    for key in path {
+        v = v[*key].clone();
+    }
+    v
+}
+
+/// Types `text` into a field of the settings window, as the user does (the field tells the window it changed).
+fn type_into(field: windows::Win32::Foundation::HWND, text: &str) {
+    // SAFETY: WM_SETTEXT, which Windows carries to the other process; the string outlives the call.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(
+            field,
+            &windows::core::HSTRING::from(text),
+        );
+    }
+}
+
+#[test]
+fn a_typed_time_is_written_before_the_next_action_and_when_the_window_closes() {
+    use op_reason_win::settings_ui::ids;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BM_SETCHECK, BN_CLICKED, PostMessageW, SendMessageW, WM_CLOSE,
+    };
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("window-times");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    let out = sb.settings(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(wait_until(Duration::from_secs(15), || settings_windows()
+        .len()
+        == 1));
+    let window = settings_windows()[0];
+    let refresh = control(window, ids::REFRESH).unwrap();
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    // 30 minutes typed, and at once (well within the time a field waits) a click on the icon's box
+    type_into(control(window, ids::TIME_LIMIT).unwrap(), "30");
+    // SAFETY: messages without pointers.
+    unsafe {
+        SendMessageW(
+            control(window, ids::TRAY_ICON).unwrap(),
+            BM_SETCHECK,
+            Some(WPARAM(0)),
+            None,
+        );
+    }
+    notify(window, ids::TRAY_ICON, BN_CLICKED);
+    assert!(
+        wait_until(Duration::from_secs(30), || file_value(
+            &sb,
+            &["relay", "timeLimit"]
+        ) == 1800
+            && file_value(&sb, &["relay", "trayIcon"]) == false),
+        "both written: {}",
+        file_value(&sb, &[])
+    );
+    assert!(wait_until(Duration::from_secs(60), || enabled(refresh)));
+    assert_eq!(
+        controls_text(control(window, ids::TIME_LIMIT).unwrap()),
+        "30",
+        "the field keeps what was typed"
+    );
+    // 45 seconds typed, and the window closed at once: written before the window's process ends
+    type_into(control(window, ids::ANSWER_WAIT).unwrap(), "45");
+    let pid = window_pid(window);
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    assert!(
+        wait_until(Duration::from_secs(30), || !process_alive(pid)),
+        "the window's process ends"
+    );
+    assert_eq!(
+        file_value(&sb, &["relay", "answerWait"]),
+        45,
+        "{}",
+        file_value(&sb, &[])
+    );
+}
+
+fn controls_text(hwnd: windows::Win32::Foundation::HWND) -> String {
+    title(hwnd)
+}
+
+fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: a plain question about a window handle.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    pid
+}
+
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // SAFETY: a handle opened and closed here.
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            return false;
+        };
+        let alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        let _ = CloseHandle(h);
+        alive
+    }
+}
+
+// --- The icon of op-reason's own task (on CI only, under the task's real name)
+
+/// `op-reason.exe --settings <args>` with the real profile, for op-reason's task under its real name: the relay's icon
+/// runs its actions with the relay's variables, which do not name a test's task.
+fn real_settings(args: &[&str]) -> Output {
+    Command::new(exe())
+        .arg("--settings")
+        .args(args)
+        .env_remove("OPREASON_RELAY_TASK")
+        .env("OPREASON_LANG", "en")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run op-reason.exe --settings")
+}
+
+/// Removes op-reason's task (its real name) and stops its relay whatever happens.
+struct RealTaskGuard;
+
+impl Drop for RealTaskGuard {
+    fn drop(&mut self) {
+        let _ = real_settings(&["set", "relay.autostart", "off"]);
+    }
+}
+
+/// The process that `relay.json` of the real profile names.
+fn relay_json_pid() -> Option<u64> {
+    let info = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("op-reason").join("relay.json"))
+        .and_then(|f| fs::read_to_string(f).ok())?;
+    serde_json::from_str::<Value>(&info).ok()?["pid"].as_u64()
+}
+
+#[test]
+fn the_icon_restarts_the_relay_of_op_reasons_task() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_COMMAND};
+    use windows::core::{HSTRING, PCWSTR};
+    if !on_ci() {
+        eprintln!(
+            "skipped: it makes op-reason's scheduled task under its real name (set CI=1 to run it)"
+        );
+        return;
+    }
+    let _g = serial();
+    assert!(!relay_answers(), "no relay may run before this test");
+    let _guard = RealTaskGuard;
+    let out = real_settings(&["set", "relay.autostart", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(relay_answers(), "the task's relay answers: {}", text(&out));
+    let before = relay_json_pid();
+    assert!(before.is_some(), "relay.json names the task's relay");
+    let tray = || {
+        // SAFETY: a static class name.
+        unsafe {
+            FindWindowW(
+                &HSTRING::from(op_reason_win::relay_opts::TRAY_CLASS),
+                PCWSTR::null(),
+            )
+        }
+        .ok()
+        .filter(|h| !h.is_invalid())
+    };
+    assert!(
+        wait_until(Duration::from_secs(15), || tray().is_some()),
+        "the task's relay has its icon's window"
+    );
+    // Restart the relay, from the icon's menu: op-reason --settings relay restart in a process of its own, out of the
+    // task's job, so that the task can start the new relay at once
+    let restart = op_reason_win::tray_ui::Item::Restart.id();
+    // SAFETY: a message without pointers.
+    unsafe {
+        let _ = PostMessageW(tray(), WM_COMMAND, WPARAM(usize::from(restart)), LPARAM(0));
+    }
+    assert!(
+        wait_until(Duration::from_secs(45), || {
+            relay_json_pid().is_some_and(|p| Some(p) != before) && relay_answers()
+        }),
+        "a new relay of op-reason's task answers: before {before:?}, now {:?}",
+        relay_json_pid()
+    );
+    let log = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("op-reason").join("log.jsonl"))
+        .and_then(|f| fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    assert!(
+        log.lines().any(|l| l.contains(r#""event":"settings""#)
+            && l.contains(r#""from":"tray""#)
+            && l.contains(r#""result":"done""#)),
+        "the restart is recorded as from the icon: {}",
+        log.lines().rev().take(5).collect::<Vec<_>>().join("\n")
+    );
 }

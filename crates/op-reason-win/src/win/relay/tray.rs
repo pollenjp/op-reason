@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -15,13 +16,19 @@ use std::thread;
 
 use op_reason_core::lang::{self, Lang};
 use op_reason_core::settings;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
     DeleteObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{CREATE_BREAKAWAY_FROM_JOB, DETACHED_PROCESS};
+use windows::Win32::System::Threading::{
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
+    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+    PROCESS_CREATE_PROCESS, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
+    UpdateProcThreadAttribute,
+};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
@@ -30,14 +37,15 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, AppendMenuW, ChangeWindowMessageFilterEx,
     CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DispatchMessageW, GetMessageW, GetSystemMetrics, HICON, ICONINFO, KillTimer, MF_GRAYED,
-    MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, PostMessageW, RegisterClassExW,
-    RegisterWindowMessageW, SM_CXSMICON, SM_MENUDROPALIGNMENT, SetForegroundWindow,
-    SetMenuDefaultItem, SetTimer, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenuEx, TranslateMessage, WINDOW_EX_STYLE,
-    WM_COMMAND, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPED,
+    DispatchMessageW, FindWindowW, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON,
+    ICONINFO, KillTimer, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, PostMessageW,
+    RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SM_MENUDROPALIGNMENT,
+    SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenuEx,
+    TranslateMessage, WINDOW_EX_STYLE, WM_COMMAND, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW,
+    WS_OVERLAPPED,
 };
-use windows::core::{HSTRING, PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use super::app;
 use crate::relay_opts::{SETTINGS_CHANGED, SETTINGS_FROM, TRAY_CALLBACK, TRAY_CLASS, TRAY_QUERY};
@@ -284,8 +292,10 @@ fn hide(hwnd: HWND) {
     remove();
 }
 
-/// Runs a menu item: `op-reason.exe --settings …` in a process of its own, without a console, out of the relay's job
-/// when the job lets it go, recorded as from the icon.
+/// Runs a menu item: `op-reason.exe --settings …` in a process of its own, without a console, recorded as from the
+/// icon. op-reason's task runs its relay in a job of Task Scheduler, which counts the task as running while any process
+/// of the job lives ("Do not start a new instance" would then ignore the start of a new relay): the action runs with
+/// Explorer as its parent, which takes it out of that job, and otherwise leaves the job when the job lets it go.
 fn act(item: Item) {
     let ours = with_tray(|t| t.ours).unwrap_or(false);
     if item.needs_ours() && !ours {
@@ -299,6 +309,9 @@ fn act(item: Item) {
     unsafe {
         let _ = AllowSetForegroundWindow(ASFW_ANY);
     }
+    if ours && under_explorer(&exe, item.args()).is_ok() {
+        return;
+    }
     let spawn = |flags: u32| {
         Command::new(&exe)
             .args(item.args())
@@ -311,6 +324,101 @@ fn act(item: Item) {
     };
     if spawn((DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB).0).is_err() {
         let _ = spawn(DETACHED_PROCESS.0);
+    }
+}
+
+/// This process's variables with `SETTINGS_FROM=tray`, as an environment block (sorted, UTF-16).
+fn env_block() -> Vec<u16> {
+    let mut vars: std::collections::BTreeMap<String, (std::ffi::OsString, std::ffi::OsString)> =
+        std::env::vars_os()
+            .map(|(k, v)| (k.to_string_lossy().to_uppercase(), (k, v)))
+            .collect();
+    vars.insert(
+        SETTINGS_FROM.to_owned(),
+        (SETTINGS_FROM.into(), "tray".into()),
+    );
+    let mut block = Vec::new();
+    for (k, v) in vars.values() {
+        block.extend(k.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(v.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
+/// Starts `<exe> <args>` with Explorer (the taskbar's process) as its parent (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`):
+/// in Explorer's job rather than this process's, without a console, with this process's variables and
+/// `SETTINGS_FROM=tray`, in the exe's folder.
+fn under_explorer(exe: &std::path::Path, args: &[&str]) -> Result<u32, String> {
+    // SAFETY: the handles opened here are closed here; the attribute list, the strings and the structures outlive the
+    // calls that use them.
+    unsafe {
+        let taskbar = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null())
+            .map_err(|e| format!("Explorer: {}", e.message()))?;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(taskbar, Some(&mut pid));
+        if pid == 0 {
+            return Err("Explorer: no process".into());
+        }
+        let parent = OpenProcess(PROCESS_CREATE_PROCESS, false, pid)
+            .map_err(|e| format!("Explorer: {}", e.message()))?;
+        let mut size = 0usize;
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
+        // u64: the list holds pointers
+        let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
+        let list = LPPROC_THREAD_ATTRIBUTE_LIST(buffer.as_mut_ptr() as *mut c_void);
+        let made = InitializeProcThreadAttributeList(Some(list), 1, None, &mut size)
+            .and_then(|()| {
+                UpdateProcThreadAttribute(
+                    list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
+                    Some(&parent as *const HANDLE as *const c_void),
+                    size_of::<HANDLE>(),
+                    None,
+                    None,
+                )
+            })
+            .and_then(|()| {
+                let mut line: Vec<u16> = std::iter::once(format!("\"{}\"", exe.display()))
+                    .chain(args.iter().map(|a| (*a).to_owned()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let env = env_block();
+                let dir = exe.parent().map(|d| HSTRING::from(d.as_os_str()));
+                let startup = STARTUPINFOEXW {
+                    StartupInfo: STARTUPINFOW {
+                        cb: size_of::<STARTUPINFOEXW>() as u32,
+                        ..Default::default()
+                    },
+                    lpAttributeList: list,
+                };
+                let mut info = PROCESS_INFORMATION::default();
+                CreateProcessW(
+                    &HSTRING::from(exe.as_os_str()),
+                    Some(PWSTR(line.as_mut_ptr())),
+                    None,
+                    None,
+                    false,
+                    DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                    Some(env.as_ptr() as *const c_void),
+                    dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+                    &startup.StartupInfo,
+                    &mut info,
+                )
+                .map(|()| info)
+            });
+        DeleteProcThreadAttributeList(list);
+        let _ = CloseHandle(parent);
+        let info = made.map_err(|e| e.message())?;
+        let _ = CloseHandle(info.hThread);
+        let _ = CloseHandle(info.hProcess);
+        Ok(info.dwProcessId)
     }
 }
 
