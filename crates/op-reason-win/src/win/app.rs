@@ -72,7 +72,9 @@ pub(super) fn chosen() -> Option<Lang> {
 /// `2026-11-15-language-toggle-design.md` §4).
 pub(super) fn remember(lang: Lang) {
     if let Some(file) = settings_file() {
-        let _ = settings::write(&file, lang);
+        super::settings::with_lock(|| {
+            let _ = settings::write(&file, lang);
+        });
     }
 }
 

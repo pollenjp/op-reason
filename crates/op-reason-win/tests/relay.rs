@@ -1003,6 +1003,77 @@ fn the_relay_reads_its_settings_and_a_stop_lets_the_request_with_1password_finis
     assert!(!dir.join("relay.json").exists(), "removed at the stop");
 }
 
+/// Holds op-reason's lock (`Local\op-reason`) until dropped, as an `op` call or `op-reason --settings` does.
+struct HeldLock(windows::Win32::Foundation::HANDLE);
+
+impl HeldLock {
+    fn take() -> HeldLock {
+        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        // SAFETY: a valid name; the handle is released and closed on drop.
+        unsafe {
+            let h = CreateMutexW(
+                None,
+                false,
+                &windows::core::HSTRING::from(r"Local\op-reason"),
+            )
+            .unwrap();
+            let _ = WaitForSingleObject(h, 5_000);
+            HeldLock(h)
+        }
+    }
+}
+
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        // SAFETY: the handle was opened and taken by this thread.
+        unsafe {
+            let _ = windows::Win32::System::Threading::ReleaseMutex(self.0);
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// A stop while a request waits for op-reason's lock (its window cannot open while `op-reason --settings` holds it):
+/// the request gives up at once, and the relay ends without waiting 25 seconds for it.
+#[test]
+fn a_stop_ends_a_request_that_waits_for_the_lock() {
+    let _g = serial();
+    let sb = Sandbox::new("stop-waiting");
+    let _agent = sb.agent();
+    let mut relay = sb.relay(&[], &[]);
+    let pid = relay.0.id();
+    let lock = HeldLock::take();
+    let waiting = sb
+        .client(Some("waits for the lock"), &["sign"])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let t0 = Instant::now();
+    set_event(&format!(r"Local\op-reason-ssh-relay-stop-{pid}"));
+    let ended = loop {
+        if let Ok(Some(status)) = relay.0.try_wait() {
+            break Some(status);
+        }
+        if t0.elapsed() > Duration::from_secs(20) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    drop(lock);
+    let out = waiting.wait_with_output().unwrap();
+    assert!(
+        t0.elapsed() < Duration::from_secs(10),
+        "the relay ended in {:?}, not after the 25 seconds of the drain",
+        t0.elapsed()
+    );
+    assert_eq!(ended.expect("the relay ends").code(), Some(0));
+    assert_eq!(
+        sb.agent_signs(),
+        0,
+        "the request never reached 1Password: {out:?}"
+    );
+}
+
 #[test]
 fn an_answer_that_never_comes_is_recorded() {
     let _g = serial();

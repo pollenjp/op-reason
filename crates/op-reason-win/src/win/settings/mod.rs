@@ -30,6 +30,22 @@ use crate::account;
 /// The lock of `settings.json`'s writers (design §6).
 const SETTINGS_LOCK: &str = r"Local\op-reason-settings";
 
+/// Runs `f` while this process holds the lock of `settings.json`'s writers (design §6), waiting for it at most five
+/// seconds (and running `f` without it after that: a writer that hangs must not keep others from writing).
+pub(crate) fn with_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _held = match mutex::acquire(
+        SETTINGS_LOCK,
+        Duration::from_secs(5),
+        Duration::MAX,
+        || {},
+        || false,
+    ) {
+        Ok(mutex::Acquired::Held(h)) => Some(h),
+        _ => None,
+    };
+    f()
+}
+
 /// `op-reason.exe --settings <args>`. Returns the exit code.
 pub fn run(args: &[OsString], lang: Lang) -> i32 {
     let args: Vec<String> = args
@@ -150,18 +166,10 @@ impl System for WinSystem {
             .settings_file()
             .ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?;
         // Other writers (a click on the language in a call's window, the settings window) wait for this one
-        let _held = match mutex::acquire(
-            SETTINGS_LOCK,
-            Duration::from_secs(5),
-            Duration::MAX,
-            || {},
-            || false,
-        ) {
-            Ok(mutex::Acquired::Held(h)) => Some(h),
-            _ => None,
-        };
-        let old = read_text(&file)?;
-        settings::replace(&file, &edit(old.as_deref()))
+        with_lock(|| {
+            let old = read_text(&file)?;
+            settings::replace(&file, &edit(old.as_deref()))
+        })
     }
 
     fn settings_where(&self) -> String {
