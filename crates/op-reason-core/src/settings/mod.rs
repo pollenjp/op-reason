@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod cli;
 pub mod file;
+pub mod task;
 pub mod values;
 
 pub use file::{
