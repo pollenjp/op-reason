@@ -163,36 +163,37 @@ fn front(hwnd: HWND) {
     }
 }
 
-/// Whether another window's process holds the mutex of the one window. Otherwise this process holds it from then on,
-/// until it ends (the handle stays open). A mutex that cannot be made does not keep the window from opening.
-fn another_window_runs() -> bool {
+/// Takes the mutex of the one window: `true` when this process holds it from now on, until it ends (the handle stays
+/// open), or when the mutex cannot be made (which does not keep the window from opening).
+fn take_one_window() -> bool {
     // SAFETY: a valid name; the handle is closed when another process holds the mutex, and kept open otherwise.
     unsafe {
         let Ok(h) = CreateMutexW(None, false, &HSTRING::from(ONE_WINDOW)) else {
-            return false;
+            return true;
         };
         let r = WaitForSingleObject(h, 0);
         if r == WAIT_OBJECT_0 || r == WAIT_ABANDONED {
-            return false;
+            return true;
         }
         let _ = CloseHandle(h);
-        true
+        false
     }
 }
 
 /// `op-reason.exe --settings window`: the window, until it is closed. Returns the exit code.
 pub fn run(lang: Lang) -> i32 {
-    if another_window_runs() {
-        // Two launches at the same moment: the first window comes to the front once it is there
-        let t0 = Instant::now();
-        while t0.elapsed() < Duration::from_secs(5) {
-            if let Some(hwnd) = find() {
-                front(hwnd);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
+    // Another window's process holds the mutex: its window comes to the front. Without a window it is either making
+    // one (two launches at the same moment) or ending (its window was just closed): wait for either.
+    let t0 = Instant::now();
+    while !take_one_window() {
+        if let Some(hwnd) = find() {
+            front(hwnd);
+            return 0;
         }
-        return 0;
+        if t0.elapsed() >= Duration::from_secs(10) {
+            return 0;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     match open(lang) {
         Ok(()) => 0,
