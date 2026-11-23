@@ -19,6 +19,10 @@ pub enum Name {
     RelayAutostart,
     /// `relay.running`: the relay that answers on its pipe.
     RelayRunning,
+    /// `relay.tray-icon` (file): the relay's icon in the notification area.
+    RelayTrayIcon,
+    /// `start-menu`: the shortcut to the settings window in the Start menu.
+    StartMenu,
     /// `skill.windows`: Claude Code's skills folder on Windows.
     SkillWindows,
     /// `skill.wsl.<distribution>`.
@@ -34,9 +38,11 @@ pub fn fixed() -> Vec<Name> {
         Name::RelayMode,
         Name::RelayTimeLimit,
         Name::RelayAnswerWait,
+        Name::RelayTrayIcon,
         Name::RelayAutostart,
         Name::RelayRunning,
         Name::SkillWindows,
+        Name::StartMenu,
     ]
 }
 
@@ -53,6 +59,8 @@ impl Name {
             "relay.answer-wait" => Name::RelayAnswerWait,
             "relay.autostart" => Name::RelayAutostart,
             "relay.running" => Name::RelayRunning,
+            "relay.tray-icon" => Name::RelayTrayIcon,
+            "start-menu" => Name::StartMenu,
             "skill.windows" => Name::SkillWindows,
             _ => {
                 if let Some(distro) = text.strip_prefix(WSL_PREFIX) {
@@ -85,6 +93,8 @@ impl Name {
             Name::RelayAnswerWait => "relay.answer-wait".into(),
             Name::RelayAutostart => "relay.autostart".into(),
             Name::RelayRunning => "relay.running".into(),
+            Name::RelayTrayIcon => "relay.tray-icon".into(),
+            Name::StartMenu => "start-menu".into(),
             Name::SkillWindows => "skill.windows".into(),
             Name::SkillWsl(d) => format!("{WSL_PREFIX}{d}"),
             Name::SkillFolder(f) => format!("{FOLDER_PREFIX}{f}"),
@@ -95,7 +105,11 @@ impl Name {
     pub fn is_file(&self) -> bool {
         matches!(
             self,
-            Name::Lang | Name::RelayMode | Name::RelayTimeLimit | Name::RelayAnswerWait
+            Name::Lang
+                | Name::RelayMode
+                | Name::RelayTimeLimit
+                | Name::RelayAnswerWait
+                | Name::RelayTrayIcon
         )
     }
 
@@ -107,6 +121,7 @@ impl Name {
             Name::RelayTimeLimit => Some("60m"),
             Name::RelayAnswerWait => Some("60s"),
             Name::RelayRunning => None,
+            Name::RelayTrayIcon => Some("on"),
             _ => Some("off"),
         }
     }
@@ -245,6 +260,8 @@ mod tests {
             "relay.answer-wait",
             "relay.autostart",
             "relay.running",
+            "relay.tray-icon",
+            "start-menu",
             "skill.windows",
             "skill.wsl.Ubuntu-24.04",
             r"skill.folder.D:\agents\skills",
@@ -323,7 +340,11 @@ mod tests {
         assert_eq!(Name::RelayAutostart.default_text(), Some("off"));
         assert_eq!(Name::SkillWsl("U".into()).default_text(), Some("off"));
         assert_eq!(Name::RelayRunning.default_text(), None);
-        assert_eq!(fixed().len(), 7);
+        assert!(Name::RelayTrayIcon.is_file() && !Name::StartMenu.is_file());
+        assert_eq!(Name::RelayTrayIcon.default_text(), Some("on"));
+        assert_eq!(Name::StartMenu.default_text(), Some("off"));
+        assert_eq!(fixed().len(), 9);
+        assert!(fixed().contains(&Name::RelayTrayIcon) && fixed().contains(&Name::StartMenu));
     }
 
     #[test]
@@ -355,6 +376,9 @@ mod tests {
         assert!(want(&Name::RelayAnswerWait, "1h").is_err());
         assert_eq!(want(&Name::RelayAutostart, "on"), Ok(Want::On(true)));
         assert_eq!(want(&Name::SkillWindows, "off"), Ok(Want::On(false)));
+        assert_eq!(want(&Name::RelayTrayIcon, "off"), Ok(Want::On(false)));
+        assert_eq!(want(&Name::RelayTrayIcon, "default"), Ok(Want::Default));
+        assert_eq!(want(&Name::StartMenu, "on"), Ok(Want::On(true)));
         assert!(want(&Name::RelayRunning, "yes").is_err());
         assert!(
             want(&Name::RelayRunning, "default").is_err(),

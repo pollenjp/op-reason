@@ -6,6 +6,10 @@ use op_reason_core::settings::values;
 
 /// The first argument that chooses the relay's face.
 pub const RELAY_ARG: &str = "--ssh-agent";
+/// The class of the relay's hidden window that holds its icon in the notification area.
+pub const TRAY_CLASS: &str = "op-reason-ssh-relay-tray";
+/// The registered message that tells the relay's icon window that `settings.json` changed.
+pub const SETTINGS_CHANGED: &str = "op-reason-settings-changed";
 /// The relay's own pipe.
 pub const DEFAULT_PIPE: &str = values::RELAY_PIPE;
 /// The 1Password agent's pipe (the one Windows OpenSSH uses by default).

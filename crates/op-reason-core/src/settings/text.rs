@@ -2,7 +2,7 @@
 
 use crate::lang::Lang;
 use crate::settings::catalog::Usage;
-use crate::settings::engine::{Change, Checked, Done, Item, Note, State, Why};
+use crate::settings::engine::{Change, Checked, Done, Item, Note, ShortcutState, State, Why};
 use crate::settings::skill::SkillState;
 
 /// The usage of `--settings`.
@@ -28,9 +28,11 @@ Settings
   relay.autostart           on | off   op-reason's task: the relay at logon, again
                                        within a minute when it stops
   relay.running             on | off   stop keeps the relay stopped until a start
+  relay.tray-icon           on | off | default (on)   the relay's icon in the notification area
   skill.windows             on | off   %USERPROFILE%\.claude\skills\op-reason\SKILL.md
   skill.wsl.<distribution>  on | off   ~/.claude/skills of a WSL distribution
   skill.folder.<folder>     on | off   <folder>\op-reason\SKILL.md
+  start-menu                on | off   op-reason settings in the Start menu
 
 Every change is recorded in the log (op-reason --log).
 "
@@ -54,9 +56,11 @@ Every change is recorded in the log (op-reason --log).
   relay.autostart           on | off   op-reason の task: logon で中継を起こし、止まれば
                                        1 分以内に起こし直す
   relay.running             on | off   止めた中継は、起こすまで止まったまま
+  relay.tray-icon           on | off | default (on)   中継の通知領域のアイコン
   skill.windows             on | off   %USERPROFILE%\.claude\skills\op-reason\SKILL.md
   skill.wsl.<distribution>  on | off   WSL の distro の ~/.claude/skills
   skill.folder.<folder>     on | off   <folder>\op-reason\SKILL.md
+  start-menu                on | off   スタートメニューの op-reason の設定
 
 変えたことはすべてログに残ります (op-reason --log)。
 "
@@ -232,6 +236,26 @@ pub fn state(lang: Lang, item: &Item, version: &str) -> String {
                 )
             }
         }
+        State::Shortcut(state) => match (state, ja) {
+            (ShortcutState::Missing, false) => "not there".into(),
+            (ShortcutState::Missing, true) => "ありません".into(),
+            (ShortcutState::Ok, false) => "starts this op-reason.exe --settings".into(),
+            (ShortcutState::Ok, true) => "この op-reason.exe --settings を起こします".into(),
+            (ShortcutState::Differs(t), false) => {
+                format!("starts {t}: setting it on makes it again for this op-reason.exe")
+            }
+            (ShortcutState::Differs(t), true) => {
+                format!("{t} を起こします: on にすると、この op-reason.exe で作り直します")
+            }
+            (ShortcutState::Foreign(t), false) => {
+                format!(
+                    "a shortcut of that name that does not start op-reason's settings ({t}): left alone"
+                )
+            }
+            (ShortcutState::Foreign(t), true) => {
+                format!("同じ名前の、op-reason の設定を起こさないショートカット ({t}): 触りません")
+            }
+        },
         State::NotRunning => {
             if ja {
                 "見ていません: distro が止まっています (get・check・set で名指しすると起こします)"

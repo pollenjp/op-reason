@@ -3,6 +3,7 @@
 //! ([`relayctl`]), the skill places on this machine and in WSL distributions ([`wslexe`]), and the records.
 
 mod relayctl;
+mod shortcut;
 mod taskschd;
 mod user;
 mod wslexe;
@@ -16,7 +17,9 @@ use std::time::Duration;
 use op_reason_core::contract;
 use op_reason_core::lang::Lang;
 use op_reason_core::settings::cli;
-use op_reason_core::settings::engine::{Change, Ctx, OtherTask, Place, System};
+use op_reason_core::settings::engine::{
+    Change, Ctx, OtherTask, Place, ShortcutAct, ShortcutNow, System,
+};
 use op_reason_core::settings::relayinfo::RelayInfo;
 use op_reason_core::settings::skill::{self, SkillAct, SkillNow};
 use op_reason_core::settings::task::{self, TaskNow, TaskWant};
@@ -274,6 +277,14 @@ impl System for WinSystem {
             Place::Folder(f) => skill::local(Path::new(f), true, act, want, app::VERSION),
             Place::Wsl(d) => wslexe::skill(d, act, want, app::VERSION),
         }
+    }
+
+    fn shortcut(&self, act: ShortcutAct) -> Result<ShortcutNow, String> {
+        shortcut::act(act)
+    }
+
+    fn changed(&self) {
+        relayctl::tell_changed();
     }
 
     fn distributions(&self) -> Result<Vec<Distro>, String> {

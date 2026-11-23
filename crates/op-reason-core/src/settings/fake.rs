@@ -4,7 +4,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io;
 
-use crate::settings::engine::{Change, Ctx, OtherTask, Place, System};
+use crate::settings::engine::{
+    Change, Ctx, OtherTask, Place, ShortcutAct, ShortcutNow, ShortcutState, System,
+};
 use crate::settings::relayinfo::RelayInfo;
 use crate::settings::skill::{SkillAct, SkillNow, SkillState};
 use crate::settings::task::{self, TaskNow, TaskWant};
@@ -40,6 +42,8 @@ pub(crate) struct Fake {
     pub(crate) refuse_quietly: Cell<bool>,
     /// Writes of settings.json fail.
     pub(crate) fail_write: Cell<bool>,
+    /// The Start menu's shortcut.
+    pub(crate) shortcut: RefCell<ShortcutState>,
 }
 
 impl Fake {
@@ -78,6 +82,7 @@ impl Fake {
             info_late: Cell::new(false),
             refuse_quietly: Cell::new(false),
             fail_write: Cell::new(false),
+            shortcut: RefCell::new(ShortcutState::Missing),
         }
     }
 
@@ -284,6 +289,32 @@ impl System for Fake {
             }
         }
         Ok(now.clone())
+    }
+    fn shortcut(&self, act: ShortcutAct) -> Result<ShortcutNow, String> {
+        self.call(&format!("shortcut {act:?}"));
+        let mut state = self.shortcut.borrow_mut();
+        match act {
+            ShortcutAct::Look => {}
+            ShortcutAct::Place => {
+                if let ShortcutState::Foreign(_) = *state {
+                    return Err("refused".into());
+                }
+                *state = ShortcutState::Ok;
+            }
+            ShortcutAct::Remove => {
+                if let ShortcutState::Foreign(_) = *state {
+                    return Err("refused".into());
+                }
+                *state = ShortcutState::Missing;
+            }
+        }
+        Ok(ShortcutNow {
+            state: state.clone(),
+            path: "op-reason.lnk".into(),
+        })
+    }
+    fn changed(&self) {
+        self.call("changed");
     }
     fn distributions(&self) -> Result<Vec<Distro>, String> {
         Ok(self.distros.clone())

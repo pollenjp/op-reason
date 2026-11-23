@@ -109,6 +109,7 @@ impl Sandbox {
             .arg("--settings")
             .args(args)
             .env("USERPROFILE", self.profile())
+            .env("APPDATA", self.root.join("appdata"))
             .env("LOCALAPPDATA", self.root.join("lad"))
             .env("OPREASON_LANG", "en")
             .env("OPREASON_WSL_EXE", &wsl)
@@ -275,6 +276,33 @@ fn a_wsl_distribution_goes_through_wsl_exe() {
         !place.contains("(0 bytes in)"),
         "the file goes on stdin: {calls}"
     );
+}
+
+#[test]
+fn the_start_menu_shortcut_is_made_checked_and_removed() {
+    let sb = Sandbox::new("start-menu");
+    let lnk = sb
+        .root
+        .join("appdata")
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("op-reason.lnk");
+    let out = sb.settings(&["set", "start-menu", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(lnk.is_file(), "{}", lnk.display());
+    let out = sb.settings(&["check", "start-menu=on", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let out = sb.settings(&["set", "start-menu", "off"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!lnk.exists());
+    // A file of that name that is not op-reason's shortcut is left alone
+    fs::create_dir_all(lnk.parent().unwrap()).unwrap();
+    fs::write(&lnk, b"not a shortcut").unwrap();
+    let out = sb.settings(&["set", "start-menu", "on"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert_eq!(fs::read(&lnk).unwrap(), b"not a shortcut");
 }
 
 // --- op-reason's scheduled task (on CI only)

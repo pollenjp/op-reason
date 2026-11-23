@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::lang::Lang;
 use crate::logview::display_width;
 use crate::settings::catalog::{self, Name, Usage, Want};
-use crate::settings::engine::{self, Change, Ctx, Done, Item, State};
+use crate::settings::engine::{self, Change, Ctx, Done, Item, ShortcutState, State};
 use crate::settings::skill::SkillState;
 use crate::settings::text;
 
@@ -329,6 +329,12 @@ fn item_json(item: &Item, version: &str) -> Value {
             (code, json!({"file": file, "version": placed, "link": link}))
         }
         State::OtherTasks(tasks) => ("other-tasks", json!({"tasks": tasks})),
+        State::Shortcut(state) => match state {
+            ShortcutState::Missing => ("missing", json!({})),
+            ShortcutState::Ok => ("ok", json!({})),
+            ShortcutState::Differs(t) => ("shortcut-differs", json!({"target": t})),
+            ShortcutState::Foreign(t) => ("foreign", json!({"target": t})),
+        },
         State::NotRunning => ("not-running", json!({})),
         State::Unreadable(e) => ("unreadable", json!({"error": e})),
     };

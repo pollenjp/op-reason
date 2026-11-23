@@ -7,11 +7,13 @@ use std::time::{Duration, Instant};
 use op_reason_core::settings::relayinfo::{RELAY_INFO_FILE, RelayInfo};
 use op_reason_core::settings::values::RELAY_PIPE;
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::{
     EVENT_MODIFY_STATE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, SetEvent,
     TerminateProcess, WaitForSingleObject,
 };
-use windows::core::HSTRING;
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, RegisterWindowMessageW};
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::win::relay::pipe;
 
@@ -29,6 +31,22 @@ pub fn pid() -> Option<u32> {
 pub fn info(state_dir: Option<&Path>) -> Option<RelayInfo> {
     let text = std::fs::read_to_string(state_dir?.join(RELAY_INFO_FILE)).ok()?;
     RelayInfo::parse(&text)
+}
+
+/// Tells the relay's icon window that `settings.json` changed (its icon follows `relay.tray-icon` at once); nothing
+/// when no relay shows one.
+pub fn tell_changed() {
+    // SAFETY: plain calls with strings that live across them.
+    unsafe {
+        let class = HSTRING::from(crate::relay_opts::TRAY_CLASS);
+        let Ok(hwnd) = FindWindowW(&class, PCWSTR::null()) else {
+            return;
+        };
+        let message = RegisterWindowMessageW(&HSTRING::from(crate::relay_opts::SETTINGS_CHANGED));
+        if message != 0 {
+            let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 /// Waits up to 15 seconds for a relay to answer on the pipe, and then up to two seconds for its `relay.json` (it writes
