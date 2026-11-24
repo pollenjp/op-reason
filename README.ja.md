@@ -129,6 +129,10 @@ if (($userPath -split ';') -notcontains $dir) {
   `launcher.ps1` へ回ります (stderr に 1 行そう出ます)。Windows では下の PowerShell の入口を使ってください。
 - PowerShell・cmd.exe・ほかの program のどれからも同じように呼べ、引数はそのまま `op` に届きます (`--` も引用符なしで
   届きます)。
+- **端末の外から起こすと** (タスク スケジューラーのタスク・ダブルクリック・ショートカット)、Windows 11 24H2 以降
+  (と Windows Server 2025) では `op-reason.exe` にコンソールの窓が出ません: 受け継ぐコンソールが無ければ作らないよう
+  求めます。ダブルクリックは設定の窓を開きます。そうして起こしたときの出力はどこにも出ないので、`op-reason` は端末で
+  打ってください。それより前の Windows は、コンソールの窓を一瞬だけ出します。
 - **PowerShell での出力**: PowerShell は program の出力を `[Console]::OutputEncoding` で読みます。`op` の出力に ASCII 以外が
   あるときは、`$x = op-reason …` の前に `[Console]::OutputEncoding = [Text.Encoding]::UTF8` を打ってください。binary の
   出力は `op` の `--out-file` で受けてください。
@@ -377,7 +381,9 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
   がこの形のタスク (op-reason 自身のもの) を作って中継を起こします ([設定](#設定))。以下はその形です。タスクが既に実行中の場合の規則は
   **新しいインスタンスを開始しない** (既定。`-MultipleInstances IgnoreNew`) のままにします:「既存のインスタンスの停止」では
   中継が 1 分ごとに止められて起こし直され、中継が動いている間に起こした 2 つ目はすぐに終了コード 1 で終わって、タスクは
-  それを最後の結果に出します。自分だけのコンソール (タスク・ダブルクリック) ではコンソールの窓を残しません。
+  それを最後の結果に出します。Windows 11 24H2 以降 (と Windows Server 2025) では、タスクが起こした中継はコンソールの窓を
+  出しません: `op-reason.exe` は、受け継ぐコンソール (端末のもの) が無ければコンソールを作らないよう Windows に求めます。
+  それより前の Windows は中継にコンソールを作り、中継がそれを手放すまで一瞬だけ見えます。
 - **1Password が確認の画面を出すのは、求めたアプリが前面に見えている間だけです。** そうでないと、画面をタスクバーの右の
   アイコンに伏せ (アイコンに点が付き、メニューに **SSHリクエストを待機中** が出ます)、約 60 秒で依頼を閉じます。そのアプリは、
   端末のプログラムで起こした中継なら端末のプログラム、タスクから起こした中継 (親の process が終わった中継も) なら中継そのもの
@@ -505,7 +511,8 @@ op-reason --settings set skill.windows on          # Claude Code が見つける
   thread で動き、`from: window` として記録に残ります。
 
 `set start-menu on` はスタートメニューに **op-reason** を出し、Windows の検索で窓を見つけられるようにします:
-`op-reason.lnk` がこの `op-reason.exe` を `--settings` 付きで起こします (コンソールはタスクバーに一瞬だけ出ます)。exe を
+`op-reason.lnk` がこの `op-reason.exe` を `--settings` 付きで起こします (Windows 11 24H2 より前は、コンソールが
+タスクバーに一瞬だけ出ます)。exe を
 動かしたら、`set start-menu on` がショートカットを作り直します。同じ名前でも op-reason のものでないショートカットには触りません。
 
 中継は動いている間、通知領域に鍵のアイコンを出します (Windows 11 は新しいアイコンを `^` の中に入れます。タスクバーへ

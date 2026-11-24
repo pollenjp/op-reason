@@ -164,7 +164,9 @@ names the server's process.
 Threads: the main thread accepts connections; one thread per connection reads its requests in turn; the thread whose
 turn it is shows the window; one forgets decisions once a minute; one watches the relay's parent process (when it has
 ended, 1Password most likely takes the relay itself for the application that asks; a toast and a `ssh-relay` record say
-so); one waits for Ctrl+C while a console is attached (without one of its own, the relay calls `FreeConsole`); one
+so); one waits for Ctrl+C while a console is attached (a console that Windows made for the relay alone, on Windows
+before 11 24H2, it lets go of with `FreeConsole`; its `start` record names the console it had: `console: none`, `own` or
+`shared`); one
 looks once a second at the step a window's thread waits in (making the window, showing it, drawing it, `holder.json`,
 the notification: process-wide atomics of `src/win/window.rs`) and records `window-stuck` with the step when one has
 lasted five seconds, and `window-unstuck` when it ends (`src/relay_watch.rs` decides); and, from the first signature
@@ -293,8 +295,8 @@ changes op-reason's settings through one layer:
   fails new requests, waits up to 25 seconds for the ones in progress, records `stop` and exits.
 - The WSL executable passes `--settings` on to `op-reason.exe --settings`; the PowerShell entry refuses it.
 - Without more words (and on a double click of `op-reason.exe`), `op-reason.exe --settings` starts
-  `op-reason.exe --settings window` with a console that is never shown (`CREATE_NO_WINDOW`: `wsl.exe` and the other
-  console programs it starts share it) and returns. That process holds `Local\op-reason-settings-window`
+  `op-reason.exe --settings window` without a console window (`CREATE_NO_WINDOW`; `wsl.exe` is started with
+  `CREATE_NO_WINDOW` too) and returns. That process holds `Local\op-reason-settings-window`
   and shows the window of class `op-reason-settings` (`win/settings/window.rs`, its standard controls in `controls.rs`):
   a worker thread runs the engine for every control (`from: window`) and reads every setting again after each job; its
   texts and lines are portable (`settings_ui.rs`). The mode and the times go through `engine::write`, which leaves the
@@ -393,6 +395,23 @@ values and the chosen skill folders), `relay.json` (the running relay's process 
 (`ssh-log.jsonl`, `ssh-log.1.jsonl`, `ssh-log.2.jsonl`, `ssh-log.lock`) and, for calls through the PowerShell entry,
 `run/<id>/status.json`.
 
+## Consoles
+
+`op-reason.exe` is a console program, so that terminals wait for it and give it their console. Its manifest asks Windows
+for no console that it does not inherit (`consoleAllocationPolicy` `detached`;
+[2026-11-24-relay-no-console-window-design.md](../superpowers/specs/2026-11-24-relay-no-console-window-design.md)):
+on Windows 11 24H2 and later and Windows Server 2025, a start without a console to inherit (a scheduled task, Explorer,
+`CREATE_NO_WINDOW` as WSL starts a call without a terminal) has no console at all, where Windows before made one and
+showed it, or hid it for `CREATE_NO_WINDOW`. Older Windows ignore the element. So:
+
+- a terminal's console and WSL's pseudoconsole are inherited as before (`op.exe` shares them);
+- without a console, `op.exe` starts with `CREATE_NO_WINDOW` (`win/opexe.rs`), and so do `whoami`, `signout` and
+  `wsl.exe` always;
+- without a console and without standard output, `op-reason.exe` without arguments is a double click: it opens the
+  settings window (`win/console.rs`, `started_alone`);
+- the relay of a task has no console from its start; on older Windows it lets go of the one Windows made
+  (`FreeConsole`).
+
 ## Tests
 
 | Test | What it covers |
@@ -411,8 +430,8 @@ values and the chosen skill folders), `relay.json` (the running relay's process 
 | `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
 | `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages, the last line while 1Password asks) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion), when the window stays behind (the program that started the relay in front), when the watchdog records a window stuck and going on |
 | `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends; on CI, the toast of signatures that pass (one card, layered, click-through, at the top left of the work area, gone after four seconds; four calls: three cards and `+1`), the window's notification in the notification center (removed with its window, left after a time-out; nothing is checked where the runner keeps no notification history), the icon in the notification area (added, hidden and shown again at once by `relay.tray-icon`, Hide this icon recorded `from: tray`, none when the setting is off), and the front (with a plain window of `fake-ssh front` in front: the window opens behind, Deny leaves the front, after Allow the window is in front while the agent answers and then gives the front back; with that window's process as the relay's parent, the window stays behind; no record of the watchdog of the windows) |
-| `crates/op-reason-win/tests/settings.rs` (Windows) | `op-reason.exe --settings`: the skill on Windows and in a chosen folder with a temporary profile (a foreign `SKILL.md` and a junction refused), a WSL distribution through the fake `wsl.exe` of `fake-ssh`, the Start menu shortcut in a temporary `APPDATA`; on CI, the settings window (`op-reason --settings` returns at once and one window opens, a double click opens it, its controls place the skill and write `lang`), op-reason's task under a test name (made, its relay answering, a stop refused while the lock is held, a stop that outlasts the trigger of every minute, a start, a mode change that starts the relay again, removal) and a relay started outside the task, never stopped |
-| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; a desktop call's notification removed when its window closes (where the runner keeps notification history); on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
+| `crates/op-reason-win/tests/settings.rs` (Windows) | `op-reason.exe --settings`: the skill on Windows and in a chosen folder with a temporary profile (a foreign `SKILL.md` and a junction refused), a WSL distribution through the fake `wsl.exe` of `fake-ssh`, the Start menu shortcut in a temporary `APPDATA`; on CI, the settings window (`op-reason --settings` returns at once and one window opens, a double click opens it, its controls place the skill and write `lang`, no console window for the programs it starts), op-reason's task under a test name (made, its relay answering, a stop refused while the lock is held, a stop that outlasts the trigger of every minute, a start, a mode change that starts the relay again, removal; no console window and a relay without a console at the task's start, a restart and the icon's restart) and a relay started outside the task, never stopped |
+| `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the manifest's console allocation policy, a call started as WSL starts one without a terminal (`CREATE_NO_WINDOW` and pipes: no console window for `op.exe`) and under a pseudoconsole (as from a terminal); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; a desktop call's notification removed when its window closes (where the runner keeps notification history); on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
 | `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) and toasts |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |
 | `tests/release-notes.test.sh` | `.github/scripts/release-notes.sh` (the notes of a release: the version's section of `CHANGELOG.md`; the versions of `Cargo.toml`, `crates/op-reason-win` and the PowerShell entry agree, also with the tag) on made-up repositories and on this one |

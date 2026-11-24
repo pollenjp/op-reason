@@ -351,15 +351,50 @@ GitHub の runner (管理者として動く) でテスト用の名前のタス�
 | G8 | `& $exe --settings set relay.mode show-only`。そのあと G4 と同じ ssh | `relay.mode: per-call → show-only` と、中継を起こし直した行。`get relay.mode --json` に `relay-differs` が無い。署名ごとに 1Password が確認し (show-only)、op-reason の窓が誰がなぜかを出す。戻すには `set relay.mode default` |
 | G9 | `& $exe --settings set skill.windows on` (か用意 4 の選んだフォルダ)。出た `SKILL.md` を開く。Windows の Claude Code で `/skills` | 手引きの閉じる `---` の次の行に `<!-- placed by op-reason <版>: …`。Claude Code の一覧に op-reason の skill。`set skill.windows off` で消える (空の `op-reason` フォルダも) |
 | G10 | WSL で、この branch の `op-reason` を使って `op-reason --settings set "skill.wsl.$WSL_DISTRO_NAME" on`、そのあと `off` | 印の付いた `~/.claude/skills/op-reason/SKILL.md` ができ、そのあと消える。`~/.claude/skills` が symbolic link (home-manager) なら断り、何も書かない |
-| G11 | `& $exe --settings` | プロンプトがすぐに戻り、設定の窓が `lang` の言語で前面に開く。読んでいる間は **読み直す** が灰色。中継の行は「動いています · pid … · per-call · op-reason のタスクが起こしたもの」。もう一度 `& $exe --settings` を打つと窓が前に出る。Explorer で `op-reason.exe` をダブルクリックしても同じ (コンソールが一瞬出る) |
+| G11 | `& $exe --settings` | プロンプトがすぐに戻り、設定の窓が `lang` の言語で前面に開く。読んでいる間は **読み直す** が灰色。中継の行は「動いています · pid … · per-call · op-reason のタスクが起こしたもの」。もう一度 `& $exe --settings` を打つと窓が前に出る。Explorer で `op-reason.exe` をダブルクリックしても同じ (Windows 11 24H2 より前はコンソールが一瞬出る。N6) |
 | G12 | 窓で **日本語** を選び、そのあと **English** に戻す | 窓がすぐに日本語になり、そして英語に戻る。間に `& $exe --settings get lang` を打つと `ja` |
 | G13 | 窓で、Windows の行 (か用意 4 の選んだフォルダ) に **置く・更新する**、そのあと **消す**。動いていない WSL の distro に **確かめる** | 行の状態が変わる (「置いてあります (<版>)」・「置いていません」)。確かめた distro が起き、その行が読まれる。`& $exe --log --since 10m` に窓からの `settings` の行。用意 4 の選んだフォルダで確かめるときは、代わりに **フォルダを足す…** を使う。足すと同時に置くので、行はすぐ「置いてあります (<版>)」になり、**置く・更新する** は灰色のまま (置くものが無い)。**消す** で消え、行もなくなる (フォルダを忘れる) |
 | G14 | 窓でモードを `show-only` にする。**適用** を押し、問いに OK。そのあと G4 と同じ ssh | 適用の横の注記が、適用するまで中継は別の値で動くと言う。適用の後、中継の行が `show-only` になり、1Password が署名を確認する。モードを戻して、もう一度 **適用** |
-| G15 | `& $exe --settings set start-menu on`。Windows キーを押して `op-reason` と打つ | スタートメニューが **op-reason** を見つけ、設定の窓が開く (コンソールはタスクバーに一瞬だけ出る)。`set start-menu off` で消える |
+| G15 | `& $exe --settings set start-menu on`。Windows キーを押して `op-reason` と打つ | スタートメニューが **op-reason** を見つけ、設定の窓が開く (Windows 11 24H2 より前は、コンソールがタスクバーに一瞬だけ出る。N7)。`set start-menu off` で消える |
 | G16 | 通知領域 (Windows 11 では `^` の中) の中継の鍵 | ツールチップは「op-reason の SSH の中継 · per-call」。クリックで設定の窓が開く。右クリックのメニューに中継の行・**op-reason の設定を開く**・**記録のフォルダを開く**・**中継を起こし直す**・**中継を止める**・**このアイコンを隠す**。**中継を起こし直す** で、15 秒以内に別の process ID の中継が答える (`& $exe --ssh-agent --status` がそれを出す)。**このアイコンを隠す** でアイコンがすぐに消え、`set relay.tray-icon on` で戻る |
 | G17 | Explorer を起こし直す (タスク マネージャー → **エクスプローラー** → **再起動**) | 数秒で中継のアイコンが戻る |
 | G18 | 中継が動いている (G2 のタスク) まま、ログオフしてログオンし直す | ログオンの後、通知領域に中継のアイコンがある (タスクがタスクバーより先に中継を起こすことがある) |
 | G19 | `& $exe --settings set relay.autostart off`。用意 3 の `settings.json` を戻す。用意 2 のほかのタスクを有効に戻す | タスクが消え、op-reason のタスクの中継は答えず、そのアイコンも消える |
+
+## コンソールの窓を確かめること (N1〜N10)
+
+端末の外から `op-reason.exe` を起こしてもコンソールの窓が出ないこと
+([2026-11-24-relay-no-console-window-design.md](superpowers/specs/2026-11-24-relay-no-console-window-design.md)、英語)。CI は
+GitHub の runner (Windows Server 2025) でコンソールの窓を見張り、zip の exe を Windows Server 2022 で起こします。ここで
+確かめるのは、本物のログオン・既定の端末の Windows Terminal・本物の WSL と 1Password です。約 15 分で、ログオフが 1 回、
+1Password の確認が 2 回です。
+
+用意:
+
+1. Windows 11 24H2 以降: `winver` が build 26100 以上を出す。(それより前の Windows では、N1〜N4 と N6〜N7 で今までどおり
+   コンソールの窓が一瞬出て、`start` の記録は `console: own` になります。)
+2. この pull request の Windows の zip を、SSH の中継の用意と同じように展開します。以下 `$exe`。どのコマンドも
+   **管理者でない** PowerShell で、`$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'` を入れて打ちます。
+3. 中継が動いていないこと: `& $exe --ssh-agent --status` が 1 で終わる。**ほかのタスクが中継を起こしているときは**
+   (自分のタスクや dotfiles のタスク)、設定を確かめることの用意 2 と同じく、先にそれを無効にして中継を止め、N10 で
+   戻します。そのタスクの中継は、この pull request の exe ではなく、タスクが名指す exe で動きます。
+4. 打つ端末は画面の真ん中から外しておきます。一瞬だけ前に出るコンソールの窓が見やすくなります。
+
+いま答えている中継の `start` の記録:
+`Get-Content "$env:LOCALAPPDATA\op-reason\ssh-log.jsonl" | Select-String '"what":"start"' | Select-Object -Last 1`。
+
+| # | すること | 期待すること |
+| --- | --- | --- |
+| N1 | `& $exe --settings set relay.autostart on` | `relay.autostart: off → on`、そして `& $exe --ssh-agent --status` が 0 で終わる。コンソールの窓 (Windows Terminal の窓やタブも) が一瞬も出ない。`start` の記録に `"detail":"console: none"` |
+| N2 | ログオフしてログオンし直す | ログオンの後、中継が答える (`& $exe --ssh-agent --status` が 0)。コンソールの窓は出なかった。その `start` の記録は `console: none` |
+| N3 | `& $exe --settings`。窓でモードを `show-only` にし、**適用**、OK | 中継の行が `show-only`。起こし直しでコンソールの窓が出ない。モードを戻してもう一度 **適用**: やはり出ない |
+| N4 | 通知領域の中継のアイコン: **中継を起こし直す** | 15 秒以内に別の process ID の中継が答える。コンソールの窓が出ない |
+| N5 | 1Password をロックして解除する。`$env:OPREASON_SSH_REASON = 'check N5'; ssh -T git@github.com`。**この呼び出しを許可**。1Password で承認 | G4 と同じ: 押したときに op-reason の窓が前面に出て、1Password の画面がすぐ出る (名前は op-reason)。`Hi <user>!` |
+| N6 | Explorer で `op-reason.exe` をダブルクリック | 設定の窓が開くか前に出る。コンソールの窓は、タスクバーにも出ない |
+| N7 | `& $exe --settings set start-menu on`。Windows キーを押して `op-reason` と打ち、開く | 設定の窓。タスクバーにコンソールの窓が出ない。残さないなら、あとで `set start-menu off` |
+| N8 | WSL で、`OPREASON_EXE` に `$exe` の WSL のパスを入れて `op-reason --reason 'check N8' vault list </dev/null 2>&1 \| cat` (呼び出しに端末が無い: WSL はこのとき exe を `CREATE_NO_WINDOW` で起こす) | いつもどおり op-reason の窓と 1Password の確認。vault の一覧が `cat` を通って出る。`op.exe` のコンソールの窓が出ない |
+| N9 | PowerShell で `& $exe --reason 'check N9' vault list; $LASTEXITCODE` と `& $exe --ssh-agent --status; $LASTEXITCODE` | 今までどおり vault の一覧と 0、呼び出しが終わるとプロンプトが戻る。中継の行と 0 |
+| N10 | `& $exe --settings set relay.autostart off`。続けて同じ PowerShell で `& $exe --ssh-agent` を起こし、最初の行が出たら Ctrl+C。用意 3 のほかのタスクを有効に戻す | タスクが消える。手で起こした中継は行を出して端末に留まり、Ctrl+C で止まる。その `start` の記録は `console: shared`。ほかのタスクの中継がまた答える |
 
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
 
