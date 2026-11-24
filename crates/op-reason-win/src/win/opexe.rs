@@ -121,6 +121,12 @@ const KEEP: usize = 64 * 1024;
 /// Starts op.exe with the caller's stdin (or `input`, written to it from a thread: the template the entry read from
 /// stdin, design `2026-11-17-refs-in-window-design.md` §2) and stdout, in a kill-on-close Job Object: created
 /// suspended, put into the job, then resumed (without the job when one cannot be made or joined).
+///
+/// op.exe shares our console. When we have none (a scheduled task, a shortcut, or a program without a console that
+/// starts us with pipes and no flags: the manifest's console allocation policy gives no console then; or
+/// `DETACHED_PROCESS`), Windows would make op.exe a console of its own and show it: op.exe gets one that is never shown
+/// instead (`CREATE_NO_WINDOW`, which WSL passes for a call without a terminal and which keeps its console) (design
+/// `2026-11-24-relay-no-console-window-design.md` §5.2).
 pub fn start(
     op: &Path,
     args: &[OsString],
@@ -128,6 +134,11 @@ pub fn start(
     stderr: Stderr,
     input: Option<Vec<u8>>,
 ) -> std::io::Result<Running> {
+    let flags = if super::console::none() {
+        CREATE_SUSPENDED | CREATE_NO_WINDOW
+    } else {
+        CREATE_SUSPENDED
+    };
     let mut cmd = Command::new(op);
     cmd.args(args)
         .stdin(if input.is_some() {
@@ -140,7 +151,7 @@ pub fn start(
             Stderr::Tee => Stdio::piped(),
             Stderr::Inherit => Stdio::inherit(),
         })
-        .creation_flags(CREATE_SUSPENDED.0);
+        .creation_flags(flags.0);
     apply_env(&mut cmd, env);
     let mut child = cmd.spawn()?;
     let job = Job::new().ok().filter(|j| j.assign(&child).is_ok());

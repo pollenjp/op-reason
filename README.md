@@ -131,6 +131,10 @@ Terminals started afterwards see the new `PATH`; WSL sees it after `wsl --shutdo
   themselves (one line on stderr says so); on Windows use the PowerShell entry below.
 - It is called the same way from PowerShell, cmd.exe and other programs, and the arguments reach `op` as given (`--`
   needs no quotes).
+- **Without a terminal** (a scheduled task, a double click, a shortcut), Windows 11 24H2 and later (and Windows Server
+  2025) give `op-reason.exe` no console window: it asks for none unless it inherits one. A double click opens the
+  settings window; what such a start would print goes nowhere, so run `op-reason` in a terminal. Older Windows show a
+  console window for a moment.
 - **Output in PowerShell**: PowerShell decodes a program's output with `[Console]::OutputEncoding`. When `op`'s output
   is not ASCII, run `[Console]::OutputEncoding = [Text.Encoding]::UTF8` before `$x = op-reason …`. For binary output
   use `op`'s `--out-file`.
@@ -387,8 +391,9 @@ op-reason.exe --ssh-agent --status             # exit 0 (and its process id) whe
   makes such a task, op-reason's own, and starts the relay ([Settings](#settings)); the points below are its shape. Keep the task's rule "If the task is already
   running" at **Do not start a new instance** (the default; `-MultipleInstances IgnoreNew`): with "Stop the existing
   instance" the relay would be stopped and started again every minute, and a relay started while another one runs
-  exits at once (exit code 1), which the task would show as its last result. Without a console of its own (a task, a
-  double click) it shows no console window.
+  exits at once (exit code 1), which the task would show as its last result. On Windows 11 24H2 and later (and Windows
+  Server 2025), a relay that a task starts shows no console window: `op-reason.exe` asks Windows for no console unless
+  it inherits one (a terminal's). Older Windows make it one, which shows for a moment until the relay lets go of it.
 - **1Password shows its prompt only while it sees the application that asks in front.** Otherwise it keeps the prompt
   behind its icon at the right of the taskbar (the icon gets a dot, and its menu has **SSH request waiting**) and
   closes the request after about 60 seconds. For a relay started in a terminal program, that application is the
@@ -527,7 +532,8 @@ and changes it at once:
   written without starting the relay again), on a thread of its own, and is recorded with `from: window`.
 
 `set start-menu on` puts **op-reason** in the Start menu, so that Windows' search finds the window: `op-reason.lnk`
-starts this `op-reason.exe` with `--settings` (its console shows for a moment in the taskbar). After the exe moves,
+starts this `op-reason.exe` with `--settings` (on Windows before 11 24H2, its console shows for a moment in the
+taskbar). After the exe moves,
 `set start-menu on` makes the shortcut again. A shortcut of that name that is not op-reason's is left alone.
 
 While the relay runs, it shows a key in the notification area (Windows 11 puts a new icon behind `^`; drag it onto the

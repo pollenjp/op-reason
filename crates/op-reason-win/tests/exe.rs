@@ -16,6 +16,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[path = "common/console_watch.rs"]
+mod console_watch;
+
+use console_watch::ConsoleWatch;
+
 /// The exe takes a machine-wide mutex; run these tests one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -495,6 +500,24 @@ fn no_arguments_prints_usage_and_records_nothing() {
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("Usage: op-reason --reason"));
     assert_eq!(sb.log(), "");
     assert_eq!(sb.calls(), 0);
+}
+
+/// The manifest asks Windows for no console that the exe does not inherit (design
+/// `2026-11-24-relay-no-console-window-design.md` §5.1). The manifest is UTF-8 text among the exe's resources.
+#[test]
+fn the_exe_asks_for_no_console_of_its_own() {
+    let bytes = fs::read(exe()).expect("read op-reason.exe");
+    let has = |text: &str| bytes.windows(text.len()).any(|w| w == text.as_bytes());
+    assert!(
+        has(
+            r#"<consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>"#
+        ),
+        "the manifest has the console allocation policy"
+    );
+    assert!(
+        has("permonitorv2") && has(r#"level="asInvoker""#),
+        "the rest of the manifest stays"
+    );
 }
 
 #[test]
@@ -1786,5 +1809,193 @@ fn a_desktop_call_removes_its_notification_with_its_window() {
         lines_with(&sb.log(), "end")[0].contains(r#""toast":"shown""#),
         "the record still says shown: {}",
         sb.log()
+    );
+}
+
+// --- Starts without a console to inherit (design 2026-11-24-relay-no-console-window-design.md)
+
+/// Calls started without a terminal, with pipes for their streams (design `2026-11-24-relay-no-console-window-design.md`
+/// §3.2, §5.2): as WSL starts one without a terminal (`CREATE_NO_WINDOW`: op-reason.exe has a console that is never
+/// shown, which op.exe shares), and as a program without a console starts one (`DETACHED_PROCESS`: no console at all, as
+/// the manifest's console allocation policy leaves a start without flags from a scheduled task or a GUI program). The
+/// output and the exit code come through the pipes, and op.exe never gets a console window of its own.
+#[test]
+fn a_call_without_a_console_shows_no_console_window_for_op() {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
+    let _g = serial();
+    let started = |mut c: Command, flags: u32| {
+        let mut child = c
+            .creation_flags(flags)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn op-reason.exe");
+        {
+            let mut i = child.stdin.take().unwrap();
+            let _ = i.write_all(b"through the pipe");
+        }
+        child.wait_with_output().expect("wait op-reason.exe")
+    };
+    let watch = ConsoleWatch::start(&fake_op());
+    for (how, flags) in [
+        ("as WSL starts it", CREATE_NO_WINDOW.0),
+        ("without a console", DETACHED_PROCESS.0),
+    ] {
+        // the entry face (help mode: no window of op-reason's), op.exe running for a second and a half
+        let sb = Sandbox::new("no-console");
+        let out = started(
+            sb.command(&[s("vault"), s("--help")], &[("FAKE_SLEEP_MS", "1500")]),
+            flags,
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{how}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "through the pipe",
+            "{how}"
+        );
+        assert_eq!(
+            sb.call(1),
+            vec![OsString::from("vault"), OsString::from("--help")],
+            "{how}"
+        );
+        // the runner face, as the WSL binary starts it
+        let sb = Sandbox::new("no-console-run");
+        let mut run = sb.command(&[s("--run")], &[("FAKE_SLEEP_MS", "1500")]);
+        run.env(
+            "OPREASON_PAYLOAD",
+            sb.payload("help", &["--version"]).to_string(),
+        );
+        let out = started(run, flags);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{how}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "through the pipe",
+            "{how}"
+        );
+    }
+    let shown = watch.stop();
+    assert!(
+        shown.is_empty(),
+        "no console window for op.exe of a call without a console: {shown:?}"
+    );
+}
+
+/// As WSL starts a call from a terminal: attached to a pseudoconsole, without standard handles of its own (WSL's interop
+/// passes the pseudoconsole and null handles). A pseudoconsole is inherited, so the policy leaves it: the output reaches
+/// the terminal (§3.2).
+#[test]
+fn a_pseudoconsole_is_the_console_of_a_call() {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::Storage::FileSystem::ReadFile;
+    use windows::Win32::System::Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON};
+    use windows::Win32::System::Pipes::CreatePipe;
+    use windows::Win32::System::Threading::{
+        CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute, WaitForSingleObject,
+    };
+    use windows::core::{HSTRING, PWSTR};
+    let _g = serial();
+    // SAFETY: the handles made here are closed here; the attribute list, the strings and the structures outlive the
+    // calls that use them; the reader thread owns the read end of the output pipe until the pseudoconsole has closed.
+    let (ended, code, text) = unsafe {
+        let (mut in_read, mut in_write) = (HANDLE::default(), HANDLE::default());
+        let (mut out_read, mut out_write) = (HANDLE::default(), HANDLE::default());
+        CreatePipe(&mut in_read, &mut in_write, None, 0).unwrap();
+        CreatePipe(&mut out_read, &mut out_write, None, 0).unwrap();
+        let pc = CreatePseudoConsole(COORD { X: 120, Y: 30 }, in_read, out_write, 0).unwrap();
+        // the pseudoconsole keeps its own copies
+        let _ = CloseHandle(in_read);
+        let _ = CloseHandle(out_write);
+        // the pseudoconsole writes only while its output is read
+        let read_end = out_read.0 as usize;
+        let reader = std::thread::spawn(move || {
+            let h = HANDLE(read_end as *mut c_void);
+            let mut all = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let mut n = 0u32;
+                if ReadFile(h, Some(&mut buf), Some(&mut n), None).is_err() || n == 0 {
+                    break;
+                }
+                all.extend_from_slice(&buf[..n as usize]);
+            }
+            let _ = CloseHandle(h);
+            all
+        });
+        let mut size = 0usize;
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
+        // u64: the list holds pointers
+        let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
+        let list = LPPROC_THREAD_ATTRIBUTE_LIST(buffer.as_mut_ptr() as *mut c_void);
+        InitializeProcThreadAttributeList(Some(list), 1, None, &mut size).unwrap();
+        UpdateProcThreadAttribute(
+            list,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+            Some(pc.0 as *const c_void),
+            size_of::<HPCON>(),
+            None,
+            None,
+        )
+        .unwrap();
+        let startup = STARTUPINFOEXW {
+            StartupInfo: STARTUPINFOW {
+                cb: size_of::<STARTUPINFOEXW>() as u32,
+                dwFlags: STARTF_USESTDHANDLES,
+                ..Default::default()
+            },
+            lpAttributeList: list,
+        };
+        let mut line: Vec<u16> = format!("\"{}\" --version", exe().display())
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut info = PROCESS_INFORMATION::default();
+        CreateProcessW(
+            &HSTRING::from(exe().as_os_str()),
+            Some(PWSTR(line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            EXTENDED_STARTUPINFO_PRESENT,
+            None,
+            None,
+            &startup.StartupInfo,
+            &mut info,
+        )
+        .unwrap();
+        let ended = WaitForSingleObject(info.hProcess, 10_000) == WAIT_OBJECT_0;
+        let mut code = 1u32;
+        let _ = GetExitCodeProcess(info.hProcess, &mut code);
+        let _ = CloseHandle(info.hThread);
+        let _ = CloseHandle(info.hProcess);
+        DeleteProcThreadAttributeList(list);
+        ClosePseudoConsole(pc);
+        let _ = CloseHandle(in_write);
+        let out = reader.join().unwrap_or_default();
+        (ended, code, String::from_utf8_lossy(&out).into_owned())
+    };
+    assert!(
+        ended && code == 0,
+        "op-reason.exe --version under a pseudoconsole ended with 0: ended {ended}, code {code}, output {text:?}"
+    );
+    assert!(
+        text.contains(&format!("op-reason {}", env!("CARGO_PKG_VERSION"))),
+        "the version reached the pseudoconsole: {text:?}"
     );
 }

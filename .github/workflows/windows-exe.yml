@@ -100,6 +100,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # op-reason.exe's manifest asks for no console that it does not inherit (consoleAllocationPolicy, which Windows 11 24H2
+  # and Windows Server 2025, build 26100, brought): an older Windows must ignore the element and still start the exe
+  # (design docs/superpowers/specs/2026-11-24-relay-no-console-window-design.md §7).
+  older-windows:
+    name: op-reason.exe starts on an older Windows (Server 2022)
+    needs: windows
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: op-reason-windows
+          path: dist
+      - name: The zip's op-reason.exe starts and answers
+        shell: pwsh
+        run: |
+          "Windows $([Environment]::OSVersion.Version)"
+          Expand-Archive dist/op-reason-windows.zip -DestinationPath unpacked
+          $exe = (Get-ChildItem unpacked -Recurse -Filter op-reason.exe | Select-Object -First 1).FullName
+          $version = (& $exe --version) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^op-reason \d+\.\d+\.\d+$') {
+            throw "op-reason.exe --version: exit $LASTEXITCODE, '$version'"
+          }
+          $status = (& $exe --ssh-agent --status) -join "`n"
+          if ($LASTEXITCODE -ne 1 -or -not $status) {
+            throw "op-reason.exe --ssh-agent --status (no relay runs): exit $LASTEXITCODE, '$status'"
+          }
+          "$version / $status"
+          # the expected exit code 1 of --status must not fail the step
+          exit 0
+
   # Only this job has write access, and it runs no code from the build: it posts the screenshots that the Windows job
   # uploaded. The three conditions: failed runs' screenshots are wanted too (always()), only pull requests have a
   # number, and pull requests from forks get no write token.

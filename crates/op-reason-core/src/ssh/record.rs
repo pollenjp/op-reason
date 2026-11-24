@@ -187,7 +187,8 @@ pub struct Relay {
     /// The relay's parent process, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ProcRec>,
-    /// More about `what`, when it has more (the step of a window that does not appear).
+    /// More about `what`, when it has more (the step of a window that does not appear; at `start`, the console the
+    /// relay had: `console: none`, `console: own` or `console: shared`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
