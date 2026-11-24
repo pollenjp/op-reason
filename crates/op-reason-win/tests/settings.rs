@@ -13,11 +13,16 @@ use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+#[path = "common/console_watch.rs"]
+mod console_watch;
+
+use console_watch::ConsoleWatch;
 
 /// The task tests share the default pipe and the lock; run these tests one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -454,6 +459,80 @@ fn op_reasons_task_starts_stops_and_goes() {
     let out = s(&["get", "relay.autostart"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "off");
     let _ = s(&["set", "relay.mode", "default"]);
+}
+
+/// The `detail` of the last `ssh-relay` `start` record of the relay `pid` in the real profile's `ssh-log.jsonl`: the
+/// console the relay had at start (design `2026-11-24-relay-no-console-window-design.md` §5.4).
+fn start_detail(pid: u64) -> Option<String> {
+    let log = std::env::var_os("LOCALAPPDATA")
+        .map(|d| {
+            PathBuf::from(d)
+                .join("op-reason")
+                .join(op_reason_core::ssh::record::LOG_FILE)
+        })
+        .and_then(|f| fs::read_to_string(f).ok())?;
+    log.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .rfind(|r| {
+            r["event"] == "ssh-relay" && r["what"] == "start" && r["pid"].as_u64() == Some(pid)
+        })
+        .and_then(|r| r["detail"].as_str().map(str::to_owned))
+}
+
+/// Waits for the `start` record of the relay `pid` and returns its `detail`.
+fn start_detail_of(pid: u64) -> Option<String> {
+    wait_until(Duration::from_secs(10), || start_detail(pid).is_some());
+    start_detail(pid)
+}
+
+#[test]
+fn a_relay_of_op_reasons_task_starts_without_a_console() {
+    if !on_ci() {
+        eprintln!(
+            "skipped: it makes a scheduled task and runs a relay on the default pipe (set CI=1 to run it)"
+        );
+        return;
+    }
+    let _g = serial();
+    assert!(!relay_answers(), "no relay may run before this test");
+    let task = format!("op-reason-test-console-{}", std::process::id());
+    let _guard = TaskGuard(task.clone());
+    let s = |args: &[&str]| task_settings(&task, args);
+    // Task Scheduler starts the relay without a console to inherit: when `set` runs the task (as at logon), and when a
+    // restart runs it again (what the window's Apply does)
+    let watch = ConsoleWatch::start(&exe());
+    let out = s(&["set", "relay.autostart", "on"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(relay_answers(), "the task's relay answers: {}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(10), || relay_json_pid().is_some()),
+        "relay.json names the task's relay"
+    );
+    let first = relay_json_pid().unwrap();
+    assert_eq!(
+        start_detail_of(first).as_deref(),
+        Some("console: none"),
+        "the relay that the task started had no console"
+    );
+    let out = s(&["relay", "restart"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            relay_json_pid().is_some_and(|p| p != first)
+        }),
+        "relay.json names the new relay"
+    );
+    let second = relay_json_pid().unwrap();
+    assert_eq!(
+        start_detail_of(second).as_deref(),
+        Some("console: none"),
+        "the relay that the restart started had no console"
+    );
+    let shown = watch.stop();
+    assert!(
+        shown.is_empty(),
+        "no console window for the task's relay: {shown:?}"
+    );
 }
 
 /// A relay that the test starts itself (outside op-reason's task).
@@ -1053,6 +1132,8 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
     let _g = serial();
     assert!(!relay_answers(), "no relay may run before this test");
     let _guard = RealTaskGuard;
+    // Task Scheduler starts the relay without a console to inherit, also when the icon's action runs the task again
+    let watch = ConsoleWatch::start(&exe());
     let out = real_settings(&["set", "relay.autostart", "on"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(relay_answers(), "the task's relay answers: {}", text(&out));
@@ -1110,87 +1191,22 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
         "the restart is recorded as from the icon: {}",
         log().lines().rev().take(5).collect::<Vec<_>>().join("\n")
     );
+    let after = relay_json_pid().unwrap();
+    for pid in [before.unwrap(), after] {
+        assert_eq!(
+            start_detail_of(pid).as_deref(),
+            Some("console: none"),
+            "the relay {pid} that op-reason's task started had no console"
+        );
+    }
+    let shown = watch.stop();
+    assert!(
+        shown.is_empty(),
+        "no console window for the relay of op-reason's task: {shown:?}"
+    );
 }
 
 // --- No console window while the settings window works
-
-unsafe extern "system" fn each_console(
-    hwnd: windows::Win32::Foundation::HWND,
-    found: windows::Win32::Foundation::LPARAM,
-) -> windows::core::BOOL {
-    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW, IsWindowVisible};
-    // SAFETY: `found` points at the vector of `visible_consoles` for the length of EnumWindows; the buffers outlive the
-    // calls.
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return true.into();
-        }
-        let mut class = [0u16; 64];
-        let n = GetClassNameW(hwnd, &mut class);
-        let class = String::from_utf16_lossy(&class[..usize::try_from(n).unwrap_or(0)]);
-        // conhost's window, or Windows Terminal's when it is the default terminal
-        if class == "ConsoleWindowClass" || class == "CASCADIA_HOSTING_WINDOW_CLASS" {
-            let mut title = [0u16; 512];
-            let n = GetWindowTextW(hwnd, &mut title);
-            let title = String::from_utf16_lossy(&title[..usize::try_from(n).unwrap_or(0)]);
-            (*(found.0 as *mut Vec<String>)).push(format!("{class}: {title}"));
-        }
-    }
-    true.into()
-}
-
-/// The visible console windows, as `<class>: <title>`.
-fn visible_consoles() -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    // SAFETY: the callback pushes into `found`, which outlives the call.
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(
-            Some(each_console),
-            windows::Win32::Foundation::LPARAM(&mut found as *mut Vec<String> as isize),
-        );
-    }
-    found
-}
-
-/// Looks every 2 ms, on a thread of its own, for visible console windows whose title names `needle` (the sandbox's
-/// folder, where the fake `wsl.exe` is): Windows shows one for a console program started by a process without a
-/// console, or hands it to Windows Terminal, which comes to the front.
-struct ConsoleWatch {
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<Vec<String>>>,
-}
-
-impl ConsoleWatch {
-    fn start(needle: &Path) -> ConsoleWatch {
-        let needle = needle.display().to_string().to_lowercase();
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        let thread = std::thread::spawn(move || {
-            let mut seen: Vec<String> = Vec::new();
-            while !flag.load(Ordering::SeqCst) {
-                for window in visible_consoles() {
-                    if window.to_lowercase().contains(&needle) && !seen.contains(&window) {
-                        seen.push(window);
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            seen
-        });
-        ConsoleWatch {
-            stop,
-            thread: Some(thread),
-        }
-    }
-
-    fn stop(mut self) -> Vec<String> {
-        self.stop.store(true, Ordering::SeqCst);
-        self.thread
-            .take()
-            .map(|t| t.join().unwrap_or_default())
-            .unwrap_or_default()
-    }
-}
 
 #[test]
 fn the_window_shows_no_console_window_while_it_works() {

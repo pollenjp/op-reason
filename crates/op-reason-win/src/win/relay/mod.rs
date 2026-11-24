@@ -254,13 +254,18 @@ pub fn run(args: &[OsString]) -> i32 {
         &opts.pipe,
         &opts.upstream,
     ));
-    let attached = !detach_console();
+    let console = detach_console();
+    let attached = console == Console::Shared;
     let shared = Arc::new(Shared::new(opts));
     watch_stop(&shared);
     write_info(&shared, &args);
     tray::start(shared.opts.mode.as_str(), shared.opts.task.is_some());
     let parent = Parent::find();
-    shared.relay_record("start", parent.as_ref().map(Parent::rec));
+    shared.relay_record_with(
+        "start",
+        parent.as_ref().map(Parent::rec),
+        Some(console.detail().to_owned()),
+    );
     watch_parent(&shared, parent);
     {
         let shared = Arc::clone(&shared);
@@ -453,19 +458,46 @@ fn single_instance() -> Option<Single> {
     }
 }
 
-/// Lets go of a console that was made for the relay alone (started from a logon task or by a double click), so that
-/// no console window stays. Returns whether the relay has no console now.
-fn detach_console() -> bool {
+/// The console the relay had at start, named in the `detail` of its `start` record (design
+/// `2026-11-24-relay-no-console-window-design.md` §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Console {
+    /// None: Windows made none (the manifest's console allocation policy, Windows 11 24H2 and later: a scheduled task,
+    /// Explorer).
+    None,
+    /// One that Windows made for the relay alone (older Windows), let go of at once.
+    Own,
+    /// A terminal's, shared with other processes: the relay stays attached, so that Ctrl+C stops it.
+    Shared,
+}
+
+impl Console {
+    fn detail(self) -> &'static str {
+        match self {
+            Console::None => "console: none",
+            Console::Own => "console: own",
+            Console::Shared => "console: shared",
+        }
+    }
+}
+
+/// Lets go of a console that was made for the relay alone (started from a logon task or by a double click on a Windows
+/// that does not know the manifest's console allocation policy), so that no console window stays.
+fn detach_console() -> Console {
     let mut list = [0u32; 4];
     // SAFETY: a valid buffer.
     let n = unsafe { GetConsoleProcessList(&mut list) };
-    if n == 1 {
-        // SAFETY: plain call.
-        unsafe {
-            let _ = FreeConsole();
+    match n {
+        0 => Console::None,
+        1 => {
+            // SAFETY: plain call.
+            unsafe {
+                let _ = FreeConsole();
+            }
+            Console::Own
         }
+        _ => Console::Shared,
     }
-    n <= 1
 }
 
 /// The relay's parent process (design §8).
