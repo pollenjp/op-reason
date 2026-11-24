@@ -514,7 +514,9 @@ fn console_policy_applies() -> bool {
         .nth(1)
         .and_then(|v| v.split('.').nth(2))
         .and_then(|b| b.trim_end_matches(']').parse::<u32>().ok());
-    build.is_some_and(|b| b >= 26100)
+    // a build that cannot be read must not skip the checks silently
+    let build = build.unwrap_or_else(|| panic!("the Windows build, from `ver`: {ver:?}"));
+    build >= 26100
 }
 
 #[test]
