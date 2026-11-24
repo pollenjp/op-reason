@@ -122,9 +122,10 @@ const KEEP: usize = 64 * 1024;
 /// stdin, design `2026-11-17-refs-in-window-design.md` §2) and stdout, in a kill-on-close Job Object: created
 /// suspended, put into the job, then resumed (without the job when one cannot be made or joined).
 ///
-/// op.exe shares our console. When we have none (the manifest's console allocation policy: a call that WSL starts
-/// without a terminal, with `CREATE_NO_WINDOW`), Windows would make op.exe a console of its own and show it: op.exe gets
-/// one that is never shown instead (`CREATE_NO_WINDOW`), as our console was before (design
+/// op.exe shares our console. When we have none (a scheduled task, a shortcut, or a program without a console that
+/// starts us with pipes and no flags: the manifest's console allocation policy gives no console then; or
+/// `DETACHED_PROCESS`), Windows would make op.exe a console of its own and show it: op.exe gets one that is never shown
+/// instead (`CREATE_NO_WINDOW`, which WSL passes for a call without a terminal and which keeps its console) (design
 /// `2026-11-24-relay-no-console-window-design.md` §5.2).
 pub fn start(
     op: &Path,

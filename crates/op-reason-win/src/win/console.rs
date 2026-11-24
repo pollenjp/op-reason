@@ -94,9 +94,9 @@ fn processes() -> u32 {
 }
 
 /// This process has no console: none was inherited and Windows made none (the manifest's console allocation policy, on
-/// Windows 11 24H2 and later: a scheduled task, Explorer, `CREATE_NO_WINDOW` as WSL starts a call without a terminal),
-/// or it let go of one. A console program that it starts would get a console window of its own (design
-/// `2026-11-24-relay-no-console-window-design.md` §5.2).
+/// Windows 11 24H2 and later: a start without flags from a scheduled task or a program without a console, Explorer's
+/// `CREATE_NEW_CONSOLE`), it was started with `DETACHED_PROCESS`, or it let go of one. A console program that it starts
+/// would get a console window of its own (design `2026-11-24-relay-no-console-window-design.md` §5.2).
 pub fn none() -> bool {
     processes() == 0
 }

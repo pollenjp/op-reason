@@ -1814,17 +1814,19 @@ fn a_desktop_call_removes_its_notification_with_its_window() {
 
 // --- Starts without a console to inherit (design 2026-11-24-relay-no-console-window-design.md)
 
-/// As WSL starts a call without a terminal (an agent's command, a script): `CREATE_NO_WINDOW` and pipes. With the
-/// manifest's console allocation policy op-reason.exe then has no console, and op.exe must not get a console window
-/// of its own (§5.2): the output and the exit code still come through the pipes.
+/// Calls started without a terminal, with pipes for their streams (design `2026-11-24-relay-no-console-window-design.md`
+/// §3.2, §5.2): as WSL starts one without a terminal (`CREATE_NO_WINDOW`: op-reason.exe has a console that is never
+/// shown, which op.exe shares), and as a program without a console starts one (`DETACHED_PROCESS`: no console at all, as
+/// the manifest's console allocation policy leaves a start without flags from a scheduled task or a GUI program). The
+/// output and the exit code come through the pipes, and op.exe never gets a console window of its own.
 #[test]
 fn a_call_without_a_console_shows_no_console_window_for_op() {
     use std::os::windows::process::CommandExt;
-    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+    use windows::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
     let _g = serial();
-    let started = |mut c: Command| {
+    let started = |mut c: Command, flags: u32| {
         let mut child = c
-            .creation_flags(CREATE_NO_WINDOW.0)
+            .creation_flags(flags)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1837,35 +1839,52 @@ fn a_call_without_a_console_shows_no_console_window_for_op() {
         child.wait_with_output().expect("wait op-reason.exe")
     };
     let watch = ConsoleWatch::start(&fake_op());
-    // the entry face (help mode: no window of op-reason's), op.exe running for a second and a half
-    let sb = Sandbox::new("no-console");
-    let out = started(sb.command(&[s("vault"), s("--help")], &[("FAKE_SLEEP_MS", "1500")]));
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "through the pipe");
-    assert_eq!(
-        sb.call(1),
-        vec![OsString::from("vault"), OsString::from("--help")]
-    );
-    // the runner face, as the WSL binary starts it
-    let sb = Sandbox::new("no-console-run");
-    let mut run = sb.command(&[s("--run")], &[("FAKE_SLEEP_MS", "1500")]);
-    run.env(
-        "OPREASON_PAYLOAD",
-        sb.payload("help", &["--version"]).to_string(),
-    );
-    let out = started(run);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "through the pipe");
+    for (how, flags) in [
+        ("as WSL starts it", CREATE_NO_WINDOW.0),
+        ("without a console", DETACHED_PROCESS.0),
+    ] {
+        // the entry face (help mode: no window of op-reason's), op.exe running for a second and a half
+        let sb = Sandbox::new("no-console");
+        let out = started(
+            sb.command(&[s("vault"), s("--help")], &[("FAKE_SLEEP_MS", "1500")]),
+            flags,
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{how}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "through the pipe",
+            "{how}"
+        );
+        assert_eq!(
+            sb.call(1),
+            vec![OsString::from("vault"), OsString::from("--help")],
+            "{how}"
+        );
+        // the runner face, as the WSL binary starts it
+        let sb = Sandbox::new("no-console-run");
+        let mut run = sb.command(&[s("--run")], &[("FAKE_SLEEP_MS", "1500")]);
+        run.env(
+            "OPREASON_PAYLOAD",
+            sb.payload("help", &["--version"]).to_string(),
+        );
+        let out = started(run, flags);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{how}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "through the pipe",
+            "{how}"
+        );
+    }
     let shown = watch.stop();
     assert!(
         shown.is_empty(),
