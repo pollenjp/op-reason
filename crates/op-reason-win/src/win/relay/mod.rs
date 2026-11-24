@@ -33,7 +33,7 @@ use op_reason_core::ssh::decide::{Book, Queue};
 use op_reason_core::ssh::record::{self, ProcRec, Relay};
 use op_reason_core::{messages, settings, time};
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
-use windows::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+use windows::Win32::System::Console::FreeConsole;
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
 };
@@ -484,10 +484,7 @@ impl Console {
 /// Lets go of a console that was made for the relay alone (started from a logon task or by a double click on a Windows
 /// that does not know the manifest's console allocation policy), so that no console window stays.
 fn detach_console() -> Console {
-    let mut list = [0u32; 4];
-    // SAFETY: a valid buffer.
-    let n = unsafe { GetConsoleProcessList(&mut list) };
-    match n {
+    match console::processes() {
         0 => Console::None,
         1 => {
             // SAFETY: plain call.

@@ -96,11 +96,10 @@ pub fn launch() -> Result<(), String> {
     Ok(())
 }
 
-/// Starts `<exe> --settings window` without a console window (`CREATE_NO_WINDOW`: a console that is never shown, or none
-/// at all with the manifest's console allocation policy on Windows 11 24H2 and later; the console programs it starts,
-/// `wsl.exe` for every read, are started with `CREATE_NO_WINDOW` themselves) and without handles of this process (a
-/// caller that reads this process's output must not wait for the window), out of the caller's job when the job lets it
-/// go (a terminal's job would end the window with the terminal). Returns its process ID.
+/// Starts `<exe> --settings window` with a console of its own that is never shown (`CREATE_NO_WINDOW`; the console
+/// programs it starts, `wsl.exe` for every read, are started with `CREATE_NO_WINDOW` themselves) and without handles of
+/// this process (a caller that reads this process's output must not wait for the window), out of the caller's job when
+/// the job lets it go (a terminal's job would end the window with the terminal). Returns its process ID.
 fn start_detached(exe: &Path) -> Result<u32, String> {
     let app = HSTRING::from(exe.as_os_str());
     let dir = exe.parent().map(|d| HSTRING::from(d.as_os_str()));

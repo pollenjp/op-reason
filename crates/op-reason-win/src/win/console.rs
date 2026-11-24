@@ -5,6 +5,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Storage::FileSystem::{
+    FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType,
+};
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
     CTRL_SHUTDOWN_EVENT, GetConsoleMode, GetConsoleProcessList, GetStdHandle, STD_ERROR_HANDLE,
@@ -87,7 +90,7 @@ pub fn stdin_is_readable() -> bool {
 }
 
 /// How many processes share this process's console; 0 when it has none.
-fn processes() -> u32 {
+pub(super) fn processes() -> u32 {
     let mut list = [0u32; 4];
     // SAFETY: a valid buffer.
     unsafe { GetConsoleProcessList(&mut list) }
@@ -101,14 +104,14 @@ pub fn none() -> bool {
     processes() == 0
 }
 
-/// Nobody reads this process's output, as after a double click in Explorer: a console that Windows made for this
-/// process alone with the output on it (Windows before 11 24H2), or no console and no standard output at all (the
-/// manifest's console allocation policy). `op-reason.exe` without arguments then opens the settings window instead of
-/// printing its usage into a console that closes at once, or into nothing (designs `2026-11-23-settings-design.md`
-/// §11.1 and `2026-11-24-relay-no-console-window-design.md` §5.3).
+/// Nobody reads this process's output, as after a double click in Explorer or a start from the taskbar: a console that
+/// Windows made for this process alone with the output on it (Windows before 11 24H2), or no console and no standard
+/// output that goes anywhere (the manifest's console allocation policy). `op-reason.exe` without arguments then opens
+/// the settings window instead of printing its usage into a console that closes at once, or into nothing (designs
+/// `2026-11-23-settings-design.md` §11.1 and `2026-11-24-relay-no-console-window-design.md` §5.3).
 pub fn started_alone() -> bool {
     match processes() {
-        0 => !has_handle(STD_OUTPUT_HANDLE),
+        0 => !output_goes_somewhere(),
         1 => is_console(STD_OUTPUT_HANDLE),
         _ => false,
     }
@@ -118,6 +121,25 @@ pub fn started_alone() -> bool {
 fn has_handle(which: STD_HANDLE) -> bool {
     // SAFETY: GetStdHandle only reads process state.
     unsafe { GetStdHandle(which) }.is_ok_and(|h| h != HANDLE::default() && !h.is_invalid())
+}
+
+/// Our standard output is a file, a pipe or a character device. A start from the taskbar or a jump list puts a
+/// monitor, not a handle, where the standard output goes (`STARTUPINFO`'s `hStdOutput`), which a console used to
+/// replace: it is no output.
+fn output_goes_somewhere() -> bool {
+    if !has_handle(STD_OUTPUT_HANDLE) {
+        return false;
+    }
+    // SAFETY: GetStdHandle and GetFileType only read process state; GetFileType fails for a value that is no handle.
+    unsafe {
+        let Ok(h) = GetStdHandle(STD_OUTPUT_HANDLE) else {
+            return false;
+        };
+        matches!(
+            GetFileType(h),
+            FILE_TYPE_DISK | FILE_TYPE_PIPE | FILE_TYPE_CHAR
+        )
+    }
 }
 
 fn is_console(which: STD_HANDLE) -> bool {
