@@ -394,7 +394,7 @@ GitHub の runner (Windows Server 2025) でコンソールの窓を見張り、z
 | N7 | `& $exe --settings set start-menu on`。Windows キーを押して `op-reason` と打ち、開く | 設定の窓。タスクバーにコンソールの窓が出ない。残さないなら、あとで `set start-menu off` |
 | N8 | WSL で、`OPREASON_EXE` に `$exe` の WSL のパスを入れて `op-reason --reason 'check N8' vault list </dev/null 2>&1 \| cat` (呼び出しに端末が無い: WSL はこのとき exe を `CREATE_NO_WINDOW` で起こす) | いつもどおり op-reason の窓と 1Password の確認。vault の一覧が `cat` を通って出る。`op.exe` のコンソールの窓が出ない |
 | N9 | PowerShell で `& $exe --reason 'check N9' vault list; $LASTEXITCODE` と `& $exe --ssh-agent --status; $LASTEXITCODE` | 今までどおり vault の一覧と 0、呼び出しが終わるとプロンプトが戻る。中継の行と 0 |
-| N10 | コンソールの無い呼び出し: `Start-Process $exe -ArgumentList '--reason','check N10','vault','list'`。1Password で承認。そのあと `& $exe --log --since 5m` | いつもどおり op-reason の窓と 1Password の確認。コンソールの窓が一つも出ない (`Start-Process` は Windows 11 24H2 より前は自分のコンソールを付けて起こし、今は付けない。そのとき `op.exe` は見えないコンソールを持つ)。記録にその呼び出しの終わり (終了コード 0) |
+| N10 | コンソールの無い呼び出し: `Start-Process $exe -ArgumentList '--reason "check N10" vault list'` (1 つの文字列にし、理由を二重引用符で囲む: `Start-Process` は配列の要素を引用符なしで空白でつなぐ)。1Password で承認。そのあと `& $exe --log --since 5m` | いつもどおり op-reason の窓と 1Password の確認。コンソールの窓が一つも出ない (`Start-Process` は Windows 11 24H2 より前は自分のコンソールを付けて起こし、今は付けない。そのとき `op.exe` は見えないコンソールを持つ)。記録にその呼び出しの終わり (終了コード 0) |
 | N11 | `& $exe --settings set relay.autostart off`。続けて同じ PowerShell で `& $exe --ssh-agent` を起こし、最初の行が出たら Ctrl+C。用意 3 のほかのタスクを有効に戻す | タスクが消える。手で起こした中継は行を出して端末に留まり、Ctrl+C で止まる。その `start` の記録は `console: shared`。ほかのタスクの中継がまた答える |
 
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
