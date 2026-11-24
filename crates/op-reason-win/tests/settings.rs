@@ -485,12 +485,48 @@ fn start_detail_of(pid: u64) -> Option<String> {
     start_detail(pid)
 }
 
+/// The process ID of the relay that answers on the default pipe (`--ssh-agent --status`): `relay.json` may still name a
+/// relay that was killed, until the new one writes it.
+fn answering_pid() -> Option<u64> {
+    let out = Command::new(exe())
+        .args(["--ssh-agent", "--status"])
+        .env("OPREASON_LANG", "en")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (_, rest) = text.split_once("(pid ")?;
+    rest.split(')').next()?.trim().parse().ok()
+}
+
+/// Windows applies the manifest's console allocation policy (build 26100 and later: Windows 11 24H2, Windows Server
+/// 2025). Older Windows make a task's relay a console for a moment, as before (design
+/// `2026-11-24-relay-no-console-window-design.md` §2).
+fn console_policy_applies() -> bool {
+    let ver = Command::new("cmd.exe")
+        .args(["/d", "/c", "ver"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    // "Microsoft Windows [Version 10.0.26100.1234]"
+    let build = ver
+        .split("[Version ")
+        .nth(1)
+        .and_then(|v| v.split('.').nth(2))
+        .and_then(|b| b.trim_end_matches(']').parse::<u32>().ok());
+    build.is_some_and(|b| b >= 26100)
+}
+
 #[test]
 fn a_relay_of_op_reasons_task_starts_without_a_console() {
     if !on_ci() {
         eprintln!(
             "skipped: it makes a scheduled task and runs a relay on the default pipe (set CI=1 to run it)"
         );
+        return;
+    }
+    if !console_policy_applies() {
+        eprintln!("skipped: this Windows does not know the manifest's console allocation policy");
         return;
     }
     let _g = serial();
@@ -503,35 +539,20 @@ fn a_relay_of_op_reasons_task_starts_without_a_console() {
     let watch = ConsoleWatch::start(&exe());
     let out = s(&["set", "relay.autostart", "on"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert!(relay_answers(), "the task's relay answers: {}", text(&out));
-    assert!(
-        wait_until(Duration::from_secs(10), || relay_json_pid().is_some()),
-        "relay.json names the task's relay"
-    );
-    let first = relay_json_pid().unwrap();
-    assert_eq!(
-        start_detail_of(first).as_deref(),
-        Some("console: none"),
-        "the relay that the task started had no console"
-    );
+    let first = answering_pid().expect("the task's relay answers");
     let out = s(&["relay", "restart"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert!(
-        wait_until(Duration::from_secs(10), || {
-            relay_json_pid().is_some_and(|p| p != first)
-        }),
-        "relay.json names the new relay"
-    );
-    let second = relay_json_pid().unwrap();
-    assert_eq!(
-        start_detail_of(second).as_deref(),
-        Some("console: none"),
-        "the relay that the restart started had no console"
-    );
+    let second = answering_pid().expect("the restarted relay answers");
+    assert_ne!(first, second, "the restart started a new relay");
+    let details = [start_detail_of(first), start_detail_of(second)];
     let shown = watch.stop();
     assert!(
-        shown.is_empty(),
-        "no console window for the task's relay: {shown:?}"
+        shown.is_empty()
+            && details
+                .iter()
+                .all(|d| d.as_deref() == Some("console: none")),
+        "the relays that the task started had no console and showed no console window: start records {details:?}, \
+         console windows {shown:?}"
     );
 }
 
@@ -653,9 +674,11 @@ impl Drop for CloseWindows {
     }
 }
 
-/// Starts `op-reason.exe` without arguments in a console of its own (hidden), as a double click in Explorer does, with
-/// the sandbox's variables. Returns its exit code once it ended (within 10 seconds).
-fn start_alone(sb: &Sandbox) -> Option<u32> {
+/// Starts `op-reason.exe` without arguments as Explorer does (`CREATE_NEW_CONSOLE`: a console of its own, hidden here,
+/// before Windows 11 24H2; none with the manifest's console allocation policy), with the sandbox's variables. With
+/// `taskbar`, also as the taskbar does: the monitor where the standard output goes (`STARTF_HASSHELLDATA`). Returns its
+/// exit code once it ended (within 10 seconds).
+fn start_alone(sb: &Sandbox, taskbar: bool) -> Option<u32> {
     use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{
         CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess,
@@ -685,12 +708,22 @@ fn start_alone(sb: &Sandbox) -> Option<u32> {
         .encode_utf16()
         .chain(Some(0))
         .collect();
-    let startup = STARTUPINFOW {
+    let mut startup = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
         dwFlags: STARTF_USESHOWWINDOW,
         wShowWindow: SW_HIDE.0 as u16,
         ..Default::default()
     };
+    if taskbar {
+        use windows::Win32::Foundation::{HANDLE, POINT};
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+        use windows::Win32::System::Threading::STARTUPINFOW_FLAGS;
+        // STARTF_HASSHELLDATA: hStdOutput holds the monitor of the taskbar that started the program
+        // SAFETY: a plain call.
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        startup.dwFlags |= STARTUPINFOW_FLAGS(0x400);
+        startup.hStdOutput = HANDLE(monitor.0);
+    }
     let mut info = PROCESS_INFORMATION::default();
     // SAFETY: the strings, the block and the structures outlive the calls; the handles are closed here.
     unsafe {
@@ -765,9 +798,35 @@ fn a_double_click_opens_the_window_instead_of_the_usage() {
     );
     let _close = CloseWindows;
     assert_eq!(
-        start_alone(&sb),
+        start_alone(&sb, false),
         Some(0),
-        "op-reason.exe in a console of its own ends at once"
+        "op-reason.exe started as by a double click ends at once"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
+        "a window of class {WINDOW_CLASS} appears"
+    );
+}
+
+/// A start from the taskbar (op-reason.exe pinned there): the shell puts a monitor where the standard output goes, which
+/// is no output (design `2026-11-24-relay-no-console-window-design.md` §5.3).
+#[test]
+fn a_start_from_the_taskbar_opens_the_window_instead_of_the_usage() {
+    if !on_ci() {
+        eprintln!("skipped: the window tests run where CI is set");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("taskbar");
+    assert!(
+        settings_windows().is_empty(),
+        "no settings window may be open before this test"
+    );
+    let _close = CloseWindows;
+    assert_eq!(
+        start_alone(&sb, true),
+        Some(0),
+        "op-reason.exe started as by the taskbar ends at once"
     );
     assert!(
         wait_until(Duration::from_secs(15), || settings_windows().len() == 1),
@@ -1135,6 +1194,7 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
     // Task Scheduler starts the relay without a console to inherit, also when the icon's action runs the task again
     let watch = ConsoleWatch::start(&exe());
     let out = real_settings(&["set", "relay.autostart", "on"]);
+    let first = answering_pid();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(relay_answers(), "the task's relay answers: {}", text(&out));
     // the relay writes relay.json just after its pipe answers
@@ -1191,18 +1251,22 @@ fn the_icon_restarts_the_relay_of_op_reasons_task() {
         "the restart is recorded as from the icon: {}",
         log().lines().rev().take(5).collect::<Vec<_>>().join("\n")
     );
-    let after = relay_json_pid().unwrap();
-    for pid in [before.unwrap(), after] {
-        assert_eq!(
-            start_detail_of(pid).as_deref(),
-            Some("console: none"),
-            "the relay {pid} that op-reason's task started had no console"
+    if !console_policy_applies() {
+        eprintln!(
+            "not checked: this Windows does not know the manifest's console allocation policy"
         );
+        return;
     }
+    let pids = [first, answering_pid()];
+    let details = pids.map(|p| p.and_then(start_detail_of));
     let shown = watch.stop();
     assert!(
-        shown.is_empty(),
-        "no console window for the relay of op-reason's task: {shown:?}"
+        shown.is_empty()
+            && details
+                .iter()
+                .all(|d| d.as_deref() == Some("console: none")),
+        "the relays that op-reason's task started had no console and showed no console window: relays {pids:?}, \
+         start records {details:?}, console windows {shown:?}"
     );
 }
 

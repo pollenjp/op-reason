@@ -91,3 +91,10 @@ impl ConsoleWatch {
             .unwrap_or_default()
     }
 }
+
+impl Drop for ConsoleWatch {
+    /// A test that fails before `stop` does not leave the thread looking for the rest of the test binary's run.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
