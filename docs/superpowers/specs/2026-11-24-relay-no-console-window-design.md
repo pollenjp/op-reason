@@ -59,9 +59,9 @@ Non-goals:
 Anti-goals (a failure even if the window goes away):
 
 - A call from a terminal changes: its output, its exit code, the terminal waiting for it, or Ctrl+C.
-- A call from WSL without a terminal (an agent's command, a script) shows a console window for `op.exe`: WSL starts
-  `op-reason.exe` with `CREATE_NO_WINDOW` then (§3.2), and without op-reason's console `op.exe` would get a console
-  window of its own.
+- A call that a program starts without a terminal (WSL for an agent's command or a script, with `CREATE_NO_WINDOW`; a
+  program without a console that passes pipes) shows a console window for `op.exe`: without op-reason's console,
+  `op.exe` would get a console window of its own (§3.2).
 - 1Password stops answering the relay, or names another application: the relay's parent, its process tree and its state
   after the start must stay as they are now (§5.4).
 
@@ -78,9 +78,13 @@ build 26100, and Windows Server 2025) and the specification behind it (Windows T
   `<windowsSettings>`, applies to console-subsystem programs.
 - `detached`: "The new process is not attached to a console session (similar to `DETACHED_PROCESS`) unless one was
   inherited." "All console inheritance will proceed as normal." It "will not present a console window when launched by
-  Explorer, Task Scheduler, etc." The field disables the automatic allocation "regardless of the process creation flags
-  passed to `CreateProcess`": `CREATE_NEW_CONSOLE` (which `ShellExecute` passes by default) and, by that wording,
-  `CREATE_NO_WINDOW` give no console either.
+  Explorer, Task Scheduler, etc." The specification has the field disable the automatic allocation "regardless of the
+  process creation flags passed to `CreateProcess`" and recommends that it override `CREATE_NEW_CONSOLE`, which
+  `ShellExecute` passes by default.
+- What GitHub's Windows Server 2025 runner (build 26100) did with this pull request's exe: a start without flags from a
+  process without a console (Task Scheduler) got no console, and so did `CREATE_NEW_CONSOLE` (the double click's test
+  failed until §5.3); `CREATE_NO_WINDOW` still got a console that is never shown (with the policy but without §5.2,
+  `op.exe` of such a call showed no console window: it shared op-reason.exe's console).
 - Shells still decide from the subsystem whether to wait: a console program with the policy still makes cmd.exe and
   PowerShell wait for it.
 - Older Windows ignore the element and allocate consoles from the subsystem as before.
@@ -94,11 +98,12 @@ build 26100, and Windows Server 2025) and the specification behind it (Windows T
 | --- | --- | --- |
 | A terminal (PowerShell, cmd.exe, Windows Terminal), an agent's shell | the terminal's (inherited) | the same |
 | WSL with a terminal: interop gives it a pseudoconsole (`microsoft/WSL`, `src/windows/common/interop.cpp`) | the pseudoconsole | the same (a pseudoconsole is the console the process starts attached to) |
-| WSL without a terminal: interop uses `CREATE_NO_WINDOW` and pipes | a console of its own, never shown; `op.exe` shares it | **none**: `op.exe` must get a console of its own, never shown (§5.2) |
+| WSL without a terminal: interop uses `CREATE_NO_WINDOW` and pipes | a console of its own, never shown; `op.exe` shares it | the same (§3.1) |
+| A program without a console that passes pipes and no flags (an editor's extension, a GUI tool) | a console of its own, shown for the length of the call | **none**: `op.exe` must get a console of its own, never shown (§5.2) |
 | Task Scheduler (the relay) | a console of its own, shown until `FreeConsole` | **none** (the fix) |
-| Explorer: a double click, the Start menu's shortcut, `Start-Process` | a console of its own, shown | **none**: the double click must still open the settings window (§5.3) |
+| Explorer: a double click, the Start menu's shortcut, `Start-Process` (`CREATE_NEW_CONSOLE`) | a console of its own, shown | **none**: the double click must still open the settings window (§5.3) |
 | The icon's actions (`DETACHED_PROCESS`) | none | none |
-| The settings window's process (`CREATE_NO_WINDOW`) | a console of its own, never shown | none: `wsl.exe` keeps its own `CREATE_NO_WINDOW` |
+| The settings window's process (`CREATE_NO_WINDOW`) | a console of its own, never shown | the same; `wsl.exe` has its own `CREATE_NO_WINDOW` anyway |
 
 ### 3.3 conhost.exe
 
@@ -134,8 +139,11 @@ change of `embed-manifest` cannot drop the policy silently.
 
 `op.exe` (the call's own, started suspended in the Job Object) inherits op-reason.exe's console, as today, whenever
 op-reason.exe has one (`2026-11-15-windows-exe-design.md` §8.2: a terminal's, a pseudoconsole, or one never shown).
-When op-reason.exe has none (`GetConsoleProcessList` finds no console), `op.exe` starts with `CREATE_NO_WINDOW` as
-well: it gets a console of its own that is never shown, which is what it had through op-reason.exe's console before.
+When op-reason.exe has none (`GetConsoleProcessList` finds no console: a start without flags from a scheduled task or a
+program without a console, `CREATE_NEW_CONSOLE`, `DETACHED_PROCESS`), `op.exe` starts with `CREATE_NO_WINDOW`: it gets
+a console of its own that is never shown, instead of one that Windows would show for the length of the call. A call
+that WSL starts without a terminal keeps op-reason.exe's console that is never shown (§3.1), and `op.exe` shares it as
+before.
 Its standard handles are op-reason.exe's, passed down as before. `whoami` and `signout` keep `CREATE_NO_WINDOW` as they
 have it now.
 
@@ -190,17 +198,20 @@ terminal hands consoles to Windows Terminal, and the test of the settings window
    runs the task (as at logon), when `relay restart` runs it (what Apply does), and when the icon's **Restart the
    relay** runs it. The windows are watched every 2 ms for a visible console window whose title names the exe (the
    watcher of the settings window's test, shared).
-3. A call started as WSL starts one without a terminal (`CREATE_NO_WINDOW`, pipes), on the entry face and on the
-   runner face with the fake `op.exe`: its output and exit code come through the pipes, and no console window names the
-   fake `op.exe`.
+3. A call started as WSL starts one without a terminal (`CREATE_NO_WINDOW`, pipes) and as a program without a console
+   starts one (`DETACHED_PROCESS`, pipes: no console, as the policy leaves a start without flags), on the entry face and
+   on the runner face with the fake `op.exe`: its output and exit code come through the pipes, and no console window
+   names the fake `op.exe`.
 4. The double click (`CREATE_NEW_CONSOLE` and a hidden window, as now) still opens the settings window.
 5. Under a pseudoconsole (as WSL starts a call from a terminal), `op-reason.exe --version` prints its version through
    the pseudoconsole.
 6. On `windows-2022` (Windows Server 2022, build 20348, which does not know the policy), the zip's `op-reason.exe`
    starts: `--version` prints the version and `--ssh-agent --status` exits 1 with its line.
 
-Test 2 is pushed first with today's exe, to see it fail on the runner (the bug), then the manifest alone, to see tests
-3 and 4 fail without §5.2 and §5.3, then §5.2 and §5.3.
+Test 2 was pushed first with today's exe and failed on the runner (the relays of the task recorded `console: own`: the
+bug). With the manifest alone, tests 1, 2 and 5 passed and test 4 failed (Explorer's start had no console), while test 3
+passed: `CREATE_NO_WINDOW` keeps its console (§3.1). Test 3 then got the start with `DETACHED_PROCESS`, which needs
+§5.2 on any Windows.
 
 The existing tests stay as they are (the CLI's outputs and exit codes from a terminal-like parent, the task's start,
 stop and restart, the icon's restart, the window's consoles).
@@ -240,7 +251,8 @@ that follows this pull request.
 | Decision | Why |
 | --- | --- |
 | The policy goes into the one manifest that `build.rs` already embeds, added to the builder's XML before `</asmv3:windowsSettings>`; the build fails if that tag is not there exactly once | `embed-manifest` 1.5.1 has no setter for the element; a second manifest file kept by hand would drift from `Cargo.toml`'s version |
-| `op.exe` gets `CREATE_NO_WINDOW` only when op-reason.exe has no console (`GetConsoleProcessList` returns 0) | with a console, sharing it stays as the Windows exe's design wants (stdin, Ctrl+C); without one, it is what WSL's `CREATE_NO_WINDOW` gave before |
+| `op.exe` gets `CREATE_NO_WINDOW` only when op-reason.exe has no console (`GetConsoleProcessList` returns 0) | with a console, sharing it stays as the Windows exe's design wants (stdin, Ctrl+C); without one, Windows would show `op.exe` a console window for the length of the call. The README requires 1Password's CLI integration, so `op.exe` asks through the 1Password app, not in a console |
+| §5.2 stays although the runner showed that WSL's `CREATE_NO_WINDOW` keeps a console | the policy leaves a start without flags with no console (a task, a program without a console that passes pipes), and a later Windows may treat `CREATE_NO_WINDOW` as the specification's wording says |
 | The double click is "no arguments, and a console of its own with standard output on it, or no console and no standard output" | Explorer starts the exe without a console now; a program that reads the output of a bare `op-reason.exe` must still get the usage |
 | The relay's `start` record names its console (`none`, `own`, `shared`) in `detail` | the tests check the start itself, not only the windows they can see; it tells a flash on older Windows from a fault. The log viewer's label of `start` stays without it |
 | No check of the Windows build at run time | the manifest does it: older Windows ignore the element |

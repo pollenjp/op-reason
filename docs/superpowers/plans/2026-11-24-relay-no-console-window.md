@@ -27,7 +27,7 @@ counts as a double click. The relay names the console it had in its `start` reco
 
 ## Review Focus
 
-- A call from WSL without a terminal (WSL starts `op-reason.exe` with `CREATE_NO_WINDOW` and pipes): output, exit code and no console window for `op.exe` — Task 3's test `a_call_without_a_console_shows_no_console_window_for_op`.
+- A call from WSL without a terminal (WSL starts `op-reason.exe` with `CREATE_NO_WINDOW` and pipes), and one from a program without a console that passes pipes: output, exit code and no console window for `op.exe` — Task 3's test `a_call_without_a_console_shows_no_console_window_for_op`.
 - A call from WSL with a terminal (a pseudoconsole): the output still reaches the terminal — Task 3's test `a_pseudoconsole_is_the_console_of_a_call`.
 - A bare `op-reason.exe` whose output a program reads (a pipe) prints the usage, never opens the window — the existing `no_arguments_prints_usage_and_records_nothing` (exe.rs) keeps it.
 - Older Windows do not refuse to start an exe whose manifest has an element they do not know — Task 4's job on `windows-2022`.
@@ -83,7 +83,7 @@ assert!(shown.is_empty(), "no console window for the task's relay: {shown:?}");
 - [ ] **Step 1: Write the failing test** `the_exe_asks_for_no_console_of_its_own` (exe.rs): the bytes of `exe()` contain `consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>` and still `PerMonitorV2` (the manifest is UTF-8 text in the resources).
 - [ ] **Step 2: Implement** `with_console_policy` and the file embedding in `build.rs`; its module doc names the policy and the spec.
 - [ ] **Step 3: Check locally** as in Task 1 Step 5 (the Windows-target clippy runs the build script).
-- [ ] **Step 4: Commit** `fix(win): op-reason.exe asks Windows for no console it does not inherit` and push. Expected on the runner: Task 1's tests and `the_exe_asks_for_no_console_of_its_own` PASS; `a_double_click_opens_the_window_instead_of_the_usage` FAILS (Explorer's start now has no console), and Task 3's tests, pushed with this commit, FAIL where `op.exe` gets a console window.
+- [ ] **Step 4: Commit** `fix(win): op-reason.exe asks Windows for no console it does not inherit` and push. Expected on the runner: Task 1's tests and `the_exe_asks_for_no_console_of_its_own` PASS; `a_double_click_opens_the_window_instead_of_the_usage` FAILS (Explorer's start now has no console). Seen: so, and Task 3's tests passed too — `CREATE_NO_WINDOW` keeps its console (spec §3.1) — so Task 3's first test also starts the call with `DETACHED_PROCESS`.
 
 ### Task 3: Starts without a console stay as they were
 
@@ -98,7 +98,7 @@ assert!(shown.is_empty(), "no console window for the task's relay: {shown:?}");
 - Produces: `pub fn none() -> bool` (`GetConsoleProcessList` returns 0) and `pub fn started_alone() -> bool` (0 processes and no standard output handle, or 1 process and standard output a console) in `win/console.rs`.
 
 - [ ] **Step 1: Write the failing tests** in `exe.rs` (with `mod console_watch` as in Task 1), pushed with Task 2:
-  - `a_call_without_a_console_shows_no_console_window_for_op`: `ConsoleWatch::start(&fake_op())`; the entry face `vault --help` and the runner face (`--run`, a `help` payload with `--version`), each spawned with `CREATE_NO_WINDOW`, piped stdin/stdout/stderr, `FAKE_SLEEP_MS=1500`, stdin `b"through the pipe"`; each exits 0 and its stdout is `through the pipe`; `watch.stop()` is empty.
+  - `a_call_without_a_console_shows_no_console_window_for_op`: `ConsoleWatch::start(&fake_op())`; the entry face `vault --help` and the runner face (`--run`, a `help` payload with `--version`), each spawned with `CREATE_NO_WINDOW` (as WSL) and with `DETACHED_PROCESS` (no console, as the policy leaves a start without flags), piped stdin/stdout/stderr, `FAKE_SLEEP_MS=1500`, stdin `b"through the pipe"`; each exits 0 and its stdout is `through the pipe`; `watch.stop()` is empty.
   - `a_pseudoconsole_is_the_console_of_a_call`: `op-reason.exe --version` under `CreatePseudoConsole` (STARTUPINFOEX with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, `STARTF_USESTDHANDLES` with null handles, no inherited handles, as WSL's interop does): exit 0, and the pseudoconsole's output, read on a thread until `ClosePseudoConsole`, contains `op-reason 0.6.0` (`env!("CARGO_PKG_VERSION")`).
 - [ ] **Step 2: Implement** `none`, `started_alone` (replacing `of_its_own` in `app.rs`), and in `opexe::start` the flags `CREATE_SUSPENDED | CREATE_NO_WINDOW` when `console::none()`, else `CREATE_SUSPENDED`; docs say why (spec §5.2, §5.3).
 - [ ] **Step 3: Check locally** as in Task 1 Step 5.

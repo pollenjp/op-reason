@@ -39,9 +39,10 @@
   (`consoleAllocationPolicy` `detached`). Until now Windows made the relay a console of its own and showed it, or
   handed it to Windows Terminal, whose window came to the front, until the relay let go of it. A double click on
   `op-reason.exe` and the Start menu's **op-reason** open the settings window without a console window too. Older
-  Windows keep the console for a moment. Terminals and calls from WSL see no change: `op.exe` of a call that has no
-  console (from WSL without a terminal) gets a console that is never shown, as before. The relay's `start` record names
-  the console it had (`detail`: `console: none`, `console: own` or `console: shared`).
+  Windows keep the console for a moment. Terminals and calls from WSL see no change. A call that a program without a
+  console starts with pipes shows no console window for `op.exe` either: when `op-reason.exe` has no console, `op.exe`
+  gets one that is never shown. The relay's `start` record names the console it had (`detail`: `console: none`,
+  `console: own` or `console: shared`).
 
 ## 0.6.0 — 2026-11-22
 
