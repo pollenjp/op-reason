@@ -117,7 +117,7 @@ assert!(shown.is_empty(), "no console window for the task's relay: {shown:?}");
 **Files:**
 - Modify: `README.md`, `README.ja.md` ("Starting it", "The window, the Start menu and the icon", the notes of "On Windows")
 - Modify: `CHANGELOG.md` (Unreleased)
-- Modify: `docs/manual-verification.md`, `docs/manual-verification.ja.md` (N1–N10 after the settings' checks; G11 and G15's console)
+- Modify: `docs/manual-verification.md`, `docs/manual-verification.ja.md` (N1–N11 after the settings' checks; G11 and G15's console)
 - Modify: `docs/architecture/README.md` (the relay's threads and start; the settings window's process; the build's manifest)
 
 - [ ] **Step 1: Write** the texts from the spec (§1, §5, §8, §9): on Windows 11 24H2 and later the relay of a task, a double click and the Start menu show no console window; older Windows show one for a moment; a start with arguments and without a terminal gets no console there.

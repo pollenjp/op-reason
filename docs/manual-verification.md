@@ -372,13 +372,13 @@ Preparation:
 | G18 | With the relay running (G2's task), log off and on again | The relay's icon is in the notification area after the logon (the task may start the relay before the taskbar is there) |
 | G19 | `& $exe --settings set relay.autostart off`; restore the `settings.json` of preparation 3; turn the other task of preparation 2 on again | The task is gone, no relay of op-reason's task answers, and its icon is gone |
 
-## Checks of the console window (N1–N10)
+## Checks of the console window (N1–N11)
 
 No console window when no terminal starts `op-reason.exe`
 ([2026-11-24-relay-no-console-window-design.md](superpowers/specs/2026-11-24-relay-no-console-window-design.md)). CI
 watches for console windows on GitHub's runner (Windows Server 2025) and starts the zip's exe on Windows Server 2022;
 these checks are for a real logon, Windows Terminal as the default terminal, a real WSL and the real 1Password. About
-15 minutes, with one logoff and two 1Password prompts.
+15 minutes, with one logoff and four 1Password prompts.
 
 Preparation:
 
@@ -388,7 +388,7 @@ Preparation:
    command in a PowerShell **without administrator rights**, with `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'`.
 3. No relay may run: `& $exe --ssh-agent --status` exits 1. **Where another scheduled task starts the relay** (a task
    of your own, or of your dotfiles), turn it off and stop its relay first, as in preparation 2 of the settings'
-   checks, and turn it on again in N10: that task's relay runs the exe the task names, not this pull request's.
+   checks, and turn it on again in N11: that task's relay runs the exe the task names, not this pull request's.
 4. Keep the terminal you type in away from the middle of the screen: a console window that comes to the front for a
    moment is easier to see there.
 
@@ -402,11 +402,12 @@ The `start` record of the relay that answers now:
 | N3 | `& $exe --settings`; in the window change the mode to `show-only`, **Apply**, OK | The relay's line says `show-only`; no console window at the restart. Change the mode back and **Apply** again: no console window either |
 | N4 | The relay's icon in the notification area: **Restart the relay** | Within 15 seconds a relay with another process ID answers; no console window |
 | N5 | Lock 1Password and unlock it. `$env:OPREASON_SSH_REASON = 'check N5'; ssh -T git@github.com`; **Allow this call**; approve 1Password | As G4: op-reason's window comes to the front at the click and 1Password's prompt comes at once, naming op-reason; `Hi <user>!` |
-| N6 | A double click on `op-reason.exe` in Explorer | The settings window opens, or comes to the front; no console window, not even in the taskbar |
+| N6 | A double click on `op-reason.exe` in Explorer; then pin it to the taskbar (right click → **Show more options** → **Pin to taskbar**), close the window and start it from the taskbar | The settings window opens, or comes to the front, both times; no console window, not even in the taskbar. Unpin it afterwards if you do not keep it |
 | N7 | `& $exe --settings set start-menu on`; press the Windows key, type `op-reason` and open it | The settings window; no console window in the taskbar. `set start-menu off` afterwards if you do not keep it |
 | N8 | In WSL, with `OPREASON_EXE` set to the WSL path of `$exe`: `op-reason --reason 'check N8' vault list </dev/null 2>&1 \| cat` (no terminal for the call: WSL starts the exe with `CREATE_NO_WINDOW` then) | op-reason's window and 1Password's prompt as usual; the vaults come through `cat`; no console window for `op.exe` |
 | N9 | In PowerShell: `& $exe --reason 'check N9' vault list; $LASTEXITCODE`, and `& $exe --ssh-agent --status; $LASTEXITCODE` | The vaults and 0, the prompt back when the call ends, as before; the relay's line and 0 |
-| N10 | `& $exe --settings set relay.autostart off`; then `& $exe --ssh-agent` in the same PowerShell, Ctrl+C after its first line; turn the other task of preparation 3 on again | The task is gone. The relay started by hand prints its line, stays in the terminal and stops on Ctrl+C; its `start` record says `console: shared`. The other task's relay answers again |
+| N10 | A call without a console: `Start-Process $exe -ArgumentList '--reason','check N10','vault','list'`; approve 1Password; then `& $exe --log --since 5m` | op-reason's window and 1Password's prompt as usual; no console window at all (`Start-Process` starts it with a console of its own before Windows 11 24H2, with none now, and `op.exe` then gets one that is never shown); the log has the call's end with exit 0 |
+| N11 | `& $exe --settings set relay.autostart off`; then `& $exe --ssh-agent` in the same PowerShell, Ctrl+C after its first line; turn the other task of preparation 3 on again | The task is gone. The relay started by hand prints its line, stays in the terminal and stops on Ctrl+C; its `start` record says `console: shared`. The other task's relay answers again |
 
 ## Open question: does plain `signout` close only one process's session?
 

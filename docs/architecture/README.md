@@ -244,7 +244,7 @@ the record with that answer.
 | `event` | Fields |
 | --- | --- |
 | `ssh-sign` | `v`, `id`, `time`, `epoch`, `mode` (`per-call`, `show-only`), `result` (`allowed`, `passed`, `denied`, `timeout`, `dismissed`, `gone`, `signed`, `failed` (1Password refused), `no-answer`, `no-upstream`, `lock-timeout`, `no-window`, `malformed`), `seconds` (to a tenth), `answer` (`allow`, `allow-terminal`, `deny`), `decision` (the `id` of the record whose answer covered it; then the call's facts are there), `call` (`rule`: `claude`, `shell`, `parent`, `alone`, `unbound`; `root` and `shell`: `pid`, `start`, `name`, `cmd`; `distro`), `caller` (as in `start`; `type` also `program`), `session`, `reason` (≤ 500), `client` (`pid`, `exe`, `cmd` masked, ≤ 1000), `key` (`fp`, `comment`, `type`), `purpose` (`kind`: `userauth` with `user`, `sshsig` with `namespace`, `other`), `host` (`name` from the command line, `fp`, and `onward` for a forwarded connection), `forwarded` |
-| `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`, `window-stuck`, `window-unstuck`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent`, `detail` (`window-stuck`: the step its thread waits in, one of `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`; `window-unstuck`: `after <seconds> s`) |
+| `ssh-relay` | `v`, `id`, `time`, `epoch`, `what` (`start`, `exit`, `no-prompt`, `no-parent`, `parent-ended`, `window-stuck`, `window-unstuck`), `mode`, `pipe`, `upstream`, `limit` (seconds), `pid`, `parent`, `detail` (`start`: the console it had, `console: none`, `console: own` or `console: shared`; `window-stuck`: the step its thread waits in, one of `factories`, `layout`, `create`, `show`, `target`, `draw`, `holder`, `toast`; `window-unstuck`: `after <seconds> s`) |
 
 Command lines are masked with the rules of `op` calls, word by word inside a remote command, without the rule for what
 follows `--`.
@@ -409,8 +409,9 @@ is never shown. Older Windows ignore the element. So:
   them);
 - without a console, `op.exe` starts with `CREATE_NO_WINDOW` (`win/opexe.rs`), and so do `whoami`, `signout` and
   `wsl.exe` always;
-- without a console and without standard output, `op-reason.exe` without arguments is a double click: it opens the
-  settings window (`win/console.rs`, `started_alone`);
+- without a console and without a standard output that goes anywhere (none, or the monitor that a start from the
+  taskbar puts there), `op-reason.exe` without arguments is a double click: it opens the settings window
+  (`win/console.rs`, `started_alone`);
 - the relay of a task has no console from its start; on older Windows it lets go of the one Windows made
   (`FreeConsole`).
 

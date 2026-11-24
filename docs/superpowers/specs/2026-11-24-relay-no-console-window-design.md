@@ -153,7 +153,10 @@ have it now.
 (`2026-11-23-settings-design.md` §11.1). That is now either of:
 
 - a console that only this process uses, with standard output on it (as before: Windows made the console for it);
-- no console at all and no standard output (the policy: Explorer, the Start menu, a task).
+- no console at all and no standard output that goes anywhere (the policy: Explorer, a task): none, or a value that is
+  no file, pipe or character device (`GetFileType`). A start from the taskbar or a jump list puts the monitor of the
+  taskbar where the standard output goes (`STARTUPINFO`'s `hStdOutput` with `STARTF_HASSHELLDATA`), which the console
+  that Windows made used to replace.
 
 A program that starts `op-reason.exe` without arguments and reads its output (a pipe, a file) still gets the usage.
 
@@ -202,7 +205,8 @@ terminal hands consoles to Windows Terminal, and the test of the settings window
    starts one (`DETACHED_PROCESS`, pipes: no console, as the policy leaves a start without flags), on the entry face and
    on the runner face with the fake `op.exe`: its output and exit code come through the pipes, and no console window
    names the fake `op.exe`.
-4. The double click (`CREATE_NEW_CONSOLE` and a hidden window, as now) still opens the settings window.
+4. The double click (`CREATE_NEW_CONSOLE` and a hidden window, as now) still opens the settings window, and so does a
+   start as the taskbar makes it (`STARTF_HASSHELLDATA` and a monitor where the standard output goes).
 5. Under a pseudoconsole (as WSL starts a call from a terminal), `op-reason.exe --version` prints its version through
    the pseudoconsole.
 6. On `windows-2022` (Windows Server 2022, build 20348, which does not know the policy), the zip's `op-reason.exe`
@@ -222,7 +226,7 @@ stop and restart, the icon's restart, the window's consoles).
   console window and that older Windows show one for a moment; the Start menu's line about its console; a line in the
   notes of "On Windows" for starts without a terminal.
 - `CHANGELOG.md` (Unreleased).
-- `docs/manual-verification.md` and `.ja.md`: the checks of §9 (N1–N10), and G11 and G15's expected console.
+- `docs/manual-verification.md` and `.ja.md`: the checks of §9 (N1–N11), and G11 and G15's expected console.
 - `docs/architecture/README.md`: the relay's start and the settings window's process.
 
 ## 9. Checks with the real app
@@ -235,10 +239,14 @@ stopped first (it runs the released exe):
 - N3 the window's **Apply** (after a mode change), N4 the icon's **Restart the relay**: no console window.
 - N5 `ssh -T git@github.com` through the relay: op-reason's window, then 1Password's prompt at once, naming op-reason
   (as G4).
-- N6 a double click on `op-reason.exe`, N7 the Start menu's **op-reason**: the settings window, no console window.
-- N8 from WSL, a call without a terminal (`… </dev/null | cat`): the window, the output, no console window.
-- N9 from PowerShell: a call's output and `$LASTEXITCODE`, `--ssh-agent --status`, Ctrl+C on a relay started by hand.
-- N10 back as before: `set relay.autostart off`, the dotfiles' task turned on again.
+- N6 a double click on `op-reason.exe` and a start of it pinned to the taskbar, N7 the Start menu's **op-reason**: the
+  settings window, no console window.
+- N8 from WSL, a call without a terminal (`… </dev/null 2>&1 | cat`): the window, the output, no console window.
+- N9 from PowerShell: a call's output and `$LASTEXITCODE`, `--ssh-agent --status`.
+- N10 a call without a console (`Start-Process` without `-NoNewWindow`): 1Password asks, no console window for `op.exe`
+  (§5.2), and `op-reason --log` has its end.
+- N11 back as before: `set relay.autostart off`, a relay started by hand in PowerShell (`console: shared`, Ctrl+C), the
+  dotfiles' task turned on again.
 
 ## 10. The dotfiles and the release (not this pull request)
 
@@ -259,3 +267,5 @@ that follows this pull request.
 | Older Windows keep today's flash; no launcher for them | the user's choice A; they are out of servicing |
 | A program that starts `op-reason.exe` with arguments and without a console (a shortcut, `Start-Process` without `-NoNewWindow`) gets no console window on Windows 11 24H2 and later; its output goes nowhere | the policy is per exe; such a start only showed a console that closed at the exit; terminals are unchanged |
 | Tests on `windows-2025` for the policy and on `windows-2022` for older Windows (a start of the zip's exe) | the runner of `windows-2025` applies the policy; the older one proves that the element does not stop the exe from starting where Windows does not know it |
+| The tests of the task's relay skip their console checks on a Windows before build 26100 (`ver`) and find the relay by the process that answers on the pipe (`--ssh-agent --status`), not by `relay.json` | an older Windows makes the relay a console, as the non-goals accept; a killed relay leaves its `relay.json`, which names it until the new relay writes the file |
+| `started_alone` takes a standard output that is no file, pipe or character device for none | a start from the taskbar puts a monitor there (the review of this pull request); without the console that replaced it, the usage would go nowhere and nothing would open |

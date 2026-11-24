@@ -38,7 +38,8 @@
   later and Windows Server 2025: `op-reason.exe`'s manifest asks Windows for no console unless it inherits one
   (`consoleAllocationPolicy` `detached`). Until now Windows made the relay a console of its own and showed it, or
   handed it to Windows Terminal, whose window came to the front, until the relay let go of it. A double click on
-  `op-reason.exe` and the Start menu's **op-reason** open the settings window without a console window too. Older
+  `op-reason.exe`, a start of it pinned to the taskbar and the Start menu's **op-reason** open the settings window
+  without a console window too. Older
   Windows keep the console for a moment. Terminals and calls from WSL see no change. A call that a program without a
   console starts with pipes shows no console window for `op.exe` either: when `op-reason.exe` has no console, `op.exe`
   gets one that is never shown. The relay's `start` record names the console it had (`detail`: `console: none`,
