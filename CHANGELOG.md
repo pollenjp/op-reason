@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-24
 
 - **`op-reason --settings`**: one list of op-reason's settings with the same three operations, `get` (the value now),
   `set` (make it so; running it again changes nothing) and `check` (compare a wanted value with the value now: exit 0
