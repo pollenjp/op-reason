@@ -140,8 +140,9 @@ pub fn run() -> i32 {
     let (mode, kind) = match plan {
         Plan::Usage => {
             // A double click on op-reason.exe: the settings window, rather than the usage in a console that closes at
-            // once (design 2026-11-23-settings-design.md §11.1)
-            if rest.is_empty() && console::of_its_own() {
+            // once, or in no console at all (designs 2026-11-23-settings-design.md §11.1 and
+            // 2026-11-24-relay-no-console-window-design.md §5.3)
+            if rest.is_empty() && console::started_alone() {
                 return super::settings::launch(lang);
             }
             out(&crate::messages::usage_full(lang, VERSION));

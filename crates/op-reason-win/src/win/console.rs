@@ -83,21 +83,41 @@ pub fn stderr_is_console() -> bool {
 /// Our stdin is something to read: not a console (where reading would wait for typing) and not missing. An
 /// `op inject` template is read from it only then (design `2026-11-17-refs-in-window-design.md` §2).
 pub fn stdin_is_readable() -> bool {
-    // SAFETY: GetStdHandle only reads process state.
-    let present = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
-        .is_ok_and(|h| h != HANDLE::default() && !h.is_invalid());
-    present && !is_console(STD_INPUT_HANDLE)
+    has_handle(STD_INPUT_HANDLE) && !is_console(STD_INPUT_HANDLE)
 }
 
-/// This process has a console of its own that shows its output: Windows made the console for it (a double click in
-/// Explorer), not a terminal that runs other programs too. `op-reason.exe` without arguments then opens the settings
-/// window instead of printing its usage into a console that closes at once (design `2026-11-23-settings-design.md`
-/// §11.1).
-pub fn of_its_own() -> bool {
+/// How many processes share this process's console; 0 when it has none.
+fn processes() -> u32 {
     let mut list = [0u32; 4];
     // SAFETY: a valid buffer.
-    let n = unsafe { GetConsoleProcessList(&mut list) };
-    n == 1 && is_console(STD_OUTPUT_HANDLE)
+    unsafe { GetConsoleProcessList(&mut list) }
+}
+
+/// This process has no console: none was inherited and Windows made none (the manifest's console allocation policy, on
+/// Windows 11 24H2 and later: a scheduled task, Explorer, `CREATE_NO_WINDOW` as WSL starts a call without a terminal),
+/// or it let go of one. A console program that it starts would get a console window of its own (design
+/// `2026-11-24-relay-no-console-window-design.md` §5.2).
+pub fn none() -> bool {
+    processes() == 0
+}
+
+/// Nobody reads this process's output, as after a double click in Explorer: a console that Windows made for this
+/// process alone with the output on it (Windows before 11 24H2), or no console and no standard output at all (the
+/// manifest's console allocation policy). `op-reason.exe` without arguments then opens the settings window instead of
+/// printing its usage into a console that closes at once, or into nothing (designs `2026-11-23-settings-design.md`
+/// §11.1 and `2026-11-24-relay-no-console-window-design.md` §5.3).
+pub fn started_alone() -> bool {
+    match processes() {
+        0 => !has_handle(STD_OUTPUT_HANDLE),
+        1 => is_console(STD_OUTPUT_HANDLE),
+        _ => false,
+    }
+}
+
+/// The standard handle is there (not missing, not invalid).
+fn has_handle(which: STD_HANDLE) -> bool {
+    // SAFETY: GetStdHandle only reads process state.
+    unsafe { GetStdHandle(which) }.is_ok_and(|h| h != HANDLE::default() && !h.is_invalid())
 }
 
 fn is_console(which: STD_HANDLE) -> bool {
