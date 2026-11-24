@@ -502,6 +502,24 @@ fn no_arguments_prints_usage_and_records_nothing() {
     assert_eq!(sb.calls(), 0);
 }
 
+/// The manifest asks Windows for no console that the exe does not inherit (design
+/// `2026-11-24-relay-no-console-window-design.md` §5.1). The manifest is UTF-8 text among the exe's resources.
+#[test]
+fn the_exe_asks_for_no_console_of_its_own() {
+    let bytes = fs::read(exe()).expect("read op-reason.exe");
+    let has = |text: &str| bytes.windows(text.len()).any(|w| w == text.as_bytes());
+    assert!(
+        has(
+            r#"<consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>"#
+        ),
+        "the manifest has the console allocation policy"
+    );
+    assert!(
+        has("permonitorv2") && has(r#"level="asInvoker""#),
+        "the rest of the manifest stays"
+    );
+}
+
 #[test]
 fn a_second_call_waits_for_the_lock_and_times_out() {
     let _g = serial();
