@@ -215,18 +215,19 @@ no GPU, no swap chain, no wait for the display's refresh); the windows of `op` c
    `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons, the bar of
    the seconds left to answer and the toast, and keeps the count of waiting calls current. The window's box shows the
    root's command, with the wrappers of a shell and of Claude Code's Bash tool taken off when they match exactly (from
-   the record's line of up to 1000 characters; `look::root_command`), and says how long an answer lasts with its name.
-   The toast (the Windows notification) is removed when the window closes, except after a time-out (`timeout`), which
-   leaves it. A click (press and release on a button) is remembered for the call (Allow this terminal: also for the
-   shell and the key); after Allow the window drops its buttons ("1Password is asking", with a band that says where
-   1Password keeps a prompt it did not show) until 1Password answers, then closes, and the lock and the turn pass on.
-   Right after a click that allows, the window comes to the front (`SetForegroundWindow`: the click was the last input,
-   so Windows lets the relay set the foreground window), unless the window in front belongs to one of the relay's
-   ancestors other than `explorer.exe` (the terminal program a relay started in one runs under, which 1Password takes
-   for the application); then the relay lets the process that serves 1Password's pipe (`GetNamedPipeServerProcessId`)
-   set the foreground window (`AllowSetForegroundWindow`), and sends the request. From that moment the window watches
-   for 1Password's prompt every 100 ms (`win/prompt.rs` looks at the window in front and the windows of 1Password's
-   processes that a person can see, `relay_prompt.rs` decides;
+   the record's line of up to 1000 characters; `look::root_command`), or, for the launcher of Claude Code's PowerShell
+   tool, which carries no command, the ssh command (`look::claude_powershell`), and says how long an answer lasts with
+   its name ("this call" for the PowerShell tool). The toast (the Windows notification) is removed when the window
+   closes, except after a time-out (`timeout`), which leaves it. A click (press and release on a button) is remembered
+   for the call (Allow this terminal: also for the shell and the key); after Allow the window drops its buttons
+   ("1Password is asking", with a band that says where 1Password keeps a prompt it did not show) until 1Password
+   answers, then closes, and the lock and the turn pass on. Right after a click that allows, the window comes to the
+   front (`SetForegroundWindow`: the click was the last input, so Windows lets the relay set the foreground window),
+   unless the window in front belongs to one of the relay's ancestors other than `explorer.exe` (the terminal program a
+   relay started in one runs under, which 1Password takes for the application); then the relay lets the process that
+   serves 1Password's pipe (`GetNamedPipeServerProcessId`) set the foreground window (`AllowSetForegroundWindow`), and
+   sends the request. From that moment the window watches for 1Password's prompt every 100 ms (`win/prompt.rs` looks at
+   the window in front and the windows of 1Password's processes that a person can see, `relay_prompt.rs` decides;
    [2026-11-26-prompt-guide-design.md](../superpowers/specs/2026-11-26-prompt-guide-design.md)): a window of 1Password
    (the pipe's server or `1Password.exe`) or of Windows Hello in front, or a new window of 1Password, is the prompt
    ("Approve in 1Password's window"); none within two seconds lights the window up (a border and, on Windows 11, the

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The SSH relay's window for a call of Claude Code's PowerShell tool** on Windows shows the ssh command in its box,
+  with the root process and "Claude Code's PowerShell tool" under it, and says "Allowing covers this call until it
+  ends". The tool runs its script through a launcher that carries no command (`cmd.exe /d /s /c` running
+  `chcp.com 65001`, then PowerShell with a fixed `-Command` that runs the script from an environment variable): the
+  window showed the launcher's line as the root command and named "pwsh.exe -NoProfile -NonInteractive …" in the line
+  about how long an answer lasts. The launcher is told only when its line matches word for word.
+
 ## 0.8.0 — 2026-11-26
 
 - **A modern look for `op-reason.exe`'s windows**, in Windows' dark or light app mode (it follows a change while a

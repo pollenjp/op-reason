@@ -275,6 +275,19 @@ The last record of a signature: `Get-Content "$env:LOCALAPPDATA\op-reason\ssh-lo
 Put everything back as after S31 (the block above): remove the task, stop the relay if it still runs, and lock
 1Password once.
 
+### A call of Claude Code's PowerShell tool (S37)
+
+Claude Code's PowerShell tool on Windows runs its script through a launcher (`cmd.exe` running `chcp.com 65001` and
+then PowerShell, the script in an environment variable), whose line holds no command: the window tells that launcher and
+shows the ssh command in its box
+([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md) §4.7, rule 3, and §13). It
+needs a per-call relay on `\\.\pipe\op-reason-ssh-agent` (step 5 of the preparation, or the task of S32) and Claude
+Code on Windows with its PowerShell tool.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| S37 | Ask Claude Code to run, in one call of its PowerShell tool, `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'; $env:OPREASON_SSH_REASON = 'check S37: PowerShell tool'; ssh -T git@github.com`. Click **Allow this call** and approve 1Password's prompt | The box, labelled "Command", shows the ssh command (`ssh.exe -T git@github.com`); under it, small, "cmd.exe (pid …) · Claude Code's PowerShell tool", and no second line of the ssh command below; after the seconds left, "Allowing covers this call until it ends (at most 60 minutes)"; the caller's chip "Claude Code (pid …)". `Hi <user>!` comes back to Claude Code. The record's `call.root.cmd` holds the launcher's line. If the box shows a long line with `chcp.com 65001 >nul &` instead, note `claude --version`: the launcher may have changed |
+
 ### Results of 2026-11-18
 
 op-reason 0.3.0 from this pull request (Windows: the zip of its Windows exe workflow; WSL: a release build of the

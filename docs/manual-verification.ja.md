@@ -269,6 +269,18 @@ Start-ScheduledTask -TaskName op-reason-ssh-check
 
 終わったら S31 の後と同じく元に戻します (上のブロック): タスクを消し、まだ動いていれば中継を止め、1Password を 1 回ロックします。
 
+### Claude Code の PowerShell の呼び出し (S37)
+
+Windows の Claude Code の PowerShell の tool は、スクリプトを起動の行 (`chcp.com 65001` の後に PowerShell を起こす
+`cmd.exe`。スクリプトは環境変数で渡す) で走らせ、その行にコマンドはありません。窓はその起動の行を見分け、枠に ssh の
+コマンドを出します ([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md) の §4.7 の
+規則 3 と §13)。`\\.\pipe\op-reason-ssh-agent` の per-call の中継 (用意の 5 か、S32 のタスク) と、PowerShell の tool の
+ある Windows の Claude Code が要ります。
+
+| # | すること | 期待 |
+| --- | --- | --- |
+| S37 | Claude Code に、PowerShell の tool の 1 回の呼び出しで `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'; $env:OPREASON_SSH_REASON = 'check S37: PowerShell tool'; ssh -T git@github.com` を打たせる。**この呼び出しを許可** を押し、1Password の画面で承認する | ラベル「コマンド」の枠に ssh のコマンド (`ssh.exe -T git@github.com`)、その下に小さく「cmd.exe (pid …) · Claude Code の PowerShell」が出て、その下にもう一度 ssh のコマンドの行は出ない。残り秒の横は「許可は、この呼び出しが終わるまで効きます (長くても 60 分)」。呼び手のチップは「Claude Code (pid …)」。`Hi <user>!` が Claude Code に返る。記録の `call.root.cmd` に起動の行が入る。枠に `chcp.com 65001 >nul &` を含む長い行が出たら、`claude --version` を控える (起動の形が変わったかもしれない) |
+
 ### 2026-11-18 の結果
 
 この PR の op-reason 0.3.0 (Windows は PR の Windows exe の workflow の zip、WSL は branch の release の build)、1Password CLI
