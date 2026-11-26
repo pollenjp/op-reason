@@ -26,6 +26,10 @@
 # (docs/superpowers/specs/2026-11-18-pass-toasts-design.md). Then the relay's icon in the notification area with its
 # menu open (the notification area's context-menu message posted to the icon's window).
 #
+# Every scene runs in Windows' dark app mode (AppsUseLightTheme 0, which op-reason's windows and toasts follow); the
+# window of an op call with references, the relay's windows and its toasts again in the light mode, named `<scene>-light`
+# (docs/superpowers/specs/2026-11-26-modern-window-design.md). The value is put back at the end.
+#
 # The settings window (op-reason.exe --settings) in English and in Japanese, with a temporary profile where the skill is
 # placed on Windows, and, with -FakeSsh, two WSL distributions through the fake wsl.exe: one that runs without the
 # skill and one that does not run (docs/superpowers/specs/2026-11-23-settings-design.md).
@@ -72,6 +76,21 @@ public static class OpReasonShots {
 }
 '@
 [void][OpReasonShots]::SetProcessDPIAware()
+
+# Windows' app mode, which op-reason's windows read when they open: dark or light for the scenes, put back at the end.
+$personalize = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+$themeBefore = (Get-ItemProperty -Path $personalize -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme
+function Set-AppTheme([ValidateSet('dark', 'light')] [string] $Theme) {
+  if (-not (Test-Path $personalize)) { New-Item -Path $personalize -Force | Out-Null }
+  Set-ItemProperty -Path $personalize -Name AppsUseLightTheme -Value ([int]($Theme -eq 'light')) -Type DWord
+}
+function Restore-AppTheme {
+  if ($null -eq $themeBefore) {
+    Remove-ItemProperty -Path $personalize -Name AppsUseLightTheme -ErrorAction SilentlyContinue
+  } else {
+    Set-ItemProperty -Path $personalize -Name AppsUseLightTheme -Value $themeBefore -Type DWord
+  }
+}
 
 $u = { param($s) [regex]::Unescape($s) }
 $TitleJa = & $u '1Password CLI \u306e\u627f\u8a8d\u306e\u4f9d\u983c'
@@ -221,6 +240,9 @@ function Wait-ClassWindow([string] $Class, [int] $TimeoutMs = 10000) {
   return [IntPtr]::Zero
 }
 
+try {
+Set-AppTheme dark
+
 # --- screenshots
 
 $reasonJa = & $u '\u30c7\u30d7\u30ed\u30a4\u306e\u305f\u3081\u306b Proxmox \u306e API \u306e token \u3092\u8aad\u3080'
@@ -279,7 +301,8 @@ $scenes = @(
 (New-Object -ComObject Shell.Application).MinimizeAll()
 [Threading.Thread]::Sleep(1000)
 $screenTaken = $false
-foreach ($s in $scenes) {
+# One scene of $scenes, saved as <Name>.png.
+function Invoke-Scene($s, [string] $Name) {
   $other = $null
   if ($s.others) {
     # an op.exe that is not ours: the window shows the orange line
@@ -294,17 +317,22 @@ foreach ($s in $scenes) {
     $p = Start-Proc $Exe $s.args (@{ FAKE_SLEEP_MS = '4000' } + $s.env)
   }
   $h = Wait-Window $s.title
-  if ($h -eq [IntPtr]::Zero) { throw "no window for scene $($s.name)" }
+  if ($h -eq [IntPtr]::Zero) { throw "no window for scene $Name" }
   [Threading.Thread]::Sleep(800)
-  Save-Window $h (Join-Path $Out "$($s.name).png")
-  if (-not $screenTaken) {
+  Save-Window $h (Join-Path $Out "$Name.png")
+  if (-not $script:screenTaken) {
     Save-Screen (Join-Path $Out '00-screen.png')
-    $screenTaken = $true
+    $script:screenTaken = $true
   }
   $p.WaitForExit()
-  if ($p.ExitCode -ne 0) { throw "scene $($s.name) exited with $($p.ExitCode)" }
+  if ($p.ExitCode -ne 0) { throw "scene $Name exited with $($p.ExitCode)" }
   if ($other) { $other.Kill(); $other.WaitForExit() }
 }
+foreach ($s in $scenes) { Invoke-Scene $s $s.name }
+# the window of an op call with references in the light mode
+Set-AppTheme light
+foreach ($s in @($scenes | Where-Object { $_.name -eq '09-exe-refs-links-ja' })) { Invoke-Scene $s "$($s.name)-light" }
+Set-AppTheme dark
 
 # Clicks the Japanese name at the right end of the window's language switch with the real mouse: 26 DIPs left of the client area's
 # right edge and 21 DIPs above its bottom (as crates/op-reason-win/tests/exe.rs does).
@@ -402,6 +430,11 @@ if ($FakeSsh) {
     session = $null; reason = ''
   }
   Show-Relay '14-relay-person-en' 'per-call' 'en' 'SSH key: allow this call?' $personCall
+  Set-AppTheme light
+  Show-Relay '13-relay-claude-ja-light' 'per-call' 'ja' `
+    (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') $claudeCall
+  Show-Relay '14-relay-person-en-light' 'per-call' 'en' 'SSH key: allow this call?' $personCall
+  Set-AppTheme dark
 
   # Clicks the first button of the relay's window (Allow this call) with the real mouse: 20 DIPs inside the client
   # area's left edge and 26 DIPs above its bottom (as crates/op-reason-win/tests/relay.rs does).
@@ -492,6 +525,18 @@ if ($FakeSsh) {
       , @('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60s', '-o', 'ServerAliveInterval=30',
         'deploy@build-runner-07.staging.internal.example.com', "/bin/sh -c 'echo ~ && sleep 0'")
     ) 3
+  Set-AppTheme light
+  Show-Toasts '16-relay-toasts-ja-light' 'ja' `
+    (& $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b') `
+    ($fetchCalls + @($personCall, $claudeCall)) @(1, 1, 1, 3, 1) @(
+      , @('git@github.com', "git-upload-pack 'me/infra.git'")
+      , @('git@github.com', "git-upload-pack 'me/app.git'")
+      , @('git@github.com', "git-upload-pack 'me/docs.git'")
+      , @('-T', 'git@github.com')
+      , @('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60s', '-o', 'ServerAliveInterval=30',
+        'deploy@build-runner-07.staging.internal.example.com', "/bin/sh -c 'echo ~ && sleep 0'")
+    ) 3
+  Set-AppTheme dark
   # show-only: the fake agent answers after six seconds, as while 1Password asks
   Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '6000' -NoNewline
   $ansibleCall = [ordered]@{
@@ -502,6 +547,9 @@ if ($FakeSsh) {
     session = $null; reason = 'Rotate the database password on the db hosts'
   }
   Show-Relay '15-relay-show-only-en' 'show-only' 'en' 'SSH key: 1Password is asking' $ansibleCall
+  Set-AppTheme light
+  Show-Relay '15-relay-show-only-en-light' 'show-only' 'en' 'SSH key: 1Password is asking' $ansibleCall
+  Set-AppTheme dark
   $agent.Kill(); $agent.WaitForExit()
 
   # The relay's icon and its menu (docs/superpowers/specs/2026-11-23-settings-design.md section 12)
@@ -707,3 +755,6 @@ $md -join "`n" | Set-Content -Path (Join-Path $Out 'timing.md') -Encoding utf8
 if ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
 $md -join "`n"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+} finally {
+  Restore-AppTheme
+}
