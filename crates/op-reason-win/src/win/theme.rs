@@ -7,8 +7,8 @@ use std::ffi::c_void;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
-    DWMWCP_ROUND, DwmSetWindowAttribute,
+    DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::Controls::{
@@ -76,6 +76,21 @@ pub fn frame(hwnd: HWND, theme: Theme) {
             WTA_NONCLIENT,
             &options as *const WTA_OPTIONS as *const c_void,
             size_of::<WTA_OPTIONS>() as u32,
+        );
+    }
+}
+
+/// The frame's border in `color` (Windows 11; the window lit up because 1Password's prompt did not come), or Windows'
+/// own border with `None`. Failures are ignored.
+pub fn border(hwnd: HWND, color: Option<Rgb>) {
+    let value = color.map_or(COLORREF(DWMWA_COLOR_DEFAULT), colorref);
+    // SAFETY: the value lives across the call, with its size.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &value as *const COLORREF as *const c_void,
+            size_of::<COLORREF>() as u32,
         );
     }
 }

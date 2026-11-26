@@ -192,7 +192,7 @@ fn run(rx: &Receiver<Pass>, wake: Wake, forget_ms: u64) {
 }
 
 /// Whether Windows' animation effects are on (on when it cannot be read).
-fn animation_on() -> bool {
+pub(super) fn animation_on() -> bool {
     let mut on = BOOL(1);
     // SAFETY: SPI_GETCLIENTAREAANIMATION writes a BOOL.
     let read = unsafe {

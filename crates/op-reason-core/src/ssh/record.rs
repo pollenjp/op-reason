@@ -101,6 +101,21 @@ pub struct Sign {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<HostRec>,
     pub forwarded: bool,
+    /// After a click that allows: what the relay saw of 1Password's prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptRec>,
+}
+
+/// What the relay saw of 1Password's prompt after a click that allows (design `2026-11-26-prompt-guide-design.md` §7).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PromptRec {
+    /// op-reason's window came to the front at the click.
+    pub front: bool,
+    /// Seconds from the request to 1Password's prompt (a window of 1Password, or of Windows Hello, in front or new), to
+    /// a tenth; null when it never came.
+    pub seen: Option<f64>,
+    /// Seconds from the request to the pointer at the tray; null when it never showed.
+    pub hint: Option<f64>,
 }
 
 /// The call a request belongs to.
@@ -255,6 +270,20 @@ mod tests {
         assert_eq!(
             log::line(&r),
             r#"{"v":1,"id":"s1","event":"ssh-sign","time":"t","epoch":5,"mode":"per-call","result":"allowed","seconds":2.5,"answer":"allow","call":{"rule":"claude","root":{"pid":7,"start":9,"name":"cmd.exe","cmd":"cmd.exe /d /s /c x"}},"caller":{"type":"claude","claude_pid":3,"herdr":null,"cwd":"~","repo":null,"branch":null},"reason":"push","client":{"pid":11,"exe":"C:\\ssh.exe","cmd":"ssh.exe git@github.com"},"key":{"fp":"SHA256:x","comment":"GitHub","type":"ssh-ed25519"},"purpose":{"kind":"userauth","user":"git"},"host":{"name":"git@github.com","fp":"SHA256:h"},"forwarded":false}"#
+        );
+        let with_prompt = Sign {
+            prompt: Some(PromptRec {
+                front: true,
+                seen: None,
+                hint: Some(2.0),
+            }),
+            ..r.clone()
+        };
+        assert!(
+            log::line(&with_prompt)
+                .ends_with(r#""forwarded":false,"prompt":{"front":true,"seen":null,"hint":2.0}}"#),
+            "{}",
+            log::line(&with_prompt)
         );
         let relay = Relay {
             v: 1,

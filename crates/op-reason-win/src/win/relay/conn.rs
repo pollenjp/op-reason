@@ -5,6 +5,7 @@
 //! alone. Every signature is recorded. A signature that an earlier answer let through without a window gets a toast
 //! (design `2026-11-18-pass-toasts-design.md` §4.1).
 
+use std::cell::Cell;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -19,7 +20,9 @@ use op_reason_core::place;
 use op_reason_core::ssh::call::{self, REASON_MAX};
 use op_reason_core::ssh::cmdline;
 use op_reason_core::ssh::decide::{Answer, Mark, Origin, ProcId};
-use op_reason_core::ssh::record::{CallRec, ClientRec, HostRec, KeyRec, ProcRec, PurposeRec, Sign};
+use op_reason_core::ssh::record::{
+    CallRec, ClientRec, HostRec, KeyRec, ProcRec, PromptRec, PurposeRec, Sign,
+};
 use op_reason_core::ssh::roots::{self, Node, Os, Rule};
 use op_reason_core::ssh::wire::{self, Purpose, SessionBind, SignRequest};
 use op_reason_core::time;
@@ -51,6 +54,7 @@ pub(super) fn serve(shared: Arc<Shared>, server: pipe::Server) {
         upstream: Upstream::NotYet,
         binds: Binds::default(),
         who: None,
+        prompt: Cell::new(None),
     };
     c.run();
 }
@@ -151,6 +155,8 @@ struct Conn<'a> {
     upstream: Upstream,
     binds: Binds,
     who: Option<Who>,
+    /// What the relay saw of 1Password's prompt after the click, for the request's record.
+    prompt: Cell<Option<PromptRec>>,
 }
 
 /// How to wait for 1Password's answer.
@@ -464,10 +470,16 @@ impl<'a> Conn<'a> {
             }
             Outcome::Asked(answer, mut shown) => {
                 if answer.allows() {
-                    if shown.came_forward() {
-                        self.let_upstream_come_forward();
-                    }
+                    let server = if shown.came_forward() {
+                        self.let_upstream_come_forward()
+                    } else {
+                        self.upstream_server()
+                    };
+                    // from the moment the request goes: whether 1Password's prompt comes (design
+                    // `2026-11-26-prompt-guide-design.md` §5)
+                    shown.watch_prompt(server);
                     let reply = self.exchange(msg, Watch::Shown(&mut shown)).reply;
+                    self.prompt.set(shown.prompt_record());
                     drop(shown);
                     self.finish(&who, &id, &req, reply, "allowed", Some(answer), None, t0)
                 } else {
@@ -538,10 +550,17 @@ impl<'a> Conn<'a> {
     /// Lets the process that serves 1Password's pipe (the 1Password app) bring its prompt in front of op-reason's
     /// window, which came to the front after the click: the relay is the foreground process now, so it may hand that on
     /// (design `2026-11-22-front-after-allow-design.md` §5.2). Before the request goes, so that the prompt finds it.
-    fn let_upstream_come_forward(&mut self) {
-        if let Some(pid) = self.upstream().and_then(|up| pipe::server_pid(up)) {
+    fn let_upstream_come_forward(&mut self) -> Option<u32> {
+        let pid = self.upstream_server();
+        if let Some(pid) = pid {
             window::let_come_forward(pid);
         }
+        pid
+    }
+
+    /// The process that serves 1Password's pipe, on this connection.
+    fn upstream_server(&mut self) -> Option<u32> {
+        self.upstream().and_then(|up| pipe::server_pid(up))
     }
 
     /// Whether a sign request comes from `ssh.exe` on a connection that carried no `session-bind@openssh.com`.
@@ -697,6 +716,7 @@ impl<'a> Conn<'a> {
             purpose,
             host,
             forwarded,
+            prompt: self.prompt.take(),
         };
         self.shared.record(log::line(&r));
     }

@@ -7,7 +7,7 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
-    MonitorFromWindow,
+    MonitorFromRect, MonitorFromWindow,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -78,4 +78,30 @@ fn primary_work_area() -> RECT {
         );
     }
     area
+}
+
+/// The whole screen (pixels, with the taskbar) that holds most of `r`, and its DPI; the primary screen when none does.
+pub fn bounds_of(r: RECT) -> Option<(RECT, u32)> {
+    // SAFETY: a plain query with a rectangle on the stack.
+    let monitor = unsafe { MonitorFromRect(&r, MONITOR_DEFAULTTOPRIMARY) };
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a valid out parameter with its size set.
+    let read = unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() };
+    read.then(|| (info.rcMonitor, dpi_of(monitor)))
+}
+
+/// The primary screen's work area and DPI (where the pointer to the tray goes when there is no taskbar to find).
+pub fn primary() -> Screen {
+    // SAFETY: a plain query.
+    let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    of_monitor(monitor).unwrap_or_else(|| Screen {
+        work: primary_work_area(),
+        dpi: dpi_of(monitor),
+    })
 }

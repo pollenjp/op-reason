@@ -165,6 +165,10 @@ const WATCH_TIMER: usize = 1;
 /// The timer that redraws the countdown ([`Window::set_deadline`]).
 const COUNTDOWN_TIMER: usize = 2;
 const COUNTDOWN_MS: u32 = 250;
+/// The timer that pulses the lit border ([`Window::set_alert`]), and the border's width.
+const ALERT_TIMER: usize = 3;
+const ALERT_MS: u32 = 50;
+const ALERT_W: f32 = 2.5;
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CAPTION.0 | WS_SYSMENU.0);
 const EX_STYLE: WINDOW_EX_STYLE =
     WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0 | WS_EX_NOACTIVATE.0);
@@ -296,10 +300,11 @@ enum Ink {
     PicStand,
     PicWindow,
     SwitchShown,
+    AlertBg,
 }
 
 impl Ink {
-    const ALL: [Ink; 28] = [
+    const ALL: [Ink; 29] = [
         Ink::Background,
         Ink::Text,
         Ink::Secondary,
@@ -328,6 +333,7 @@ impl Ink {
         Ink::PicStand,
         Ink::PicWindow,
         Ink::SwitchShown,
+        Ink::AlertBg,
     ];
 
     fn rgb(self, p: &Palette) -> Rgb {
@@ -360,6 +366,7 @@ impl Ink {
             Ink::PicStand => p.pic_stand,
             Ink::PicWindow => p.pic_window,
             Ink::SwitchShown => p.switch_shown,
+            Ink::AlertBg => p.alert_bg,
         }
     }
 }
@@ -733,8 +740,13 @@ impl Builder<'_> {
         self.line((cx + 3.0, cy), (cx + 1.0, cy + 2.0), Ink::Secondary, 1.2);
     }
 
-    /// The band's picture of the screen (design §4.9).
+    /// The band's picture of the screen (design §4.9), or of 1Password's question when its prompt came (design
+    /// `2026-11-26-prompt-guide-design.md` §6).
     fn sketch(&mut self, kind: Sketch, x: f32, y: f32) {
+        if kind == Sketch::Prompt {
+            self.prompt_sketch(x, y);
+            return;
+        }
         self.rect(
             rect(x, y, SKETCH.0, 40.0),
             3.0,
@@ -757,27 +769,63 @@ impl Builder<'_> {
             Sketch::Op => (Some((Ink::Accent, 1.0)), None, false),
             Sketch::Ask => (Some((Ink::Accent, 0.35)), Some((Ink::Accent, 1.0)), true),
             Sketch::Asking => (None, Some((Ink::Accent, 1.0)), true),
+            Sketch::Tray | Sketch::Prompt => (None, None, false),
         };
-        self.parts.push(Part::Box {
-            r: prompt,
-            radius: 2.0,
-            fill,
-            stroke,
-            dashed,
-        });
+        if fill.is_some() || stroke.is_some() {
+            self.parts.push(Part::Box {
+                r: prompt,
+                radius: 2.0,
+                fill,
+                stroke,
+                dashed,
+            });
+        }
         self.rect(
             rect(x + 1.0, y + 34.0, 62.0, 5.0),
             0.0,
             Some((Ink::PicTaskbar, 1.0)),
             None,
         );
+        let (tx, ty) = (x + 57.0, y + 36.5);
         self.parts.push(Part::Dot {
-            cx: x + 57.0,
-            cy: y + 36.5,
-            r: if kind == Sketch::Asking { 3.0 } else { 2.0 },
+            cx: tx,
+            cy: ty,
+            r: match kind {
+                Sketch::Asking => 3.0,
+                Sketch::Tray => 3.5,
+                _ => 2.0,
+            },
             fill: Some(Ink::Caution),
             stroke: None,
         });
+        if kind == Sketch::Tray {
+            // the tray ringed, and an arrow at it from the middle of the screen
+            self.parts.push(Part::Dot {
+                cx: tx,
+                cy: ty,
+                r: 6.5,
+                fill: None,
+                stroke: Some((Ink::Caution, 1.2)),
+            });
+            self.line(
+                (x + 30.0, y + 16.0),
+                (tx - 5.0, ty - 5.0),
+                Ink::Caution,
+                1.6,
+            );
+            self.line(
+                (tx - 5.0, ty - 5.0),
+                (tx - 10.5, ty - 6.0),
+                Ink::Caution,
+                1.6,
+            );
+            self.line(
+                (tx - 5.0, ty - 5.0),
+                (tx - 6.0, ty - 10.5),
+                Ink::Caution,
+                1.6,
+            );
+        }
         self.rect(
             rect(x + 28.0, y + 40.0, 8.0, 4.0),
             0.0,
@@ -789,6 +837,61 @@ impl Builder<'_> {
             0.0,
             Some((Ink::PicStand, 1.0)),
             None,
+        );
+    }
+
+    /// A sketch of 1Password's question (design `2026-11-26-prompt-guide-design.md` §6): a dialog with a key, two lines of
+    /// words and two buttons, drawn with shapes (not a copy of 1Password's window).
+    fn prompt_sketch(&mut self, x: f32, y: f32) {
+        self.rect(
+            rect(x + 4.0, y + 2.0, 56.0, 42.0),
+            4.0,
+            Some((Ink::Surface, 1.0)),
+            Some((Ink::Line, 1.0)),
+        );
+        self.parts.push(Part::Dot {
+            cx: x + 15.0,
+            cy: y + 14.0,
+            r: 6.0,
+            fill: Some(Ink::Accent),
+            stroke: None,
+        });
+        self.parts.push(Part::Dot {
+            cx: x + 13.5,
+            cy: y + 14.0,
+            r: 2.0,
+            fill: None,
+            stroke: Some((Ink::OnAccent, 1.2)),
+        });
+        self.line(
+            (x + 15.5, y + 14.0),
+            (x + 19.0, y + 14.0),
+            Ink::OnAccent,
+            1.2,
+        );
+        self.rect(
+            rect(x + 25.0, y + 10.0, 28.0, 3.0),
+            1.5,
+            Some((Ink::Text, 1.0)),
+            None,
+        );
+        self.rect(
+            rect(x + 25.0, y + 16.0, 20.0, 3.0),
+            1.5,
+            Some((Ink::Secondary, 1.0)),
+            None,
+        );
+        self.rect(
+            rect(x + 11.0, y + 29.0, 19.0, 9.0),
+            2.0,
+            Some((Ink::Accent, 1.0)),
+            None,
+        );
+        self.rect(
+            rect(x + 34.0, y + 29.0, 19.0, 9.0),
+            2.0,
+            None,
+            Some((Ink::Line, 1.0)),
         );
     }
 
@@ -1186,9 +1289,15 @@ fn build(
         y += SECTION_GAP;
         let bx = x0 + BAND_PAD_X + SKETCH.0 + 12.0;
         let bw = right - BAND_PAD_X - bx;
+        // the alert colors when 1Password's prompt did not come
+        let (bg, border, title_ink, line_ink) = if v.band.alert {
+            (Ink::AlertBg, Ink::Caution, Ink::Caution, Ink::Text)
+        } else {
+            (Ink::BandBg, Ink::BandBorder, Ink::BandTitle, Ink::BandText)
+        };
         let first = b.labels.len();
-        let th = b.marked(&fonts.f12b, &v.band.title, (bx, 0.0), bw, Ink::BandTitle)?;
-        let lh = b.marked(&fonts.f11, &v.band.line, (bx, 0.0), bw, Ink::BandText)?;
+        let th = b.marked(&fonts.f12b, &v.band.title, (bx, 0.0), bw, title_ink)?;
+        let lh = b.marked(&fonts.f11, &v.band.line, (bx, 0.0), bw, line_ink)?;
         let inner = th + 3.0 + lh;
         let bh = inner.max(SKETCH.1) + 2.0 * BAND_PAD_Y;
         let ty = y + (bh - inner) / 2.0;
@@ -1198,8 +1307,8 @@ fn build(
         b.rect(
             rect(x0, y, width, bh),
             BAND_RADIUS,
-            Some((Ink::BandBg, 1.0)),
-            Some((Ink::BandBorder, 1.0)),
+            Some((bg, 1.0)),
+            Some((border, 1.0)),
         );
         b.sketch(v.band.sketch, x0 + BAND_PAD_X, y + (bh - SKETCH.1) / 2.0);
         y += bh;
@@ -1365,6 +1474,9 @@ struct State {
     deadline: Option<(Instant, Duration)>,
     /// The line of the seconds left as last laid out: the seconds and the layout.
     countdown_text: Option<(u64, IDWriteTextLayout)>,
+    /// Lit up since then ([`Window::set_alert`]), pulsing when Windows' animation effects are on.
+    alert: Option<Instant>,
+    pulse: bool,
 }
 
 impl State {
@@ -1565,6 +1677,26 @@ impl State {
                 }
             }
         }
+        // the lit border, at its opacity now (a pulse a second)
+        let alert = match self.alert {
+            Some(since) => {
+                let opacity = if self.pulse {
+                    let phase = since.elapsed().as_secs_f32() * std::f32::consts::TAU;
+                    0.55 + 0.45 * (0.5 + 0.5 * phase.cos())
+                } else {
+                    1.0
+                };
+                // SAFETY: the color lives across the call.
+                Some(unsafe { t.CreateSolidColorBrush(&color(p.caution, opacity), None)? })
+            }
+            None => None,
+        };
+        let client = Rect {
+            left: 0.0,
+            top: 0.0,
+            right: PAD_LEFT + self.width + PAD_RIGHT,
+            bottom: self.layout.height,
+        };
         let pressed = match self.pressed {
             Some(Target::Button(i)) => Some(i),
             _ => None,
@@ -1706,6 +1838,14 @@ impl State {
                     );
                 }
                 text(&b.label);
+            }
+            if let Some(lit) = &alert {
+                t.DrawRoundedRectangle(
+                    &rounded(inset(client, ALERT_W / 2.0), 6.0),
+                    lit,
+                    ALERT_W,
+                    None,
+                );
             }
             t.EndDraw(None, None)
         };
@@ -1952,6 +2092,8 @@ impl Window {
                 software: false,
                 deadline: None,
                 countdown_text: None,
+                alert: None,
+                pulse: false,
             }));
             let (w, h) = match outer_size((*state).layout.height, dpi) {
                 Ok(s) => s,
@@ -2051,6 +2193,38 @@ impl Window {
         unsafe {
             (*self.state).deadline = Some((deadline, total));
             let _ = SetTimer(Some(self.hwnd), COUNTDOWN_TIMER, COUNTDOWN_MS, None);
+        }
+    }
+
+    /// Lights the window up (a border in the caution color inside it, pulsing unless Windows' animation effects are off,
+    /// and the frame's border on Windows 11) or puts it back: 1Password's prompt did not come (design
+    /// `2026-11-26-prompt-guide-design.md` §6). Nothing here activates the window.
+    pub fn set_alert(&self, on: bool) {
+        if !self.is_open() {
+            return;
+        }
+        // SAFETY: `state` stays valid until Drop; the reference ends before the Win32 calls.
+        let (changed, theme) = unsafe {
+            let st = &mut *self.state;
+            let changed = st.alert.is_some() != on;
+            if changed {
+                st.alert = on.then(Instant::now);
+                st.pulse = on && super::pass_window::animation_on();
+            }
+            (changed, st.theme)
+        };
+        if !changed {
+            return;
+        }
+        super::theme::border(self.hwnd, on.then(|| theme::palette(theme).caution));
+        // SAFETY: valid window handle on its own thread.
+        unsafe {
+            if on && (*self.state).pulse {
+                let _ = SetTimer(Some(self.hwnd), ALERT_TIMER, ALERT_MS, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), ALERT_TIMER);
+            }
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
     }
 
@@ -2393,6 +2567,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 };
                 if changed {
                     super::theme::frame(hwnd, now);
+                    if (*ptr).alert.is_some() {
+                        super::theme::border(hwnd, Some(theme::palette(now).caution));
+                    }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
@@ -2485,6 +2662,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = EndMenu();
                     let _ = SendMessageW(hwnd, WM_CANCELMODE, None, None);
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == ALERT_TIMER => {
+                let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == COUNTDOWN_TIMER => {

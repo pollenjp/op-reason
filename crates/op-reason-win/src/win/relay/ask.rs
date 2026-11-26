@@ -4,7 +4,9 @@
 //! and passes the turn on when it closes. A request of a call that asks already waits for that answer. The window's
 //! notification goes with it, except after a per-call time-out (design `2026-11-18-pass-toasts-design.md` §6). After a
 //! click that allows, the window comes to the front until the request has gone through 1Password, unless the program
-//! that started the relay is in front (design `2026-11-22-front-after-allow-design.md` §5).
+//! that started the relay is in front (design `2026-11-22-front-after-allow-design.md` §5), and watches for 1Password's
+//! prompt: it says so when the prompt comes, and lights up and points at the tray when it does not (design
+//! `2026-11-26-prompt-guide-design.md`).
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -14,6 +16,7 @@ use std::time::{Duration, Instant};
 use op_reason_core::contract;
 use op_reason_core::lang::Lang;
 use op_reason_core::ssh::decide::{Answer, Decision, Join, Mark, ProcId};
+use op_reason_core::ssh::record::PromptRec;
 use op_reason_core::time;
 use windows::Win32::UI::WindowsAndMessaging::{
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
@@ -21,12 +24,29 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{End, Shared, State, peer, pipe};
 use crate::relay_front;
+use crate::relay_prompt::{self, Prompt};
 use crate::relay_ui::{self, Facts, Phase};
 use crate::ui::Button;
-use crate::win::{app, holder, mutex, procs, toast, window};
+use crate::win::{app, holder, mutex, procs, prompt, theme, toast, tray_hint, window};
 
 /// How often a waiting thread looks at its client and the queue.
 const POLL: Duration = Duration::from_millis(250);
+
+/// How often the window looks for 1Password's prompt after a click that allows.
+const LOOK: Duration = Duration::from_millis(100);
+
+/// The watch for 1Password's prompt after a click that allows (design `2026-11-26-prompt-guide-design.md` §5).
+struct PromptWatch {
+    looker: prompt::Looker,
+    watch: relay_prompt::Watch,
+    /// When the request went to 1Password.
+    sent: Instant,
+    last: Instant,
+    /// The window came to the front at the click.
+    front: bool,
+    /// The pointer to the tray, while the prompt has not come.
+    pointer: Option<tray_hint::Pointer>,
+}
 
 /// A place in the queue of windows. Dropping it (also when a thread unwinds) leaves the queue and passes the turn on.
 pub(super) struct Ticket<'a> {
@@ -107,6 +127,8 @@ pub(super) struct Shown<'a> {
     keep_notification: bool,
     /// The end of the answer wait (the window that asks).
     deadline: Option<Instant>,
+    /// After a click that allows: the watch for 1Password's prompt.
+    prompt: Option<PromptWatch>,
 }
 
 impl Drop for Shown<'_> {
@@ -178,6 +200,7 @@ impl<'a> Shown<'a> {
             toast,
             keep_notification: false,
             deadline,
+            prompt: None,
         })
     }
 
@@ -194,6 +217,7 @@ impl<'a> Shown<'a> {
             );
         }
         window::pump();
+        self.look_for_prompt();
         if self.last_look.elapsed() >= POLL {
             self.last_look = Instant::now();
             let waiting = shared.lock().queue.waiting();
@@ -215,6 +239,79 @@ impl<'a> Shown<'a> {
     /// The window came to the front after the click (it gives the front back when it closes).
     pub fn came_forward(&self) -> bool {
         self.window.came_forward()
+    }
+
+    /// The request goes to 1Password now, after a click that allows: watches for its prompt from here (`server`: the
+    /// process that serves 1Password's pipe).
+    pub fn watch_prompt(&mut self, server: Option<u32>) {
+        let now = Instant::now();
+        self.prompt = Some(PromptWatch {
+            looker: prompt::Looker::start(server),
+            watch: relay_prompt::Watch::new(),
+            sent: now,
+            last: now,
+            front: self.window.came_forward(),
+            pointer: None,
+        });
+    }
+
+    /// What the relay saw of 1Password's prompt, for the request's record.
+    pub fn prompt_record(&self) -> Option<PromptRec> {
+        self.prompt.as_ref().map(|p| PromptRec {
+            front: p.front,
+            seen: p.watch.seen_secs(),
+            hint: p.watch.hint_secs(),
+        })
+    }
+
+    /// Looks for 1Password's prompt (every [`LOOK`]) and turns the window to what it saw: "approve in 1Password's
+    /// window" when the prompt came; lit up, with the seconds until 1Password closes the request and the pointer to the
+    /// tray, when it has not come within two seconds.
+    fn look_for_prompt(&mut self) {
+        let Some(p) = self.prompt.as_mut() else {
+            return;
+        };
+        if let Some(pointer) = p.pointer.as_mut() {
+            pointer.tick();
+        }
+        if p.last.elapsed() < LOOK {
+            return;
+        }
+        p.last = Instant::now();
+        let before = p.watch.state();
+        let ms = u64::try_from(p.sent.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let saw = p.looker.look();
+        let now = p.watch.look(ms, saw);
+        if now == before {
+            return;
+        }
+        let sent = p.sent;
+        match now {
+            Prompt::Seen => {
+                p.pointer = None;
+                self.phase = Phase::Seen;
+                self.window.set_alert(false);
+                self.window
+                    .set_texts(&relay_ui::both(&self.facts, self.phase));
+            }
+            Prompt::Hidden => {
+                let closes = Duration::from_secs(relay_prompt::CLOSES_AFTER_SECS);
+                self.phase = Phase::Hidden;
+                self.window.set_deadline(sent + closes, closes);
+                self.window
+                    .set_texts(&relay_ui::both(&self.facts, self.phase));
+                self.window.set_alert(true);
+                let pointer = tray_hint::Pointer::show(
+                    relay_ui::pointer_texts(self.lang),
+                    theme::current(),
+                    sent,
+                );
+                if let Some(p) = self.prompt.as_mut() {
+                    p.pointer = pointer;
+                }
+            }
+            Prompt::Waiting => {}
+        }
     }
 
     /// The language the window was opened in.
