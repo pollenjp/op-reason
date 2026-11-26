@@ -15,6 +15,9 @@
 //!   when set.
 //! - `fake-ssh spawn <program> <args>…`: runs the program and exits with its code; copied as `wsl.exe`, it stands for
 //!   the WSL interop host that starts a WSL call's `ssh.exe`.
+//! - `fake-ssh spawn-raw <program> <line>`: runs the program with `<line>` as the rest of its command line, unquoted
+//!   (Windows), and exits with its code; copied as `claude.exe`, it stands for Claude Code starting the launcher of its
+//!   PowerShell tool (a `cmd.exe` line whose quotes no argument quoting gives).
 //! - `fake-ssh front <title> [<program> <args>…]`: a plain window titled `<title>` (class `fake-ssh-front`) at the left
 //!   of the screen, until killed: the window in front for the tests of the relay's window coming to the front. With a
 //!   program, it starts it once the window is up, so that the program's parent owns the window (it stands for the
@@ -212,6 +215,27 @@ fn spawn(args: &[OsString]) -> i32 {
             127
         }
     }
+}
+
+#[cfg(windows)]
+fn spawn_raw(args: &[OsString]) -> i32 {
+    use std::os::windows::process::CommandExt;
+    let [program, line] = args else {
+        return 2;
+    };
+    match std::process::Command::new(program).raw_arg(line).status() {
+        Ok(st) => st.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("fake-ssh: cannot start {}: {e}", program.to_string_lossy());
+            127
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn spawn_raw(_args: &[OsString]) -> i32 {
+    eprintln!("fake-ssh: a command line as it is is a Windows command line");
+    2
 }
 
 #[cfg(windows)]
@@ -506,6 +530,7 @@ fn main() {
                 .collect::<Vec<_>>(),
         ),
         "spawn" => spawn(&args[1..]),
+        "spawn-raw" => spawn_raw(&args[1..]),
         "front" => front(&text(1), args.get(2..).unwrap_or_default()),
         _ if std::env::var_os("FAKE_WSL_DIR").is_some() => fake_wsl(&args),
         _ => match std::env::var("FAKE_SSH_PIPE") {
@@ -522,7 +547,7 @@ fn main() {
             _ => {
                 eprintln!(
                     "usage: fake-ssh agent <pipe> <dir> | client <pipe> <step>… | spawn <program> <args>… \
-                     | front <title> [<program> <args>…] \
+                     | spawn-raw <program> <line> | front <title> [<program> <args>…] \
                      (or FAKE_SSH_PIPE and FAKE_SSH_STEPS with an ssh command line)"
                 );
                 2
