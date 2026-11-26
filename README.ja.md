@@ -12,7 +12,7 @@ op-reason は、WSL と Windows で使う [1Password CLI](https://developer.1pas
 3. 1Password の承認の画面と一緒に、誰が・どこで・なぜ・何を打つかを出す窓を出します
 4. 記録に残します (`op-reason-log`)
 
-![アニメーション: WSL の端末で Claude Code が op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" を打つ。画面の右上に op-reason の窓が開いて時刻・呼び手 (Claude Code と process id)・場所・理由・コマンドを出し、画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る (許可・Claude・理由・コマンド)。](docs/images/readme-1-call.ja.svg)
+![アニメーション: WSL の端末で Claude Code が op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" を打つ。画面の右上に op-reason の窓が暗い色で開き、一番上に理由を大きな字で、呼び手 (Claude Code と process id)・repository と branch・ディレクトリをチップで、コマンドを等幅の枠の中に出し、1Password の画面がふつう出る所を帯で示す。画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが 1 行で出る (許可・Claude・理由・コマンド)。](docs/images/readme-1-call.ja.svg)
 
 AI のコーディングエージェント (Claude Code など) に `op` を打たせるために作りました。承認する前に何のための依頼かが分かり、
 1 回の承認が後の依頼に届かず、後からすべての呼び出しを見返せます。
@@ -274,7 +274,7 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 選べ、`set lang default` で `OPREASON_LANG` に戻ります (WSL の控え `~/.local/state/op-reason/lang.json` は
 `op-reason --settings` が直します。そうでなければ次の呼び出しが直します)。
 
-![アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、選んだ言語は %LOCALAPPDATA%\op-reason\settings.json に残る。許可したあとの次の呼び出しは、窓が日本語で開く。](docs/images/readme-5-language.ja.svg)
+![アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に言語の切り替え (English と 日本語 を並べた丸いスイッチ) が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で日本語に変わる (日本語 が明るい側で太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、選んだ言語は %LOCALAPPDATA%\op-reason\settings.json に残る。許可したあとの次の呼び出しは、窓が日本語で開く。](docs/images/readme-5-language.ja.svg)
 
 ### 終了コード
 
@@ -378,7 +378,7 @@ op-reason が画面に出すものは 3 つで、それぞれの場所に出ま�
   印として残ります。1 回だけの知らせ (1Password が確認しなかった・1Password が答えなかった・中継に親の process が無い) は
   残ります。
 
-![アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を後ろの字がうっすら透ける濃さ 90% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後のホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason の窓で聞き、右下に Windows の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。](docs/images/readme-6-relay-screens.ja.svg)
+![アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に op-reason の窓と同じ暗い色の小さなカード (トースト) を後ろの字がうっすら透ける濃さ 90% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後のホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason の窓で聞き (起点のコマンドを枠で出し、答えを待つ残り秒が減っていく)、右下に Windows の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。](docs/images/readme-6-relay-screens.ja.svg)
 
 🌐 [HTML 版: SSH の中継の窓・トースト・通知](docs/html/relay-screens.html#ja)
 

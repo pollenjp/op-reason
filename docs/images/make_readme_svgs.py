@@ -8,13 +8,16 @@
 - With reduced motion (prefers-reduced-motion: reduce), each SVG holds still on the frame that carries its point
   (scene 1: op-reason's window and the approval prompt), so that nothing is lost without the motion. Viewers
   that run no CSS animations show the same frame.
-- op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it, with the texts of
-  crates/op-reason-win/src/ui.rs (and its language switch). The refusal and the log table are op-reason's output
+- op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it (the header, the reason, the chips,
+  the command's box, the band with its picture of the screen, the footer and the language switch's pill), with the texts
+  of crates/op-reason-win/src/ui.rs, in the dark look of crates/op-reason-win/src/theme.rs (the windows follow Windows'
+  app mode; the animations show the dark one). The refusal and the log table are op-reason's output
   (the texts of crates/op-reason-core/src/messages.rs and logview.rs), the saved choice of a language is the file of
   crates/op-reason-core/src/settings/file.rs. The 1Password approval prompt is a plain box: it copies neither the look
   nor the words of 1Password's screen.
-- The SSH relay's scene: its window with the texts of crates/op-reason-win/src/relay_ui.rs, the toasts of signatures
-  that passed without a window as crates/op-reason-win/src/win/pass_window.rs draws them, moving by the rules and
+- The SSH relay's scene: its window that asks with the texts of crates/op-reason-win/src/relay_ui.rs (its countdown
+  ticking), the toasts of signatures that passed without a window as crates/op-reason-win/src/win/pass_window.rs draws
+  them in the same dark look, moving by the rules and
   times of crates/op-reason-win/src/pass_toast.rs (simulated here), and a Windows notification. The HTML page
   docs/html/relay-screens.html plays the same; --check also looks for the copied texts and times in it.
 - Names are examples only (repository, directory, process ids).
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import math
 import sys
 import unicodedata
 from pathlib import Path
@@ -71,27 +75,69 @@ RED = "#b91c1c"
 GREEN = "#15803d"
 APPROVE = "#2563eb"
 
-# op-reason's window: the layout (DIPs) and colors of crates/op-reason-win/src/win/window.rs. What Windows draws
-# around it (the frame, the caption) is taken from the screenshots of the windows-exe workflow.
+# op-reason's window: the layout (DIPs) of crates/op-reason-win/src/win/window.rs (build). What Windows draws around
+# it follows design 2026-11-26-modern-window-design.md §4.1: round corners, and a caption in the window's background
+# color that shows its close button only (no title, no icon).
 WIN_OUTER = 520.0  # OUTER_WIDTH
 WIN_W = WIN_OUTER - 2 * 7  # the frame as seen: Windows draws nothing in the outer 7 DIPs on both sides
 WIN_RIGHT = 16 + 8  # SCREEN_MARGIN, then the invisible part of the frame on the right
+WIN_TOP = 16.0  # SCREEN_MARGIN
 WIN_CAPTION = 30.0  # the caption of the tool window, below the top border line
-PAD_LEFT, PAD_TOP, PAD_RIGHT, PAD_BOTTOM, LINE_GAP = 14.0, 10.0, 14.0, 12.0, 2.0
+WIN_RADIUS = 8.0  # Windows 11's round corners (DWMWCP_ROUND)
+WIN_BORDER = "#454545"  # the line Windows draws around a dark window
+WIN_CLOSE = "#c8c8c8"  # the close button's glyph: the only thing the caption shows
+PAD_LEFT, PAD_TOP, PAD_RIGHT, PAD_BOTTOM = 14.0, 12.0, 14.0, 11.0
 TEXT_W = WIN_W - 2 - PAD_LEFT - PAD_RIGHT  # 476: the client area (the frame less its border lines) less the paddings
-TITLE_SIZE, BODY_SIZE = 16.0, 12.0
-SWITCH_SIZE = 11.0  # the language switch, at the right end of the footer's last line
+SECTION_GAP = 14.0  # between the parts of the window
+TILE, TILE_RADIUS, TILE_GAP = 28.0, 7.0, 10.0  # the header's tile
+TITLE_SIZE, REASON_SIZE, CODE_SIZE = 14.0, 17.0, 12.0  # the other texts are 12, 11 and 10 (design §4.5)
+CHIP_H, CHIP_PAD, CHIP_MARK, CHIP_GAP = 24.0, 9.0, 16.0, 6.0
+CODE_PAD_X, CODE_PAD_Y, CODE_RADIUS = 10.0, 8.0, 6.0  # the command's box
+MARK_W = 18.0  # the column of a mark before a line (the purpose, the footer's shield)
+BAND_PAD_X, BAND_PAD_Y, BAND_RADIUS = 10.0, 8.0, 8.0
+SKETCH = (64.0, 46.0)  # the band's picture of the screen
+PILL_H, PILL_PAD, PILL_GAP = 24.0, 9.0, 12.0  # the language switch
+BAR_H = 4.0  # the bar of the seconds left to answer
+BUTTON_H, BUTTON_TOP_GAP, BUTTON_GAP, BUTTON_PAD_X, BUTTON_MIN_W, BUTTON_RADIUS = 30.0, 14.0, 8.0, 14.0, 96.0, 6.0
+COUNTDOWN_MS = 250  # the window redraws its countdown this often
 SEGOE_ASCENT = 2210 / 2048  # Segoe UI: DirectWrite puts the baseline this far (em) below the top of a line,
 SEGOE_LINE = (2210 + 514) / 2048  # and a line is this tall
-WIN_BG = "#ffffe0"  # LIGHT_YELLOW
-WIN_INK = "#000000"  # BLACK
-WIN_FOOTER = "#b22222"  # FIREBRICK
-WIN_LINK = "#0066cc"  # LINK_BLUE: the language not shown, the one a click switches to
-WIN_BAR = "#808080"  # GRAY: the bar between the languages
-WIN_CAPTION_BG = "#f3f3f3"
-WIN_CAPTION_INK = "#9a9a9a"  # an inactive caption: the window never takes the focus
-WIN_CLOSE = "#dadada"
-WIN_BORDER = "#8796a1"
+MONO_ASCENT, MONO_LINE = 0.93, 1.17  # about the same for Cascadia Mono (the command's box, the toasts' line 2)
+
+# The dark look (crates/op-reason-win/src/theme.rs: DARK): the colors of the windows and the toasts by role. --check
+# looks for each in the DARK palette.
+DARK = {
+    "background": "#202020",
+    "text": "#ffffff",
+    "secondary": "#a0a0a0",
+    "tertiary": "#8a8a8a",
+    "surface": "#2b2b2b",
+    "line": "#3c3c3c",
+    "code_bg": "#141414",
+    "code_border": "#333333",
+    "code_text": "#d4d4d4",
+    "code_path": "#e5b07b",
+    "accent": "#60cdff",
+    "on_accent": "#000000",
+    "caution": "#fce100",
+    "on_caution": "#202020",
+    "critical": "#ff99a4",
+    "success": "#6ccb5f",
+    "on_success": "#000000",
+    "success_tint": "#1f3a1c",
+    "claude": "#c3a6ff",
+    "band_bg": "#1b2a36",
+    "band_border": "#2d4b63",
+    "band_title": "#e6f3fb",
+    "band_text": "#9cc9e8",
+    "pic_screen": "#15202a",
+    "pic_frame": "#9cc9e8",
+    "pic_taskbar": "#2d4b63",
+    "pic_stand": "#4a6b85",
+    "pic_window": "#3c3c3c",
+    "switch_shown": "#454545",
+}
+D = DARK
 
 STEP = "step-end"
 MOVE = "cubic-bezier(.4,.1,.2,1)"  # the mouse
@@ -99,36 +145,29 @@ HIDDEN, SHOWN = "opacity:0", "opacity:1"
 
 # ---- texts ----
 
-# Copies of op-reason's texts. --check looks for each of them in the Rust sources (SOURCES below).
-WINDOW = {  # crates/op-reason-win/src/ui.rs
+# Copies of op-reason's texts. --check looks for each of them in the Rust sources (sources() below).
+WINDOW = {  # crates/op-reason-win/src/ui.rs: the table (EN, JA) and the window's own words (WORDS_EN, WORDS_JA)
     "en": {
         "title": "1Password CLI approval request",
-        "time": "Time",
-        "caller": "Caller",
-        "place": "Place",
+        "subtitle": "op-reason · asking 1Password for approval",
         "reason": "Reason",
         "command": "Command",
+        # the band's two lines: ⟦…⟧ in the accent color, ⟪…⟫ in the caution color (look.rs: marked)
+        "band_title": "1Password's prompt usually opens in the ⟦middle of the screen⟧",
+        "band_line": "If it does not, open it from 1Password in the ⟪tray at the bottom right⟫ (under ^)",
         "footer": "Deny any 1Password approval prompt that comes without this window",
     },
     "ja": {
         "title": "1Password CLI の承認の依頼",
-        "time": "時刻",
-        "caller": "呼び手",
-        "place": "場所",
+        "subtitle": "op-reason · 1Password に承認を求めています",
         "reason": "理由",
         "command": "コマンド",
+        "band_title": "1Password の画面は、ふつう⟦画面の中央⟧に出ます",
+        "band_line": "出ないときは⟪右下のトレイ⟫の 1Password (^ の中) から",
         "footer": "この窓が出ていない 1Password の承認は拒否してください",
     },
 }
-SWITCH = (("English", "en"), (" | ", None), ("日本語", "ja"))  # ui.rs: SWITCH_LABELS
-# The footer as DirectWrite wraps it: window.rs lays it out narrower by the switch (78.7 DIPs in Segoe UI, with Yu
-# Gothic UI for 日本語) and SWITCH_GAP, so the English one takes two lines (as in the screenshots of the windows-exe
-# workflow). The switch sits on the baseline of the last line.
-FOOTER_LINES = {
-    "en": ("Deny any 1Password approval prompt that comes without this", "window"),
-    "ja": ("この窓が出ていない 1Password の承認は拒否してください",),
-}
-JA_WIDTH = 3 * SWITCH_SIZE  # 日本語: three full-width characters, the end of the switch
+SWITCH = (("English", "en"), ("日本語", "ja"))  # ui.rs: SWITCH, the halves of the pill from the left
 SETTINGS = ("%LOCALAPPDATA%\\op-reason\\settings.json", '{"v":1,"lang":"ja"}')  # crates/op-reason-core/src/settings/file.rs
 PREFIX = "op-reason: "  # crates/op-reason-core/src/messages.rs
 USAGE_SHORT = {  # messages.rs: usage_short, printed with a refusal
@@ -198,20 +237,24 @@ WIDE = (
 )
 
 
-# The SSH relay (crates/op-reason-win/src/relay_ui.rs): its window and the toast of a signature that passed
+# The SSH relay (crates/op-reason-win/src/relay_ui.rs): its window that asks (per-call) and the toast of a signature
+# that passed
 RELAY = {
     "en": {
         "title": "SSH key: allow this call?",
-        "time": "Time",
-        "caller": "Caller",
+        "subtitle": "op-reason's relay · per-call mode",
         "reason": "Reason",
-        "command": "Command",
-        "destination": "Destination",
-        "purpose": "For",
-        "host_key": "host key {0}",
-        "userauth": "logging in as {0}",
         "claude_pid": "Claude Code (pid {0})",
-        "footer": "per-call mode · an answer covers this call for {0} minutes",
+        "root_command": "Root command",
+        "command": "Command",
+        "userauth": "logging in as {0}",
+        "destination": "Destination",
+        "host_key": "host key {0}",
+        "key": "Key",
+        "countdown": "{0} s left to answer",
+        "covers_name": "Allowing covers this {0} until it ends (at most {1} minutes)",
+        "band_title": "Allowing brings up 1Password's prompt",
+        "band_line": "Usually in the ⟦middle of the screen⟧; if not, from the ⟪tray at the bottom right⟫",
         "allow": "Allow this call",
         "deny": "Deny",
         "pass_word": "Passed",
@@ -221,16 +264,19 @@ RELAY = {
     },
     "ja": {
         "title": "SSH の鍵: この呼び出しを許可しますか",
-        "time": "時刻",
-        "caller": "呼び手",
+        "subtitle": "op-reason の中継 · 呼び出しごとに決めるモード",
         "reason": "理由",
-        "command": "コマンド",
-        "destination": "接続先",
-        "purpose": "用途",
-        "host_key": "ホストの鍵 {0}",
-        "userauth": "{0} としてログイン",
         "claude_pid": "Claude Code (pid {0})",
-        "footer": "呼び出しごとに決めるモード · 答えはこの呼び出しに {0} 分効きます",
+        "root_command": "起点のコマンド",
+        "command": "コマンド",
+        "userauth": "{0} としてログイン",
+        "destination": "接続先",
+        "host_key": "ホストの鍵 {0}",
+        "key": "鍵",
+        "countdown": "答えを待つ残り {0} 秒",
+        "covers_name": "許可は、この {0} が終わるまで効きます (長くても {1} 分)",
+        "band_title": "許可すると 1Password の画面が出ます",
+        "band_line": "ふつうは⟦画面の中央⟧。出ないときは⟪右下のトレイ⟫から",
         "allow": "この呼び出しを許可",
         "deny": "拒否",
         "pass_word": "通過",
@@ -239,6 +285,7 @@ RELAY = {
         "no_reason": "理由なし",
     },
 }
+LIMIT_MINUTES, ANSWER_WAIT = 60, 60  # the relay's defaults: an answer lasts an hour at most, a window waits a minute
 NOTIFY = {  # crates/op-reason-win/src/ui.rs: the second line of a window's notification, and the short name of a person
     "en": {"toast_reason": "Reason: {0}", "human": "Human"},
     "ja": {"toast_reason": "理由: {0}", "human": "人"},
@@ -250,25 +297,27 @@ EDGE, GAP, CARD_W, CARD_H, DROP = 12.0, 8.0, 300.0, 70.0, 12.0
 EVICT_LINGER_MS = 40  # pass_toast.rs: a card pushed out is dropped this long after it has gone transparent
 OPACITY = 0.9  # a card shown (the text behind shows through faintly); the ring of its glow is drawn at full strength
 MORE_GAP, MORE_H = 4.0, 16.0  # the tag +N: this far under the third place, this high
-# A card as crates/op-reason-win/src/win/pass_window.rs draws it
+# A card as crates/op-reason-win/src/win/pass_window.rs draws it, in the dark look: the surface with the line's border,
+# "Passed", the check, the ×N tag (on the success tint), the bar and the ring in the success color, the caller in the
+# text color, line 2 (the command and its destination) in the monospace font, line 3 in the secondary color
 TOAST_TEXT_X, TOAST_TEXT_W = 36.0, CARD_W - 36.0 - 12.0
 TOAST_LINES = (9.0, 26.0, 43.0)  # the tops of lines 1, 2 and 3; their baselines are 13, 13 and 12 below
-TOAST_BG, TOAST_GREEN, TOAST_PALE, TOAST_DIM, TOAST_BORDER = "#ffffe0", "#15803d", "#dcfce7", "#555555", "#808080"
+TOAST_BODY, TOAST_SMALL = 12.0, 11.0  # line 1 (bold); line 2 (monospace), line 3 and the tags
+TOAST_DEST_SHARE = 0.6  # the widest share of line 2 that the destination may take; the command gets the rest
+TOAST_SHADOW = 0.4  # the shadow under a card in the dark look
 TOAST_MORE_PAD, TOAST_MORE_RADIUS = 6.0, 4.0  # the tag +N: the room left and right of its text, its corners
-# The relay window's buttons (crates/op-reason-win/src/win/window.rs)
-BUTTON_H, BUTTON_TOP_GAP, BUTTON_PAD_X, BUTTON_MIN_W, BUTTON_RADIUS = 28.0, 10.0, 14.0, 96.0, 4.0
-BUTTON_FILL = "#fafafa"
 # The HTML page that plays the relay's scene, and what --check looks for in it
 RELAY_HTML = "docs/html/relay-screens.html"
 
 
 def sources() -> dict:
     """What --check expects to find in each Rust file: the copied texts, formats and sizes."""
-    ui = ['"Claude Code (pid {pid})"', '"{repo} ({branch}) · {place}"']
+    ui = ['"Claude Code (pid {pid})"', '"{repo} · {branch}"']
     for t in WINDOW.values():
         ui += [f'"{v}"' for v in t.values()]
-    for s, lang in SWITCH:
-        ui.append(f'("{s}", ' + (f"Some(Lang::{lang.title()}))" if lang else "None)"))
+    halves = ", ".join(f'("{s}", Lang::{lang.title()})' for s, lang in SWITCH)
+    ui.append(f"pub const SWITCH: [(&str, Lang); 2] = [{halves}];")
+    ui += [f'"{v}"' for t in NOTIFY.values() for v in t.values()]
     messages = [f'"{PREFIX}"']
     for lang in LANGS:
         messages += list(USAGE_SHORT[lang])
@@ -287,28 +336,86 @@ def sources() -> dict:
         logview += [f'(Lang::{code}, "{k}") => "{t[k]}"' for k in ("approved", "denied")]
         logview += [f'refused: "{t["refused"]}"', f'human: "{t["human"]}"']
         logview.append(f'(Lang::{code}, "no-reason") => "{t["no-reason"]}"')
-    window = [
-        f"const OUTER_WIDTH: f32 = {WIN_OUTER:.1f};",
-        f"const PAD_LEFT: f32 = {PAD_LEFT:.1f};",
-        f"const PAD_TOP: f32 = {PAD_TOP:.1f};",
-        f"const PAD_RIGHT: f32 = {PAD_RIGHT:.1f};",
-        f"const PAD_BOTTOM: f32 = {PAD_BOTTOM:.1f};",
-        f"const LINE_GAP: f32 = {LINE_GAP:.1f};",
-        "const SCREEN_MARGIN: f32 = 16.0;",
-        f"const TITLE_SIZE: f32 = {TITLE_SIZE:.1f};",
-        f"const BODY_SIZE: f32 = {BODY_SIZE:.1f};",
-        f"const SWITCH_SIZE: f32 = {SWITCH_SIZE:.1f};",
-        "const SWITCH_GAP: f32 = 12.0;",
-        "const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);",
-        "const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);",
-        "const FIREBRICK: D2D1_COLOR_F = rgb(0xB2, 0x22, 0x22);",
-        "const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);",
-        "const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);",
+    sizes = {
+        "OUTER_WIDTH": WIN_OUTER,
+        "PAD_LEFT": PAD_LEFT,
+        "PAD_TOP": PAD_TOP,
+        "PAD_RIGHT": PAD_RIGHT,
+        "PAD_BOTTOM": PAD_BOTTOM,
+        "SCREEN_MARGIN": WIN_TOP,
+        "SECTION_GAP": SECTION_GAP,
+        "TILE": TILE,
+        "TILE_RADIUS": TILE_RADIUS,
+        "TILE_GAP": TILE_GAP,
+        "TITLE_SIZE": TITLE_SIZE,
+        "REASON_SIZE": REASON_SIZE,
+        "CODE_SIZE": CODE_SIZE,
+        "CHIP_H": CHIP_H,
+        "CHIP_PAD": CHIP_PAD,
+        "CHIP_MARK": CHIP_MARK,
+        "CHIP_GAP": CHIP_GAP,
+        "CODE_PAD_X": CODE_PAD_X,
+        "CODE_PAD_Y": CODE_PAD_Y,
+        "CODE_RADIUS": CODE_RADIUS,
+        "MARK_W": MARK_W,
+        "BAND_PAD_X": BAND_PAD_X,
+        "BAND_PAD_Y": BAND_PAD_Y,
+        "BAND_RADIUS": BAND_RADIUS,
+        "PILL_H": PILL_H,
+        "PILL_PAD": PILL_PAD,
+        "PILL_GAP": PILL_GAP,
+        "BAR_H": BAR_H,
+        "BUTTON_H": BUTTON_H,
+        "BUTTON_TOP_GAP": BUTTON_TOP_GAP,
+        "BUTTON_GAP": BUTTON_GAP,
+        "BUTTON_PAD_X": BUTTON_PAD_X,
+        "BUTTON_MIN_W": BUTTON_MIN_W,
+        "BUTTON_RADIUS": BUTTON_RADIUS,
+    }
+    window = [f"const {k}: f32 = {v:.1f};" for k, v in sizes.items()] + [
+        f"const SKETCH: (f32, f32) = ({SKETCH[0]:.1f}, {SKETCH[1]:.1f});",
+        f"const COUNTDOWN_MS: u32 = {COUNTDOWN_MS};",
         'w!("Segoe UI")',
-        'format!("{label}: ")',
-        # the switch on the footer's last baseline, the footer narrower by it
-        "Some((PAD_LEFT + self.width, top + self.paras[i].last_baseline))",
-        "(width - taken - SWITCH_GAP).max(width / 2.0)",
+        'w!("Cascadia Mono")',
+        # how build() lays the parts out
+        "let tw = (right - right_w - 12.0 - tx).max(width / 3.0);",
+        "y += TILE.max(title_h + sub_h - 1.0).max(time_h + date_h) + SECTION_GAP;",
+        "let (_, _, h) = b.label(&fonts.f10, &v.reason_label, (x0, y), width, Ink::Secondary)?;",
+        "y += h + 10.0;",
+        "ChipKind::Claude | ChipKind::Person | ChipKind::Other | ChipKind::Repo => CHIP_MARK,",
+        "let chip_w = (2.0 * CHIP_PAD + mark + w).min(width);",
+        "y = yy - CHIP_GAP + SECTION_GAP;",
+        "let box_h = code_h + 2.0 * CODE_PAD_Y;",
+        "let (_, _, h) = b.label(&fonts.m10, note, (x0, y), width, Ink::Tertiary)?;",
+        "let (_, _, h) = b.label(&fonts.m10, &fact.text, at, w, Ink::Tertiary)?;",
+        "y += BAR_H + 7.0;",
+        "let w = width - pill_w - PILL_GAP;",
+        'format!(" · {}", v.status)',
+        "y += (h + 5.0).max(PILL_H);",
+        "let bx = x0 + BAND_PAD_X + SKETCH.0 + 12.0;",
+        "let inner = th + 3.0 + lh;",
+        "let bh = inner.max(SKETCH.1) + 2.0 * BAND_PAD_Y;",
+        "b.pill_width(lang)? + PILL_GAP",
+        "width - MARK_W - pill_w,",
+        "let row = if pill_here { h.max(PILL_H) } else { h };",
+        "pill = Some(b.pill(lang, right, y + row - PILL_H)?);",
+        "let bw = (w + 2.0 * BUTTON_PAD_X).max(BUTTON_MIN_W);",
+        # the picture in the band
+        "rect(x, y, SKETCH.0, 40.0),",
+        "rect(x + 44.0, y + 4.0, 16.0, 9.0),",
+        "let prompt = rect(x + 22.0, y + 12.0, 20.0, 13.0);",
+        "Sketch::Op => (Some((Ink::Accent, 1.0)), None, false),",
+        "Sketch::Ask => (Some((Ink::Accent, 0.35)), Some((Ink::Accent, 1.0)), true),",
+        "rect(x + 1.0, y + 34.0, 62.0, 5.0),",
+        "rect(x + 28.0, y + 40.0, 8.0, 4.0),",
+        "rect(x + 22.0, y + 44.0, 20.0, 2.0),",
+        # the switch's shown half, and the buttons' colors
+        "ink: if l == lang { Ink::Text } else { Ink::Secondary },",
+        "&rounded(inset(pill.rects[shown], 2.0), PILL_H / 2.0 - 2.0),",
+        "Button::Allow => (Ink::Accent, None),",
+        "Button::Deny => (Ink::Surface, Some(Ink::Critical)),",
+        "Button::Allow => Ink::OnAccent,",
+        "Button::Deny => Ink::Critical,",
     ]
     settings = [
         SETTINGS[0],
@@ -316,8 +423,30 @@ def sources() -> dict:
         "pub const VERSION: u64 = 1;",
         'assert_eq!(render(None, Lang::Ja), r#"{"v":1,"lang":"ja"}"#);',
     ]
-    relay_ui = [f'"{v}"' for t in RELAY.values() for v in t.values()]
-    ui += [f'"{v}"' for t in NOTIFY.values() for v in t.values()]
+    values = [
+        f"pub const DEFAULT_TIME_LIMIT: u64 = {LIMIT_MINUTES} * 60;",
+        f"pub const DEFAULT_ANSWER_WAIT: u64 = {ANSWER_WAIT};",
+    ]
+    relay_ui = [f'"{v}"' for t in RELAY.values() for v in t.values()] + [
+        'format!("{} {d}", t.destination)',
+        '(Some(d), Some(k)) => Some(format!("{d} · {}", fill(t.host_key, k))),',
+        'format!("{} {k}", t.key)',
+        'text: detail.join(" · "),',
+        # a call with a root: the command it runs in the box, the root process and the rest of its line under it, the
+        # client's command line small, and the program in the line about how long an answer lasts
+        'Some(format!("{} · {}", root.process(), u.frame)),',
+        'format!("{} (pid {})", self.name, self.pid)',
+        'text: format!("{}: {}", t.command, f.command),',
+        "match f.root.as_ref().and_then(|_| look::program_name(&code)) {",
+        'Some(name) => t.covers_name.replace("{0}", &name).replace("{1}", &limit),',
+        'format!("{covers}{waiting}"),',
+    ]
+    look = [
+        'frame: format!("{head}\\"…\\""),',
+        "let kind = if i == 0 || (i == 1 && plain_word(&t.value)) {",
+        "w.starts_with(['/', '~', '.']) || w.starts_with(\"op://\") || w.contains('\\\\')",
+        "Some(sub) if name == \"git\" && plain_word(&sub.value) => {",
+    ]
     pass_toast = [
         f"pub const SHOW_MS: u64 = {SHOW_MS};",
         f"pub const FADE_MS: u64 = {FADE_MS};",
@@ -345,25 +474,31 @@ def sources() -> dict:
         f"const LINE1_TOP: f32 = {TOAST_LINES[0]:.1f};",
         f"const LINE2_TOP: f32 = {TOAST_LINES[1]:.1f};",
         f"const LINE3_TOP: f32 = {TOAST_LINES[2]:.1f};",
+        f"const BODY_SIZE: f32 = {TOAST_BODY:.1f};",
+        f"const SMALL_SIZE: f32 = {TOAST_SMALL:.1f};",
         "const BODY_LINE: (f32, f32) = (17.0, 13.0);",
         "const SMALL_LINE: (f32, f32) = (16.0, 12.0);",
         "const CHECK: (f32, f32, f32) = (18.0, 17.5, 8.0);",
         "const RADIUS: f32 = 6.0;",
-        "const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);",
-        "const GREEN: D2D1_COLOR_F = rgb(0x15, 0x80, 0x3D);",
-        "const PALE_GREEN: D2D1_COLOR_F = rgb(0xDC, 0xFC, 0xE7);",
-        "const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);",
-        "const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);",
+        "const BAR_TOP: f32 = CARD_H - 5.0;",
+        f"const DEST_SHARE: f32 = {TOAST_DEST_SHARE};",
         f"const MORE_PAD: f32 = {TOAST_MORE_PAD:.1f};",
         f"const MORE_RADIUS: f32 = {TOAST_MORE_RADIUS:.1f};",
-    ]
-    window += [
-        f"const BUTTON_H: f32 = {BUTTON_H:.1f};",
-        f"const BUTTON_TOP_GAP: f32 = {BUTTON_TOP_GAP:.1f};",
-        f"const BUTTON_PAD_X: f32 = {BUTTON_PAD_X:.1f};",
-        f"const BUTTON_MIN_W: f32 = {BUTTON_MIN_W:.1f};",
-        f"const BUTTON_RADIUS: f32 = {BUTTON_RADIUS:.1f};",
-        "const BUTTON_FILL: D2D1_COLOR_F = rgb(0xFA, 0xFA, 0xFA);",
+        f"const SHADOW: (f32, f32) = (0.16, {TOAST_SHADOW});",
+        # the roles of the palette that a card takes, and line 2 in the windows' monospace font
+        "fill: brush(p.surface, 1.0)?,",
+        "border: brush(p.line, 1.0)?,",
+        "glow: brush(p.success, 0.9)?,",
+        "green: brush(p.success, 1.0)?,",
+        "pale: brush(p.success_tint, 1.0)?,",
+        "white: brush(p.on_success, 1.0)?,",
+        "black: brush(p.text, 1.0)?,",
+        "dim: brush(p.secondary, 1.0)?,",
+        "window::mono_family(&dw),",
+        '&format!(" → {d}"),',
+        "TEXT_W * DEST_SHARE,",
+        "rt.DrawTextLayout(at(TEXT_X, LINE2_TOP), &l.command.layout, &p.black, options);",
+        "rt.DrawTextLayout(at(TEXT_X, LINE3_TOP), &l.why.layout, &p.dim, options);",
     ]
     return {
         "crates/op-reason-win/src/ui.rs": ui,
@@ -371,10 +506,20 @@ def sources() -> dict:
         "crates/op-reason-win/src/pass_toast.rs": pass_toast,
         "crates/op-reason-win/src/win/pass_window.rs": pass_window,
         "crates/op-reason-win/src/win/window.rs": window,
+        "crates/op-reason-win/src/look.rs": look,
         "crates/op-reason-core/src/messages.rs": messages,
         "crates/op-reason-core/src/logview.rs": logview,
         "crates/op-reason-core/src/settings/file.rs": settings,
+        "crates/op-reason-core/src/settings/values.rs": values,
     }
+
+
+THEME = "crates/op-reason-win/src/theme.rs"
+
+
+def dark_needles() -> list:
+    """What --check expects in the DARK palette of theme.rs: each color the animations draw, by its role."""
+    return [f"    {role}: Rgb::hex(0x{rgb[1:]})," for role, rgb in DARK.items()]
 
 
 # The example calls (README's usage example first)
@@ -395,7 +540,7 @@ REASONS = {
 PROXMOX = "op://Private/proxmox/token"
 DB = "op://Private/db/password"
 PROMPT_PATH = "~/src/infra"
-PLACE = "example/infra (main) · ~/src/infra"
+REPO, BRANCH = "example/infra", "main"  # the place of the calls: this repository and branch, in PROMPT_PATH
 DAY = "2026-11-15"
 
 PROMPT_BOX = {  # the 1Password approval prompt, as a plain box
@@ -408,11 +553,13 @@ TEXTS = {
         "call.title": "op-reason: one call",
         "call.desc": (
             'Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the '
-            'staging VM" read "op://Private/proxmox/token". op-reason\'s window opens at the top right of the screen '
-            "with the time, the caller (Claude Code and its process id), the place, the reason and the command, and "
-            "the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. After a click on "
-            "Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log "
-            "shows the call as one line: approved, by Claude, with the reason and the command."
+            'staging VM" read "op://Private/proxmox/token". op-reason\'s window opens at the top right of the screen, '
+            "dark: the reason first, in large letters; the caller (Claude Code and its process id), the repository "
+            "with its branch and the directory as chips; the command in a monospace box, the program and the reference "
+            "in color; a band that marks where 1Password's prompt usually opens. The 1Password approval prompt (drawn "
+            "as a plain box) opens in the middle of the screen. After a click on Approve, op prints the value (hidden "
+            "here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, "
+            "by Claude, with the reason and the command."
         ),
         "call.user": "Create the staging VM on Proxmox.",
         "call.assistant": "I need the Proxmox API token first.",
@@ -471,10 +618,11 @@ TEXTS = {
         ),
         "lang.title": "op-reason: choosing the language in the window",
         "lang.desc": (
-            "Animation: op-reason's window opens in English, its default, at the top right of the screen, with "
-            "English | 日本語 at the right of its last line, and the 1Password approval prompt (drawn as a plain box) "
-            "opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now "
-            "bold and English is the link. The prompt keeps the focus, and the choice is kept in "
+            "Animation: op-reason's window opens in English, its default, at the top right of the screen, with the "
+            "language switch, a pill of English and 日本語, at the right of its last row, and the 1Password approval "
+            "prompt (drawn as a plain box) opens in the middle of the screen. A click on 日本語 turns the window "
+            "Japanese at once: 日本語 is now bold on the lighter half of the pill, and English is the half to click. "
+            "The prompt keeps the focus, and the choice is kept in "
             "%LOCALAPPDATA%\\op-reason\\settings.json. After the approval, the next call opens its window in Japanese."
         ),
         "lang.badge": "The prompt keeps the focus",
@@ -487,15 +635,17 @@ TEXTS = {
         ),
         "relay.title": "op-reason's SSH relay: the window, the toasts and the notifications",
         "relay.desc": (
-            "Animation of a Windows desktop. A signature that passes without a window shows a small light yellow "
-            "card, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · "
+            "Animation of a Windows desktop. A signature that passes without a window shows a small dark card in the "
+            "colors of op-reason's window, a toast, at the top left, at 90% opacity so that the text behind shows "
+            "through faintly: Passed · "
             "Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after "
             "four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last "
             "host and lights up at each. Three other calls each put a card on top and push the others down; a fourth "
             "and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, "
             "+2) until four seconds after their last signature; four seconds after its last signature each card "
-            "fades. Then a new call asks in op-reason's window at the top right, with its Windows notification "
-            "at the bottom right, while another toast comes at the top left; a click on Allow this call closes the "
+            "fades. Then a new call asks in op-reason's window at the top right, where the seconds left to answer "
+            "count down, with its Windows notification at the bottom right, while another toast comes at the top "
+            "left; a click on Allow this call closes the "
             "window and its notification together, and the call's later signatures come as one toast at the top "
             "left (×3)."
         ),
@@ -514,8 +664,10 @@ TEXTS = {
         "call.desc": (
             "アニメーション: WSL の端末で Claude Code が "
             'op --reason "staging の VM を作るのに Proxmox の API の token を読む" read "op://Private/proxmox/token" '
-            "を打つ。画面の右上に op-reason の窓が開いて時刻・呼び手 (Claude Code と process id)・場所・理由・"
-            "コマンドを出し、画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) が出る。許可を押すと "
+            "を打つ。画面の右上に op-reason の窓が暗い色で開き、一番上に理由を大きな字で、呼び手 (Claude Code と "
+            "process id)・repository と branch・ディレクトリをチップで、コマンドを等幅の枠の中に色分けして出し、"
+            "1Password の画面がふつう出る所を帯で示す。画面の真ん中に 1Password の承認の画面 (素の箱で描いたもの) "
+            "が出る。許可を押すと "
             "op が値を出し (図では伏せた)、op-reason が sign out して窓が消え、op-reason-log にその呼び出しが "
             "1 行で出る (許可・Claude・理由・コマンド)。"
         ),
@@ -572,9 +724,10 @@ TEXTS = {
         ),
         "lang.title": "op-reason: 窓で表示の言語を選ぶ",
         "lang.desc": (
-            "アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に English | 日本語 が出る。"
-            "画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。日本語 を押すと、窓はその場で"
-            "日本語に変わる (日本語 が太字になり、English が押せる側になる)。フォーカスは承認の画面のままで、"
+            "アニメーション: 画面の右上に op-reason の窓が既定の英語で開き、最下行の右に言語の切り替え (English と "
+            "日本語 を並べた丸いスイッチ) が出る。画面の真ん中には 1Password の承認の画面 (素の箱で描いたもの) が出る。"
+            "日本語 を押すと、窓はその場で日本語に変わる (日本語 が明るい側で太字になり、English が押せる側になる)。"
+            "フォーカスは承認の画面のままで、"
             "選んだ言語は %LOCALAPPDATA%\\op-reason\\settings.json に残る。許可したあとの次の呼び出しは、窓が"
             "日本語で開く。"
         ),
@@ -588,13 +741,14 @@ TEXTS = {
         ),
         "relay.title": "op-reason の SSH の中継: 窓・トースト・通知",
         "relay.desc": (
-            "アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に薄い黄色の小さなカード (トースト) を"
+            "アニメーション。Windows の画面で、窓を出さずに通った署名は、左上に op-reason の窓と同じ暗い色の小さな"
+            "カード (トースト) を"
             "後ろの字がうっすら透ける濃さ 90% で出す: 通過 · 人、ssh のコマンドと接続先、ターミナルの許可 · 理由なし。4 秒で"
             "薄れて消える。ansible の 1 回の実行は同じ呼び出しで 8 回署名し、1 枚のカードが数 (×2 … ×8) と最後の"
             "ホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、"
             "4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が"
             "数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason "
-            "の窓で聞き、右下に Windows "
+            "の窓で聞き (答えを待つ残り秒が減っていく)、右下に Windows "
             "の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、"
             "その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。"
         ),
@@ -636,6 +790,232 @@ def cols(s: str) -> int:
 def clip(s: str, n: int) -> str:
     """logview.rs: clip (the first `n` characters and "…")."""
     return s if len(s) <= n else s[:n] + "…"
+
+
+def est_width(s: str, size: float, bold: bool = False) -> float:
+    """About how wide a text is in Segoe UI (Yu Gothic UI for Japanese): a width per kind of character. The scene sets
+    each line's textLength to it, so that every viewer's font draws it in that room."""
+    w = 0.0
+    for ch in s:
+        u = ord(ch)
+        if any(a <= u <= b for a, b in WIDE):
+            w += 1.0
+        elif ch in " ·":
+            w += 0.27
+        elif ch in "ijlt.,:;'|!()[]/\\-":
+            w += 0.3
+        elif ch in "mwMW@":
+            w += 0.85
+        elif ch in "→×~":
+            w += 0.62
+        elif ch.isupper() or ch.isdigit():
+            w += 0.58
+        else:
+            w += 0.5
+    return w * size * (1.06 if bold else 1.0)
+
+
+def fit(s: str, size: float, width: float, bold: bool = False) -> str:
+    """`s` cut with an ellipsis to fit `width`, as DirectWrite trims the toast's lines."""
+    if est_width(s, size, bold) <= width:
+        return s
+    while s and est_width(s + "…", size, bold) > width:
+        s = s[:-1]
+    return s.rstrip() + "…"
+
+
+def wide(ch: str) -> bool:
+    u = ord(ch)
+    return any(a <= u <= b for a, b in WIDE)
+
+
+# A Japanese line starts with none of these and ends with none of those (kinsoku)
+NO_LINE_START = set("、。，．・：；？！ー)）]」』〕｝〉》】…ぁぃぅぇぉっゃゅょァィゥェォッャュョ")
+NO_LINE_END = set("(（[「『〔｛〈《【")
+
+
+def wrap_at(s: str, fits) -> list:
+    """The lines of `s` as (start, end) without the spaces at their ends, broken as DirectWrite breaks them: after
+    spaces and between full-width characters, each line as long as `fits(line)` allows; a word too long for a line is
+    cut where it overflows."""
+    pieces, start = [], 0  # what a line breaks between: a word and the spaces after it, or one full-width character
+    for i in range(1, len(s)):
+        a, b = s[i - 1], s[i]
+        if b != " " and (
+            a == " " or ((wide(a) or wide(b)) and a not in NO_LINE_END and b not in NO_LINE_START)
+        ):
+            pieces.append((start, i))
+            start = i
+    pieces.append((start, len(s)))
+    lines: list = []
+    cur = None
+    for a, b in pieces:
+        if cur is None:
+            cur = (a, b)
+        elif fits(s[cur[0] : b].rstrip(" ")):
+            cur = (cur[0], b)
+        else:
+            lines.append(cur)
+            cur = (a, b)
+        while cur[1] - cur[0] > 1 and not fits(s[cur[0] : cur[1]].rstrip(" ")):
+            k = cur[1] - 1
+            while k - cur[0] > 1 and not fits(s[cur[0] : k]):
+                k -= 1
+            lines.append((cur[0], k))
+            cur = (k, cur[1])
+    lines.append(cur)
+    out = []
+    for a, b in lines:
+        while b > a and s[b - 1] == " ":
+            b -= 1
+        out.append((a, b))
+    return out
+
+
+def unmark(s: str) -> tuple:
+    """look.rs: marked — the text of a band's line without its marks, and the tone of each character: "" (plain),
+    "accent" (⟦…⟧) or "caution" (⟪…⟫). A mark that does not close is a plain character."""
+    out, tones, i = [], [], 0
+    while i < len(s):
+        close = {"⟦": "⟧", "⟪": "⟫"}.get(s[i])
+        end = s.find(close, i + 1) if close else -1
+        if end >= 0:
+            out.append(s[i + 1 : end])
+            tones += ["accent" if s[i] == "⟦" else "caution"] * (end - i - 1)
+            i = end + 1
+        else:
+            out.append(s[i])
+            tones.append("")
+            i += 1
+    return "".join(out), tones
+
+
+def lh(size: float) -> float:
+    """The height of a line of Segoe UI at `size`."""
+    return size * SEGOE_LINE
+
+
+def wline(x: float, top: float, s: str, size: float, fill: str, bold: bool = False, anchor: str = "", tones=()) -> str:
+    """One line of op-reason's window with its top at `top` (DirectWrite lays lines out from their tops), in the room
+    est_width gives it, so that every viewer's font keeps the window's layout. `tones`: the tone of each character
+    (unmark): each run of one tone is a text of its own, in the accent or the caution color, where the line's text
+    before it ends (one text with tspans would not keep its room in every renderer)."""
+    if not s:
+        return ""
+    if any(tones):
+        tint = {"": fill, "accent": D["accent"], "caution": D["caution"]}
+        out, at = [], x
+        for t, run in itertools.groupby(zip(s, tones, strict=True), key=lambda p: p[1]):
+            part = "".join(ch for ch, _ in run)
+            out.append(wline(at, top, part, size, tint[t], bold))
+            at += est_width(part, size, bold)
+        return "".join(out)
+    a = f' text-anchor="{anchor}"' if anchor else ""
+    c = ' class="b"' if bold else ""
+    return (
+        f'<text x="{num(x)}" y="{num(top + size * SEGOE_ASCENT)}" font-size="{num(size)}" fill="{fill}"{c}{a} '
+        f'textLength="{num(est_width(s, size, bold))}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'
+        f"{esc(s)}</text>"
+    )
+
+
+def para(x: float, top: float, s: str, size: float, fill: str, width: float, bold: bool = False) -> tuple:
+    """A text of op-reason's window wrapped at `width`, its words in ⟦…⟧ and ⟪…⟫ tinted: the lines, the height and
+    the widest line's width."""
+    plain, tones = unmark(s)
+    spans = wrap_at(plain, lambda t: est_width(t, size, bold) <= width + 1e-6)
+    out = [
+        wline(x, top + i * lh(size), plain[a:b], size, fill, bold, tones=tones[a:b]) for i, (a, b) in enumerate(spans)
+    ]
+    return "".join(out), len(spans) * lh(size), max(est_width(plain[a:b], size, bold) for a, b in spans)
+
+
+def mono_para(x: float, top: float, s: str, size: float, fill: str, width: float) -> tuple:
+    """A small text of op-reason's window in the monospace font (the root process under the command's box, the ssh
+    command among the facts), wrapped at `width`: the lines and the height."""
+    n = int(width // (size * ADVANCE))
+    spans = wrap_at(s, lambda t: cols(t) <= n)
+    line = size * MONO_LINE
+    out = [mono(x, top + i * line + size * MONO_ASCENT, s[a:b], size, fill) for i, (a, b) in enumerate(spans)]
+    return "".join(out), len(spans) * line
+
+
+def box(x: float, y: float, w: float, h: float, rx: float, fill: str, stroke: str = "", sw: float = 1, more="") -> str:
+    """A rectangle with round corners (Direct2D's rounded rectangle: the stroke on its edge)."""
+    r = f' rx="{num(min(rx, w / 2, h / 2))}"' if rx else ""
+    s = f' stroke="{stroke}"' + (f' stroke-width="{num(sw)}"' if sw != 1 else "") if stroke else ""
+    return f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="{num(h)}"{r} fill="{fill}"{s}{more}/>'
+
+
+def dot(cx: float, cy: float, r: float, fill: str) -> str:
+    return f'<circle cx="{num(cx)}" cy="{num(cy)}" r="{num(r)}" fill="{fill}"/>'
+
+
+def command_tokens(s: str):
+    """look.rs: tokens — the words of a command line as op-reason displays it, (value, start, end) each: words between
+    spaces, a word in double quotes holding spaces (\\" a quote inside); None when a quote does not close."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s[i] in " \t":
+            i += 1
+            continue
+        start, value, quoted, end = i, [], False, n
+        while i < n:
+            c = s[i]
+            if not quoted and c in " \t":
+                end = i
+                break
+            i += 1
+            if c == '"':
+                quoted = not quoted
+            elif c == "\\" and quoted and i < n and s[i] == '"':
+                i += 1
+                value.append('"')
+            else:
+                value.append(c)
+        if quoted:
+            return None
+        out.append(("".join(value), start, end))
+    return out
+
+
+def plain_word(w: str) -> bool:
+    """look.rs: plain_word — letters, digits, - and _, starting with a letter (a subcommand such as push)."""
+    return bool(w) and w[0].isalpha() and all(c.isalnum() or c in "-_" for c in w)
+
+
+def program_name(command: str) -> str:
+    """look.rs: program_name — the program of a command of one program (its file name without .exe), and for git its
+    subcommand: the name in the relay's line about how long an answer lasts."""
+    words = command_tokens(command) or [("", 0, 0)]
+    first = words[0][0].replace("\\", "/").rsplit("/", 1)[-1]
+    shown = first[:-4] if first.lower().endswith(".exe") else first
+    if shown.lower() == "git" and len(words) > 1 and plain_word(words[1][0]):
+        return f"{shown} {words[1][0]}"
+    return shown
+
+
+def color_words(command: str) -> list:
+    """look.rs: color_words (design §4.6) — (start, end, kind) of each word: "program" for the program and, when the
+    next word is a plain word, that word too (the accent color, bold); "path" for a file name, a path or a reference
+    (the path color); "plain" for the rest. The spaces between words are in none."""
+    words = command_tokens(command)
+    if words is None:
+        return [(0, len(command), "plain")] if command else []
+
+    def path_word(w: str) -> bool:
+        if w.startswith(("/", "~", ".", "op://")) or "\\" in w:
+            return True
+        return any(w[k] == "." and w[k - 1].isalnum() and w[k + 1].isalnum() for k in range(1, len(w) - 1))
+
+    out: list = []
+    for i, (value, start, end) in enumerate(words):
+        program = i == 0 or (i == 1 and plain_word(value))
+        if i == 1 and program:
+            out[-1] = (out[-1][0], end, "program")
+        else:
+            out.append((start, end, "program" if program else "path" if path_word(value) else "plain"))
+    return out
 
 
 def text(x: float, y: float, s: str, size: float, fill: str = INK, bold: bool = False, anchor: str = "") -> str:
@@ -912,107 +1292,404 @@ def result_hook(t: Term, y: float) -> str:
     )
 
 
-def window_layout(lines: int, footer_lines: int) -> tuple:
-    """The client height of op-reason's window and the baselines of its title, its lines and the lines of its footer
-    (window.rs: each paragraph is LINE_GAP below the one above, plus LINE_GAP)."""
-    y, base = PAD_TOP, []
-    for size, n in [(TITLE_SIZE, 1)] + [(BODY_SIZE, 1)] * lines + [(BODY_SIZE, footer_lines)]:
-        y += LINE_GAP
-        base += [y + size * (SEGOE_ASCENT + k * SEGOE_LINE) for k in range(n)]
-        y += n * size * SEGOE_LINE + LINE_GAP
-    return y + PAD_BOTTOM, base
+# ---- op-reason's window (window.rs), in the dark look ----
 
 
-def switch(x: float, y: float, lang: str) -> str:
-    """The language switch, ending at `x` on the baseline `y`: `lang` bold and black, the other language blue and
-    underlined (the link), the bar gray."""
-    parts = []
-    for s, code in SWITCH:
-        if code is None:
-            parts.append(f'<tspan fill="{WIN_BAR}">{esc(s)}</tspan>')
-        elif code == lang:
-            parts.append(f'<tspan class="b" fill="{WIN_INK}">{esc(s)}</tspan>')
-        else:
-            parts.append(f'<tspan fill="{WIN_LINK}" text-decoration="underline">{esc(s)}</tspan>')
+def tile(icon: str, x: float, y: float) -> str:
+    """The header's tile (window.rs: tile): a lock on the accent color (a call of op), a key on the caution color (the
+    relay)."""
+    if icon == "lock":
+        ink = D["on_accent"]
+        return (
+            box(x, y, TILE, TILE, TILE_RADIUS, D["accent"])
+            + box(x + 9.5, y + 7, 9, 10, 4.5, "none", ink, 2)
+            + box(x + 8, y + 13, 12, 9, 2, ink)
+        )
+    ink = D["on_caution"]
     return (
-        f'<text x="{num(x)}" y="{num(y)}" font-size="{num(SWITCH_SIZE)}" text-anchor="end" xml:space="preserve">'
-        f"{''.join(parts)}</text>"
+        box(x, y, TILE, TILE, TILE_RADIUS, D["caution"])
+        + f'<circle cx="{num(x + 10)}" cy="{num(y + 14)}" r="4" fill="none" stroke="{ink}" stroke-width="2"/>'
+        f'<path d="M{num(x + 14)},{num(y + 14)}H{num(x + 22)}M{num(x + 19)},{num(y + 14)}V{num(y + 18)}'
+        f'M{num(x + 22)},{num(y + 14)}V{num(y + 17)}" fill="none" stroke="{ink}" stroke-width="2"/>'
     )
 
 
-def op_window(
-    c: Canvas, x: float, y: float, lang: str, values: tuple, bands: tuple = (), switch_band: tuple = ()
-) -> tuple:
-    """op-reason's window in `lang` with its frame's top left at (x, y). `bands`: (line, from, to) to light up a line;
-    `switch_band`: (from, to) to light up the language switch.
+def shield(x: float, y: float) -> str:
+    """The footer's shield (12 × 14)."""
+    return (
+        f'<path d="M{num(x + 6)},{num(y)}L{num(x + 12)},{num(y + 2.5)}V{num(y + 7)}L{num(x + 6)},{num(y + 14)}'
+        f'L{num(x)},{num(y + 7)}V{num(y + 2.5)}Z" fill="none" stroke="{D["critical"]}" stroke-width="1.5"/>'
+    )
 
-    Returns the parts, the height and the middle of 日本語 at the end of the switch (where a click switches an English
-    window to Japanese).
-    """
-    t = WINDOW[lang]
-    labels = (t["time"], t["caller"], t["place"], t["reason"], t["command"])
-    footer = FOOTER_LINES[lang]
-    client_h, base = window_layout(len(labels), len(footer))
-    h = 1 + WIN_CAPTION + client_h + 1
-    cx, cy = x + 1, y + 1 + WIN_CAPTION
-    tx = cx + PAD_LEFT
-    right = tx + TEXT_W
-    cid = c.clip(cx, cy, WIN_W - 2, client_h)
-    bx = x + WIN_W - 2 - 19
+
+def purpose_mark(x: float, y: float) -> str:
+    """The mark of what the signature is for: an arrow into a circle."""
+    cx, cy, ink = x + 7, y + 8, D["secondary"]
+    return (
+        f'<circle cx="{num(cx)}" cy="{num(cy)}" r="6" fill="none" stroke="{ink}" stroke-width="1.5"/>'
+        f'<path d="M{num(cx - 3)},{num(cy)}H{num(cx + 3)}M{num(cx + 1)},{num(cy - 2)}L{num(cx + 3)},{num(cy)}'
+        f'L{num(cx + 1)},{num(cy + 2)}" fill="none" stroke="{ink}" stroke-width="1.2"/>'
+    )
+
+
+def sketch(kind: str, x: float, y: float) -> str:
+    """The band's picture of the screen (window.rs: sketch, design §4.9): op-reason's window at the top right (in the
+    caution color: the window that asks), the place of 1Password's prompt in the middle (filled for a call of op;
+    dashed and pale for the relay's window that asks: to come), the tray's dot at the bottom right of the taskbar."""
+    if kind == "op":
+        prompt = box(x + 22, y + 12, 20, 13, 2, D["accent"])
+    else:
+        prompt = box(x + 22, y + 12, 20, 13, 2, D["accent"], more=' fill-opacity=".35"') + box(
+            x + 22, y + 12, 20, 13, 2, "none", D["accent"], more=' stroke-dasharray="2 2"'
+        )
+    return (
+        box(x, y, SKETCH[0], 40, 3, D["pic_screen"], D["pic_frame"], 1.2)
+        + box(x + 44, y + 4, 16, 9, 1.5, D["caution"] if kind == "ask" else D["pic_window"], D["secondary"], 0.8)
+        + prompt
+        + box(x + 1, y + 34, 62, 5, 0, D["pic_taskbar"])
+        + dot(x + 57, y + 36.5, 2, D["caution"])
+        + box(x + 28, y + 40, 8, 4, 0, D["pic_stand"])
+        + box(x + 22, y + 44, 20, 2, 0, D["pic_stand"])
+    )
+
+
+def pill(lang: str, right: float, top: float) -> tuple:
+    """The language switch (window.rs: pill; look.rs: pill): English then 日本語, each its name's width and PILL_PAD on
+    both sides, ending at `right`; the language shown bold in the text color on the lighter part, the other one in the
+    secondary color, the half a click switches to. Returns the parts and the halves (left, right)."""
+    widths = [est_width(s, 11, code == lang) for s, code in SWITCH]
+    ja, en = widths[1] + 2 * PILL_PAD, widths[0] + 2 * PILL_PAD
+    halves = ((right - ja - en, right - ja), (right - ja, right))
+    left = halves[0][0]
+    sl, sr = halves[[code for _, code in SWITCH].index(lang)]
     out = [
-        f'<rect x="{num(x)}" y="{num(y)}" width="{num(WIN_W)}" height="{num(h)}" fill="{WIN_CAPTION_BG}" '
-        'filter="url(#shadow)"/>',
-        f'<rect x="{num(cx)}" y="{num(cy)}" width="{num(WIN_W - 2)}" height="{num(client_h)}" fill="{WIN_BG}"/>',
-        text(x + 10, y + 20, t["title"], 12, WIN_CAPTION_INK),
-        f'<rect x="{num(bx)}" y="{num(y + 8)}" width="19" height="19" fill="{WIN_CLOSE}"/>'
-        f'<path d="M{num(bx + 6.5)},{num(y + 14.5)}l6,6M{num(bx + 12.5)},{num(y + 14.5)}l-6,6" stroke="#f6f6f6" '
-        'stroke-width="1.6"/>',
-        f'<rect x="{num(x + 0.5)}" y="{num(y + 0.5)}" width="{num(WIN_W - 1)}" height="{num(h - 1)}" fill="none" '
-        f'stroke="{WIN_BORDER}"/>',
-        f'<g clip-path="url(#{cid})">',
+        box(left, top, right - left, PILL_H, PILL_H / 2, D["surface"]),
+        box(left + 0.5, top + 0.5, right - left - 1, PILL_H - 1, PILL_H / 2, "none", D["line"]),
+        box(sl + 2, top + 2, sr - sl - 4, PILL_H - 4, PILL_H / 2 - 2, D["switch_shown"]),
     ]
-    for line, start, end in bands:
-        top = cy + base[line + 1] - BODY_SIZE * SEGOE_ASCENT
-        out.append(
-            f'<rect x="{num(cx + 5)}" y="{num(top - 1)}" width="{num(WIN_W - 12)}" '
-            f'height="{num(BODY_SIZE * SEGOE_LINE + 2)}" rx="3" fill="{BAND}" fill-opacity=".45"'
-            f"{c.m.band(start, end)}/>"
-        )
-    if switch_band:  # wide enough for the widest fonts' English | 日本語
-        out.append(
-            f'<rect x="{num(right - 104)}" y="{num(cy + base[-1] - 14)}" width="108" height="19" rx="3" fill="{BAND}" '
-            f'fill-opacity=".45"{c.m.band(*switch_band)}/>'
-        )
-    out.append(text(tx, cy + base[0], t["title"], TITLE_SIZE, WIN_INK, True))
-    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
-        out.append(
-            f'<text x="{num(tx)}" y="{num(cy + base[i + 1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_INK}">'
-            f'<tspan class="b">{esc(label)}: </tspan>{esc(value)}</text>'
-        )
-    for k, s in enumerate(footer):
-        out.append(text(tx, cy + base[len(labels) + 1 + k], s, BODY_SIZE, WIN_FOOTER, True))
-    out.append(switch(right, cy + base[-1], lang))
-    out.append("</g>")
-    return "".join(out), h, (right - JA_WIDTH / 2, cy + base[-1] - SWITCH_SIZE * 0.38)
+    for (name, code), (hl, _) in zip(SWITCH, halves, strict=True):
+        shown = code == lang
+        ink = D["text"] if shown else D["secondary"]
+        out.append(wline(hl + PILL_PAD, top + (PILL_H - lh(11)) / 2, name, 11, ink, shown))
+    return "".join(out), halves
+
+
+def flow(widths: list, row: float, gap: float) -> list:
+    """look.rs: flow — the row and the x of each item, `gap` apart; an item wider than a row takes a row of its own."""
+    out, r, x = [], 0, 0.0
+    for w in widths:
+        if x > 0 and x + w > row:
+            r, x = r + 1, 0.0
+        out.append((r, x))
+        x += w + gap
+    return out
+
+
+def code_text(x: float, top: float, command: str, width: float) -> tuple:
+    """The command in its monospace box (design §4.6): its words colored (the program bold in the accent color, paths in
+    the path color, the rest in the code's text color), wrapped at spaces to `width`. Returns the lines and the
+    height."""
+    kinds = ["plain"] * len(command)
+    for a, b, kind in color_words(command):
+        kinds[a:b] = [kind] * (b - a)
+    look = {"program": (D["accent"], True), "path": (D["code_path"], False), "plain": (D["code_text"], False)}
+    n = int(width // (CODE_SIZE * ADVANCE))
+    spans = wrap_at(command, lambda t: cols(t) <= n)
+    out = []
+    for i, (a, b) in enumerate(spans):
+        parts = []  # runs of one kind
+        for kind, run in itertools.groupby(zip(command[a:b], kinds[a:b], strict=True), key=lambda p: p[1]):
+            parts.append(("".join(ch for ch, _ in run), *look[kind]))
+        out.append(runs(x, top + i * CODE_SIZE * MONO_LINE + CODE_SIZE * MONO_ASCENT, parts, CODE_SIZE))
+    return "".join(out), len(spans) * CODE_SIZE * MONO_LINE
+
+
+class Laid:
+    """A window laid out (window.rs: build) in DIPs of its client area, drawn in Direct2D's order: the shapes, the
+    texts, then the countdown, the switch and the buttons. `at`: where the scenes point (the caller's chip, the reason,
+    the switch's halves, the buttons, the countdown)."""
+
+    def __init__(self) -> None:
+        self.shapes: list = []
+        self.texts: list = []
+        self.top: list = []
+        self.h = 0.0
+        self.at: dict = {}
+
+    def svg(self, countdown: str = "") -> str:
+        return "".join(self.shapes + self.texts) + countdown + "".join(self.top)
+
+
+def lay_out(v: dict, lang: str) -> Laid:
+    """Lays a window's view out top to bottom as window.rs's build does (design §4.2, §4.3): the header, the reason,
+    the chips, the command, what the signature is for (the relay), the countdown with the switch (the relay's window
+    that asks), the band, the footer with the switch (a call of op), the buttons (the relay)."""
+    w = Laid()
+    x0, width = PAD_LEFT, TEXT_W
+    right = x0 + width
+    y = PAD_TOP
+
+    # the header: the tile, the title and the subtitle, the time and the date at the right
+    w.shapes.append(tile(v["icon"], x0, y))
+    w.texts.append(wline(right, y, v["time"], 12, D["secondary"], anchor="end"))
+    right_w, date_h = est_width(v["time"], 12), 0.0
+    if v["date"]:
+        w.texts.append(wline(right, y + lh(12), v["date"], 10, D["tertiary"], anchor="end"))
+        right_w, date_h = max(right_w, est_width(v["date"], 10)), lh(10)
+    tx = x0 + TILE + TILE_GAP
+    tw = max(right - right_w - 12 - tx, width / 3)
+    title, title_h, _ = para(tx, y - 1, v["title"], TITLE_SIZE, D["text"], tw, bold=True)
+    sub, sub_h, _ = para(tx, y - 1 + title_h, v["subtitle"], 11, D["secondary"], tw)
+    w.texts += [title, sub]
+    y += max(TILE, title_h + sub_h - 1, lh(12) + date_h) + SECTION_GAP
+
+    # the reason, the largest text
+    label, h, _ = para(x0, y, v["reason_label"], 10, D["secondary"], width)
+    w.texts.append(label)
+    y += h + 2
+    reason, h, rw = para(x0, y, v["reason"], REASON_SIZE, D["text"], width, bold=True)
+    w.texts.append(reason)
+    w.at["reason"] = (x0, y, rw, h)
+    y += h + 10
+
+    # the chips, in rows: the caller with its dot, the repository with its mark, the directory
+    chips = []
+    for kind, s in v["chips"]:
+        mark = CHIP_MARK if kind in ("claude", "person", "other", "repo") else 0.0
+        _, text_h, text_w = para(0, 0, s, 11, D["text"], width - 2 * CHIP_PAD - mark)
+        chips.append((kind, s, min(2 * CHIP_PAD + mark + text_w, width), max(text_h + 8, CHIP_H), text_h, mark))
+    if chips:
+        at = flow([c[2] for c in chips], width, CHIP_GAP)
+        row_h = [0.0] * (at[-1][0] + 1)
+        for (r, _), c in zip(at, chips, strict=True):
+            row_h[r] = max(row_h[r], c[3])
+        row_y, yy = [], y
+        for rh in row_h:
+            row_y.append(yy)
+            yy += rh + CHIP_GAP
+        for i, ((kind, s, cw, ch, text_h, mark), (r, cx)) in enumerate(zip(chips, at, strict=True)):
+            cx, cy = x0 + cx, row_y[r]
+            w.shapes.append(box(cx, cy, cw, ch, CHIP_H / 2, D["surface"], D["line"]))
+            mid = cy + CHIP_H / 2
+            if kind in ("claude", "person", "other"):
+                ink = {"claude": D["claude"], "person": D["success"], "other": D["secondary"]}[kind]
+                w.shapes.append(dot(cx + CHIP_PAD + 5, mid, 5, ink))
+            elif kind == "repo":
+                w.shapes.append(box(cx + CHIP_PAD, mid - 5, 10, 10, 2, "none", D["secondary"], 1.5))
+            ty = cy + (CHIP_H - text_h) / 2 if text_h + 8 <= CHIP_H else cy + 4
+            w.texts.append(para(cx + CHIP_PAD + mark, ty, s, 11, D["text"], width - 2 * CHIP_PAD - mark)[0])
+            if i == 0:
+                w.at["caller"] = (cx, cy, cw, ch)
+        y = yy - CHIP_GAP + SECTION_GAP
+
+    # the command, in its box with colored words
+    label, h, _ = para(x0, y, v["code_label"], 10, D["secondary"], width)
+    w.texts.append(label)
+    y += h + 4
+    code, code_h = code_text(x0 + CODE_PAD_X, y + CODE_PAD_Y, v["code"], width - 2 * CODE_PAD_X)
+    box_h = code_h + 2 * CODE_PAD_Y
+    w.shapes.append(box(x0, y, width, box_h, CODE_RADIUS, D["code_bg"], D["code_border"]))
+    w.texts.append(code)
+    y += box_h
+    if v.get("code_note"):  # the root process and the rest of its line, small
+        y += 4
+        note, h = mono_para(x0, y, v["code_note"], 10, D["tertiary"], width)
+        w.texts.append(note)
+        y += h
+
+    # the relay: what the signature is for, the destination and the key, the ssh command
+    if v["facts"]:
+        y += 12
+        for kind, s in v["facts"]:
+            if kind == "purpose":
+                w.shapes.append(purpose_mark(x0, y))
+                line, h, _ = para(x0 + MARK_W, y, s, 12, D["text"], width - MARK_W)
+                y += h + 3
+            elif kind == "mono":
+                line, h = mono_para(x0 + MARK_W, y, s, 10, D["tertiary"], width - MARK_W)
+                y += h + 2
+            else:
+                line, h, _ = para(x0 + MARK_W, y, s, 10, D["tertiary"], width - MARK_W)
+                y += h + 2
+            w.texts.append(line)
+
+    # the seconds left to answer (the relay's window that asks), with the switch at the right of its row
+    placed = False
+    if v["countdown"]:
+        y += SECTION_GAP
+        w.at["bar"] = (x0, y, width, BAR_H)
+        y += BAR_H + 7
+        parts, halves = pill(lang, right, y)
+        w.top.append(parts)
+        w.at["pill"] = (halves[0][0], y, right - halves[0][0], PILL_H)
+        w.at["ja"] = ((halves[1][0] + right) / 2, y + PILL_H / 2)
+        placed = True
+        template, status = v["countdown"]
+        rest = f" · {status}" if status else ""
+        cw = width - (right - halves[0][0]) - PILL_GAP
+        # measured with the widest number (an answer wait of an hour), so that the row keeps its height
+        _, h, _ = para(0, 0, template.replace("{0}", "0000") + rest, 10, "", cw)
+        w.at["countdown"] = (x0, y + 5, cw, template, rest)
+        y += max(h + 5, PILL_H)
+
+    # the band: where 1Password's prompt usually comes, and the tray
+    title_s, line_s, picture = v["band"]
+    y += SECTION_GAP
+    bx = x0 + BAND_PAD_X + SKETCH[0] + 12
+    bw = right - BAND_PAD_X - bx
+    _, th, _ = para(0, 0, title_s, 12, "", bw, bold=True)
+    _, bl, _ = para(0, 0, line_s, 11, "", bw)
+    inner = th + 3 + bl
+    bh = max(inner, SKETCH[1]) + 2 * BAND_PAD_Y
+    ty = y + (bh - inner) / 2
+    w.shapes.append(box(x0, y, width, bh, BAND_RADIUS, D["band_bg"], D["band_border"]))
+    w.shapes.append(sketch(picture, x0 + BAND_PAD_X, y + (bh - SKETCH[1]) / 2))
+    w.texts.append(para(bx, ty, title_s, 12, D["band_title"], bw, bold=True)[0])
+    w.texts.append(para(bx, ty + th + 3, line_s, 11, D["band_text"], bw)[0])
+    y += bh
+
+    # the footer with its shield, and the switch at the right of its row's bottom when the countdown has not taken it
+    if v["footer"] or not placed:
+        y += 12
+        pill_w = 0.0
+        if not placed:
+            _, halves = pill(lang, 0, 0)
+            pill_w = halves[1][1] - halves[0][0] + PILL_GAP
+        h = 0.0
+        if v["footer"]:
+            _, h, _ = para(0, 0, v["footer"], 11, "", width - MARK_W - pill_w)
+        row = max(h, PILL_H) if not placed else h
+        ty = y + (PILL_H - h) / 2 if not placed and h < PILL_H else y
+        if v["footer"]:
+            w.shapes.append(shield(x0, ty + 1))
+            w.texts.append(para(x0 + MARK_W, ty, v["footer"], 11, D["critical"], width - MARK_W - pill_w)[0])
+        if not placed:
+            top = y + row - PILL_H
+            parts, halves = pill(lang, right, top)
+            w.top.append(parts)
+            w.at["pill"] = (halves[0][0], top, right - halves[0][0], PILL_H)
+            w.at["ja"] = ((halves[1][0] + right) / 2, top + PILL_H / 2)
+        y += row
+
+    # the buttons (the relay's window that asks): Allow this call filled with the accent color, Deny at the right end
+    if v["buttons"]:
+        y += BUTTON_TOP_GAP
+        x = x0
+        for kind, label in v["buttons"]:
+            bold = kind == "allow"
+            tw = est_width(label, 12, bold)
+            bw = max(tw + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
+            left = max(right - bw, x) if kind == "deny" else x
+            if kind == "allow":
+                w.top.append(box(left, y, bw, BUTTON_H, BUTTON_RADIUS, D["accent"]))
+                ink = D["on_accent"]
+            else:
+                w.top.append(box(left, y, bw, BUTTON_H, BUTTON_RADIUS, D["surface"]))
+                w.top.append(box(left + 0.5, y + 0.5, bw - 1, BUTTON_H - 1, BUTTON_RADIUS, "none", D["critical"]))
+                ink = D["critical"]
+            w.top.append(wline(left + (bw - tw) / 2, y + (BUTTON_H - lh(12)) / 2, label, 12, ink, bold))
+            w.at[kind] = (left, y, bw, BUTTON_H, ink)
+            x = left + bw + BUTTON_GAP
+        y += BUTTON_H
+    w.h = y + PAD_BOTTOM
+    return w
+
+
+def frame_h(w: Laid) -> float:
+    """The height of a window's frame around its client area: the border lines and the caption."""
+    return 1 + WIN_CAPTION + w.h + 1
+
+
+def window_svg(x: float, y: float, w: Laid, inner: str = "") -> str:
+    """op-reason's window with its frame's top left at (x, y): one dark surface with round corners and Windows' thin
+    border; its caption, in the window's color, shows the close button only. `inner`: drawn over the client area (in
+    its DIPs)."""
+    h = frame_h(w)
+    gx, gy = x + WIN_W - 18, y + 1 + WIN_CAPTION / 2
+    return (
+        box(x, y, WIN_W, h, WIN_RADIUS, D["background"], more=' filter="url(#shadow)"')
+        + f'<path d="M{num(gx - 4.5)},{num(gy - 4.5)}l9,9M{num(gx + 4.5)},{num(gy - 4.5)}l-9,9" fill="none" '
+        f'stroke="{WIN_CLOSE}" stroke-width="1.1"/>'
+        + f'<g transform="translate({num(x + 1)},{num(y + 1 + WIN_CAPTION)})">{inner}</g>'
+        + box(x + 0.5, y + 0.5, WIN_W - 1, h - 1, WIN_RADIUS - 0.5, "none", WIN_BORDER)
+    )
+
+
+def light(r: tuple, attr: str, pad: float = 3) -> str:
+    """A highlight over a part of the window that the scene points at (the caller's chip, the reason, the switch),
+    `pad` above and below it."""
+    x, y, w, h = r[:4]
+    return (
+        f'<rect x="{num(x - 4)}" y="{num(y - pad)}" width="{num(w + 8)}" height="{num(h + 2 * pad)}" rx="7" '
+        f'fill="{BAND}" fill-opacity=".18" stroke="{BAND}" stroke-width="1.5"{attr}/>'
+    )
+
+
+def split_time(time: str) -> tuple:
+    """look.rs: split_time — `YYYY-MM-DD HH:MM:SS` as the time and the date."""
+    day, _, clock = time.partition(" ")
+    return clock, day
+
+
+def op_view(lang: str, call: dict) -> dict:
+    """ui.rs: view — the window of a call of op by Claude Code in the example repository: the reason first, the
+    caller, the repository and the directory as chips, the command, the band and the footer."""
+    t = WINDOW[lang]
+    time, date = split_time(call["time"])
+    return {
+        "icon": "lock",
+        "title": t["title"],
+        "subtitle": t["subtitle"],
+        "time": time,
+        "date": date,
+        "reason_label": t["reason"],
+        "reason": call["reason"],
+        "chips": [("claude", call["caller"]), ("repo", f"{REPO} · {BRANCH}"), ("folder", PROMPT_PATH)],
+        "code_label": t["command"],
+        "code": call["command"],
+        "code_note": None,
+        "facts": [],
+        "countdown": None,
+        "band": (t["band_title"], t["band_line"], "op"),
+        "footer": t["footer"],
+        "buttons": [],
+    }
+
+
+def op_window(c: Canvas, x: float, y: float, lang: str, call: dict, lights: tuple = ()) -> tuple:
+    """op-reason's window of `call` in `lang` with its frame's top left at (x, y). `lights`: (part, from, to) to light
+    up the caller's chip ("caller"), the reason ("reason") or the switch ("pill").
+
+    Returns the parts, the height and the middle of 日本語 in the switch (where a click switches an English window to
+    Japanese).
+    """
+    w = lay_out(op_view(lang, call), lang)
+    # the reason's line box is tall enough: the highlight keeps clear of its label above
+    over = "".join(light(w.at[part], c.m.band(start, end), 1 if part == "reason" else 3) for part, start, end in lights)
+    ja = w.at["ja"]
+    return window_svg(x, y, w, w.svg() + over), frame_h(w), (x + 1 + ja[0], y + 1 + WIN_CAPTION + ja[1])
 
 
 def mini_window(x: float, y: float, w: float, lang: str, caller: str, reason: str) -> str:
-    """op-reason's window, small: its title, the caller and the reason."""
+    """op-reason's window, small: its frame, the tile and the title, the reason and the caller's chip."""
     t = WINDOW[lang]
-    h = 84
-    bx = x + w - 2 - 14
+    h, cap, k = 86, 17, 18 / TILE  # the window, its caption, the tile at this scale
+    gx, gy = x + w - 11, y + cap / 2 + 0.5
+    tx, ty = x + 9, y + cap + 4
+    chip_w, cy = 2 * 7 + 11 + est_width(caller, 9), y + 63
     return (
-        f'<rect x="{num(x)}" y="{num(y)}" width="{num(w)}" height="{h}" fill="{WIN_CAPTION_BG}" filter="url(#shadow)"/>'
-        f'<rect x="{num(x + 1)}" y="{num(y + 21)}" width="{num(w - 2)}" height="{h - 22}" fill="{WIN_BG}"/>'
-        + text(x + 8, y + 14.5, t["title"], 9.5, WIN_CAPTION_INK)
-        + f'<rect x="{num(bx)}" y="{num(y + 4)}" width="14" height="14" fill="{WIN_CLOSE}"/>'
-        f'<rect x="{num(x + 0.5)}" y="{num(y + 0.5)}" width="{num(w - 1)}" height="{h - 1}" fill="none" '
-        f'stroke="{WIN_BORDER}"/>'
-        + text(x + 11, y + 41, t["title"], 12.5, WIN_INK, True)
-        + f'<text x="{num(x + 11)}" y="{num(y + 59)}" font-size="11" fill="{WIN_INK}"><tspan class="b">'
-        f"{esc(t['caller'])}: </tspan>{esc(caller)}</text>"
-        f'<text x="{num(x + 11)}" y="{num(y + 75)}" font-size="11" fill="{WIN_INK}"><tspan class="b">'
-        f"{esc(t['reason'])}: </tspan>{esc(reason)}</text>"
+        box(x, y, w, h, 6, D["background"], more=' filter="url(#shadow)"')
+        + f'<path d="M{num(gx - 3.5)},{num(gy - 3.5)}l7,7M{num(gx + 3.5)},{num(gy - 3.5)}l-7,7" fill="none" '
+        f'stroke="{WIN_CLOSE}"/>'
+        + box(tx, ty, 18, 18, TILE_RADIUS * k, D["accent"])
+        + box(tx + 9.5 * k, ty + 7 * k, 9 * k, 10 * k, 4.5 * k, "none", D["on_accent"], 2 * k)
+        + box(tx + 8 * k, ty + 13 * k, 12 * k, 9 * k, 2 * k, D["on_accent"])
+        + wline(tx + 25, ty + (18 - lh(10.5)) / 2, t["title"], 10.5, D["text"], True)
+        + wline(x + 9, y + 41, reason, 12.5, D["text"], True)
+        + box(x + 9, cy, chip_w, 17, 8.5, D["surface"], D["line"])
+        + dot(x + 9 + 7 + 3.5, cy + 8.5, 3.5, D["claude"])
+        + wline(x + 9 + 7 + 11, cy + (17 - lh(9)) / 2, caller, 9, D["text"])
+        + box(x + 0.5, y + 0.5, w - 1, h - 1, 5.5, "none", WIN_BORDER)
     )
 
 
@@ -1190,15 +1867,39 @@ def log_table(lang: str, calls: tuple) -> list:
 
 # ---- scenes ----
 
+PROMPT_W, PROMPT_H = 288, 96  # the approval prompt of the scenes of a call
+
+
+def op_call(lang: str, key: str, clock: str) -> dict:
+    """An example call of op by Claude Code at `clock`, its reason REASONS[lang][key] ("proxmox" reads PROXMOX, "db"
+    reads DB)."""
+    item = PROXMOX if key == "proxmox" else DB
+    return {
+        "time": f"{DAY} {clock}",
+        "caller": "Claude Code (pid 4242)",
+        "reason": REASONS[lang][key],
+        "command": f"op read {item}",
+    }
+
+
+def call_screen_h() -> float:
+    """The screen of the scenes of a call (one call, the language), down to the bottom of the taskbar: tall enough for
+    the approval prompt in its middle to clear the bottom of op-reason's window, the tallest the scenes show."""
+    tallest = max(
+        frame_h(lay_out(op_view(lang, op_call(said, key, "10:42:07")), lang))
+        for lang in LANGS  # the window's language
+        for said in LANGS  # the reason's
+        for key in ("proxmox", "db")
+    )
+    return 2 * math.ceil(WIN_TOP + tallest + 14 + PROMPT_H / 2)
+
 
 def scene_call(lang: str) -> str:
     """One call: the window, the prompt, the value, the sign-out and the log."""
     tx = TEXTS[lang]
     reason = REASONS[lang]["proxmox"]
     d = 13.5
-    # the screen, down to the bottom of the taskbar: tall enough for the approval prompt in its middle to clear the
-    # bottom of op-reason's window (the English one, a line taller)
-    screen_h = 576
+    screen_h = call_screen_h()
     # without motion: op-reason's window and the approval prompt, before the click
     c = Canvas(screen_h + 44, d, rest=2.0)
     m = c.m
@@ -1238,18 +1939,14 @@ def scene_call(lang: str) -> str:
         ),
     )
 
-    # the 1Password approval prompt (a plain box) in the middle of the screen, op-reason's window at its top right
-    pw, ph = 288, 96
-    box, approve = prompt_box(m, (W - pw) / 2, (screen_h - ph) / 2, pw, ph, lang, (t_click,))
-    c.add(g(m.at(t_prompt, t_click + 0.15, 0.2), box))
-    values = (
-        f"{DAY} 10:42:07",
-        "Claude Code (pid 4242)",
-        PLACE,
-        reason,
-        f"op read {PROXMOX}",
-    )
-    win, _, _ = op_window(c, W - WIN_RIGHT - WIN_W, 16, lang, values, bands=((1, 2.3, 3.1), (3, 3.2, 4.5)))
+    # the 1Password approval prompt (a plain box) in the middle of the screen, op-reason's window at its top right: who
+    # calls (the caller's chip) and why (the reason) light up in turn
+    pw, ph = PROMPT_W, PROMPT_H
+    prompt, approve = prompt_box(m, (W - pw) / 2, (screen_h - ph) / 2, pw, ph, lang, (t_click,))
+    c.add(g(m.at(t_prompt, t_click + 0.15, 0.2), prompt))
+    call = op_call(lang, "proxmox", "10:42:07")
+    lights = (("caller", 2.3, 3.1), ("reason", 3.2, 4.5))
+    win, _, _ = op_window(c, W - WIN_RIGHT - WIN_W, WIN_TOP, lang, call, lights)
     hidden, shown = "opacity:0;transform:translateY(-8px)", "opacity:1;transform:translateY(0)"
     c.add(g(m.at(t_window, t_close, 0.3, hidden=hidden, shown=shown), win))
 
@@ -1347,8 +2044,10 @@ def scene_leak(lang: str) -> str:
         # the prompt (each call that asks) and op-reason's window (each call)
         spans = [(a, v) for (_, a, _, v, _), asks in zip(calls, (True, reason), strict=True) if asks]
         bw, bh = 228, 64
-        box, approve = prompt_box(m, px + (pw - bw) / 2, sy + (sh - bh) / 2, bw, bh, lang, tuple(presses), small=True)
-        c.add(g(m.shown(spans, 0.2), box))
+        prompt, approve = prompt_box(
+            m, px + (pw - bw) / 2, sy + (sh - bh) / 2, bw, bh, lang, tuple(presses), small=True
+        )
+        c.add(g(m.shown(spans, 0.2), prompt))
         if reason:
             for k, (_, t_ask, _, _, t_close) in enumerate(calls):
                 caller = "Claude Code (pid 4242)" if k == 0 else "Claude Code (pid 5150)"
@@ -1459,7 +2158,7 @@ def scene_lang(lang: str) -> str:
     tx = TEXTS[lang]
     r = REASONS[lang]
     d = 14.0
-    screen_h = 576  # as in the one-call scene: the prompt in the middle clears the English window
+    screen_h = call_screen_h()  # as in the one-call scene: the prompt in the middle clears the window
     # without motion: just after the click, the window in Japanese, the prompt with the focus, the saved choice
     c = Canvas(screen_h + 44, d, rest=4.8)
     m = c.m
@@ -1497,9 +2196,9 @@ def scene_lang(lang: str) -> str:
 
     # the approval prompt in the middle of the screen, ringed as the window with the focus; a glow and a note on it
     # after the click on the switch
-    pw, ph = 288, 96
+    pw, ph = PROMPT_W, PROMPT_H
     px, py = (W - pw) / 2, (screen_h - ph) / 2
-    box, approve = prompt_box(m, px, py, pw, ph, lang, (t_click,), focus=True)
+    prompt, approve = prompt_box(m, px, py, pw, ph, lang, (t_click,), focus=True)
     glow = (
         f'<rect x="{num(px - 4)}" y="{num(py - 4)}" width="{num(pw + 8)}" height="{num(ph + 8)}" rx="11" fill="none" '
         f'stroke="{APPROVE}" stroke-width="8" stroke-opacity=".35"{m.band(t_switch, 5.2)}/>'
@@ -1512,18 +2211,17 @@ def scene_lang(lang: str) -> str:
         + text(W / 2, by + 16.5, tx["lang.badge"], 12.5, "#ffffff", True, "middle")
     )
     c.add(
-        g(m.shown([(t_prompt, t_click + 0.15), (t_window2 + 0.15, None)], 0.2), box, glow),
+        g(m.shown([(t_prompt, t_click + 0.15), (t_window2 + 0.15, None)], 0.2), prompt, glow),
         g(m.at(t_switch + 0.15, t_click, 0.2), badge),
     )
 
     # op-reason's window at the top right: English, then Japanese at once after the click (it keeps its top right
     # corner and takes its new height); the next call's window opens in Japanese, its switch lit up
     wx = W - WIN_RIGHT - WIN_W
-    first = (f"{DAY} 10:42:07", "Claude Code (pid 4242)", PLACE, r["proxmox"], f"op read {PROXMOX}")
-    second = (f"{DAY} 10:43:18", "Claude Code (pid 4242)", PLACE, r["db"], f"op read {DB}")
-    win_en, _, link = op_window(c, wx, 16, "en", first)
-    win_ja, _, _ = op_window(c, wx, 16, "ja", first)
-    win_next, _, _ = op_window(c, wx, 16, "ja", second, switch_band=(t_window2 + 0.5, 11.6))
+    first, second = op_call(lang, "proxmox", "10:42:07"), op_call(lang, "db", "10:43:18")
+    win_en, _, link = op_window(c, wx, WIN_TOP, "en", first)
+    win_ja, _, _ = op_window(c, wx, WIN_TOP, "ja", first)
+    win_next, _, _ = op_window(c, wx, WIN_TOP, "ja", second, (("pill", t_window2 + 0.5, 11.6),))
     slide = {"hidden": "opacity:0;transform:translateY(-8px)", "shown": "opacity:1;transform:translateY(0)"}
     c.add(
         g(m.at(t_window, t_close, 0.3, **slide), g(m.at(0.0, t_switch), win_en), g(m.at(t_switch), win_ja)),
@@ -1541,7 +2239,7 @@ def scene_lang(lang: str) -> str:
     )
     c.add(g(m.at(t_switch + 0.6, None, 0.3), card))
 
-    rest = (800, 300)  # the mouse before and after: on the desktop, under the window and right of the prompt
+    rest = (800, py + ph / 2)  # the mouse before and after: on the desktop, under the window and right of the prompt
     c.add(
         mouse(
             m,
@@ -1586,38 +2284,6 @@ RELAY_REASONS = {
     },
 }
 HOST_KEY = "SHA256:x5QvN2…"
-
-
-def est_width(s: str, size: float, bold: bool = False) -> float:
-    """About how wide a text is in Segoe UI (Yu Gothic UI for Japanese): a width per kind of character. The scene sets
-    each line's textLength to it, so that every viewer's font draws it in that room."""
-    w = 0.0
-    for ch in s:
-        u = ord(ch)
-        if any(a <= u <= b for a, b in WIDE):
-            w += 1.0
-        elif ch in " ·":
-            w += 0.27
-        elif ch in "ijlt.,:;'|!()[]/\\-":
-            w += 0.3
-        elif ch in "mwMW@":
-            w += 0.85
-        elif ch in "→×~":
-            w += 0.62
-        elif ch.isupper() or ch.isdigit():
-            w += 0.58
-        else:
-            w += 0.5
-    return w * size * (1.06 if bold else 1.0)
-
-
-def fit(s: str, size: float, width: float, bold: bool = False) -> str:
-    """`s` cut with an ellipsis to fit `width`, as DirectWrite trims the toast's lines."""
-    if est_width(s, size, bold) <= width:
-        return s
-    while s and est_width(s + "…", size, bold) > width:
-        s = s[:-1]
-    return s.rstrip() + "…"
 
 
 def toast_texts(lang: str, key: str, host: str = "") -> dict:
@@ -1785,10 +2451,10 @@ def glow_value(ms: float) -> float:
 
 
 def toast_card(c: Canvas, card: SimCard) -> str:
-    """A card of the simulation where pass_window.rs draws it, moving and fading as simulated: shadow, glow, light
-    yellow face with a gray border, the green check, its texts over time and the line of its four seconds (in steps of
-    half a second). The card is at 90% (an inner group) times its fade (the outer); the ring of its glow is outside the
-    90%, at full strength, and fades with the card."""
+    """A card of the simulation where pass_window.rs draws it, moving and fading as simulated, in the dark look: shadow,
+    glow, the surface with the line's border, the check in the success color, its texts over time and the line of its
+    four seconds (in steps of half a second). The card is at 90% (an inner group) times its fade (the outer); the ring
+    of its glow is outside the 90%, at full strength, and fades with the card."""
     m = c.m
     rest = round(m.rest * 1000)
     shown = card.y[0].t <= rest and (card.gone is None or card.gone > rest)
@@ -1823,57 +2489,73 @@ def toast_card(c: Canvas, card: SimCard) -> str:
     lx = x + TOAST_TEXT_X
     parts = [
         f'<rect x="{num(x - 1)}" y="1" width="{num(CARD_W + 2)}" height="{num(CARD_H + 2)}" rx="7" fill="#000" '
-        'fill-opacity=".16"/>',
-        f'<rect x="{num(x)}" y="0" width="{num(CARD_W)}" height="{num(CARD_H)}" rx="6" fill="{TOAST_BG}"/>',
-        f'<rect x="{num(x + 0.5)}" y=".5" width="{num(CARD_W - 1)}" height="{num(CARD_H - 1)}" rx="6" fill="none" '
-        f'stroke="{TOAST_BORDER}" stroke-opacity=".8"/>',
-        f'<circle cx="{num(x + 18)}" cy="17.5" r="8" fill="{TOAST_GREEN}"/>',
-        f'<path d="M{num(x + 14)},17.8L{num(x + 16.8)},20.6L{num(x + 22.2)},14.5" fill="none" stroke="#fff" '
-        'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
-        f'<rect x="{num(lx)}" y="{num(CARD_H - 5)}" width="{num(TOAST_TEXT_W)}" height="2" fill="{TOAST_GREEN}" '
-        f'fill-opacity=".9"{m.track(bar, cls="tl")}/>',
+        f'fill-opacity="{TOAST_SHADOW}"/>',
+        box(x, 0, CARD_W, CARD_H, 6, D["surface"]),
+        box(x + 0.5, 0.5, CARD_W - 1, CARD_H - 1, 6, "none", D["line"]),
+        dot(x + 18, 17.5, 8, D["success"]),
+        f'<path d="M{num(x + 14)},17.8L{num(x + 16.8)},20.6L{num(x + 22.2)},14.5" fill="none" '
+        f'stroke="{D["on_success"]}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+        f'<rect x="{num(lx)}" y="{num(CARD_H - 5)}" width="{num(TOAST_TEXT_W)}" height="2" fill="{D["success"]}"'
+        f'{m.track(bar, cls="tl")}/>',
     ]
     for k, (t, texts, n) in enumerate(card.variants):
         until = card.variants[k + 1][0] if k + 1 < len(card.variants) else card.gone
-        head_w = est_width(f"{texts['word']} · {texts['caller']}", BODY_SIZE, True)
-        line1 = (
-            f'<text x="{num(lx)}" y="22" font-size="{num(BODY_SIZE)}" textLength="{num(head_w)}" lengthAdjust="spacing" '
-            f'xml:space="preserve"><tspan class="b" fill="{TOAST_GREEN}">{esc(texts["word"])}</tspan>'
-            f'<tspan class="b" fill="#000"> · {esc(texts["caller"])}</tspan></text>'
+        # line 1: "Passed" in the success color, then " · <caller>" in the text color where it ends
+        word_w = est_width(texts["word"], TOAST_BODY, True)
+        head_w = word_w + est_width(f" · {texts['caller']}", TOAST_BODY, True)
+        line1 = "".join(
+            f'<text x="{num(at)}" y="22" font-size="{num(TOAST_BODY)}" fill="{ink}" class="b" '
+            f'textLength="{num(est_width(part, TOAST_BODY, True))}" lengthAdjust="spacing" xml:space="preserve">'
+            f"{esc(part)}</text>"
+            for at, part, ink in (
+                (lx, texts["word"], D["success"]),
+                (lx + word_w, f" · {texts['caller']}", D["text"]),
+            )
         )
         chip = ""
         if n >= 2:
             label = f"×{n}"
-            cx, cw = lx + head_w + 6, est_width(label, 11, True)
-            chip = (
-                f'<rect x="{num(cx)}" y="10" width="{num(cw + 10)}" height="15" rx="4" fill="{TOAST_PALE}"/>'
-                f'<text x="{num(cx + 5)}" y="22" font-size="11" fill="{TOAST_GREEN}" class="b" textLength="{num(cw)}" '
-                f'lengthAdjust="spacing">{esc(label)}</text>'
+            cx, cw = lx + head_w + 6, est_width(label, TOAST_SMALL, True)
+            chip = box(cx, 10, cw + 10, 15, 4, D["success_tint"]) + (
+                f'<text x="{num(cx + 5)}" y="22" font-size="{num(TOAST_SMALL)}" fill="{D["success"]}" class="b" '
+                f'textLength="{num(cw)}" lengthAdjust="spacing">{esc(label)}</text>'
             )
-        dest = f" → {texts['dest']}"
-        dest_w = est_width(dest, BODY_SIZE)
-        command = fit(texts["command"], BODY_SIZE, TOAST_TEXT_W - dest_w)
-        line2_w = est_width(command, BODY_SIZE) + dest_w
-        why = fit(texts["why"], 11, TOAST_TEXT_W)
+        # line 2 in the monospace font: the destination whole (at most 60% of the line), the command cut before it
+        adv = TOAST_SMALL * ADVANCE
+        dest = col_fit(f" → {texts['dest']}", int(TOAST_TEXT_W * TOAST_DEST_SHARE / adv))
+        command = col_fit(texts["command"], int((TOAST_TEXT_W - cols(dest) * adv) / adv))
+        dest_x = lx + (TOAST_TEXT_W - cols(dest) * adv if command != texts["command"] else cols(command) * adv)
+        why = fit(texts["why"], TOAST_SMALL, TOAST_TEXT_W)
         lines = (
             line1
             + chip
-            + f'<text x="{num(lx)}" y="39" font-size="{num(BODY_SIZE)}" fill="#000" textLength="{num(line2_w)}" '
-            f'lengthAdjust="spacing" xml:space="preserve">{esc(command + dest)}</text>'
-            + f'<text x="{num(lx)}" y="55" font-size="11" fill="{TOAST_DIM}" textLength="{num(est_width(why, 11))}" '
-            f'lengthAdjust="spacing" xml:space="preserve">{esc(why)}</text>'
+            + mono(lx, 39, command, TOAST_SMALL, D["text"])
+            + mono(dest_x, 39, dest, TOAST_SMALL, D["text"])
+            + f'<text x="{num(lx)}" y="55" font-size="{num(TOAST_SMALL)}" fill="{D["secondary"]}" '
+            f'textLength="{num(est_width(why, TOAST_SMALL))}" lengthAdjust="spacing" xml:space="preserve">'
+            f"{esc(why)}</text>"
         )
         parts.append(g(m.at(t / 1000, None if until is None else until / 1000), lines))
     ring = (
         f'<rect x="{num(x - 2.5)}" y="-2.5" width="{num(CARD_W + 5)}" height="{num(CARD_H + 5)}" rx="8.5" fill="none" '
-        f'stroke="{TOAST_GREEN}" stroke-width="2.5" stroke-opacity=".9"{glow_attr}/>'
+        f'stroke="{D["success"]}" stroke-width="2.5" stroke-opacity=".9"{glow_attr}/>'
     )
     inner = g(m.keyframes(ostops), g(f' style="opacity:{num(OPACITY)}"', *parts), ring)
     return f'<g transform="translate(0,{num(rest_y)})">{g(m.keyframes(ystops), inner)}</g>'
 
 
+def col_fit(s: str, n: int) -> str:
+    """`s` cut with an ellipsis to `n` columns of the monospace font, as DirectWrite trims a line of the toast."""
+    if cols(s) <= n:
+        return s
+    while s and cols(s) + 1 > n:
+        s = s[:-1]
+    return s + "…"
+
+
 def more_tag(c: Canvas, steps: list) -> str:
-    """The tag +N where pass_window.rs draws it (under the third place, at 90%), one per value of N while it holds."""
+    """The tag +N where pass_window.rs draws it (under the third place, at 90%), one per value of N while it holds: the
+    surface with the line's border, +N in the secondary color."""
     m = c.m
     x, top = EDGE, toast_more_y()
     out = []
@@ -1882,79 +2564,95 @@ def more_tag(c: Canvas, steps: list) -> str:
             continue
         until = steps[k + 1][0] if k + 1 < len(steps) else None
         label = f"+{n}"
-        tw = est_width(label, 11, True)
+        tw = est_width(label, TOAST_SMALL, True)
         w = tw + 2 * TOAST_MORE_PAD
         r = TOAST_MORE_RADIUS
         out.append(
             g(
                 m.at(t / 1000, None if until is None else until / 1000),
                 f'<rect x="{num(x - 1)}" y="{num(top + 1)}" width="{num(w + 2)}" height="{num(MORE_H + 1)}" '
-                f'rx="{num(r + 1)}" fill="#000" fill-opacity=".16"/>',
-                f'<rect x="{num(x)}" y="{num(top)}" width="{num(w)}" height="{num(MORE_H)}" rx="{num(r)}" '
-                f'fill="{TOAST_BG}"/>',
-                f'<rect x="{num(x + 0.5)}" y="{num(top + 0.5)}" width="{num(w - 1)}" height="{num(MORE_H - 1)}" '
-                f'rx="{num(r)}" fill="none" stroke="{TOAST_BORDER}" stroke-opacity=".8"/>',
-                f'<text x="{num(x + TOAST_MORE_PAD)}" y="{num(top + 12)}" font-size="11" fill="{TOAST_DIM}" class="b" '
-                f'textLength="{num(tw)}" lengthAdjust="spacing">{esc(label)}</text>',
+                f'rx="{num(r + 1)}" fill="#000" fill-opacity="{TOAST_SHADOW}"/>',
+                box(x, top, w, MORE_H, r, D["surface"]),
+                box(x + 0.5, top + 0.5, w - 1, MORE_H - 1, r, "none", D["line"]),
+                f'<text x="{num(x + TOAST_MORE_PAD)}" y="{num(top + 12)}" font-size="{num(TOAST_SMALL)}" '
+                f'fill="{D["secondary"]}" class="b" textLength="{num(tw)}" lengthAdjust="spacing">{esc(label)}</text>',
             )
         )
     return g(f' style="opacity:{num(OPACITY)}"', *out) if out else ""
 
 
-def relay_window(c: Canvas, x: float, y: float, lang: str, values: tuple, press: float) -> tuple:
-    """The relay's window that asks (per-call), with its frame's top left at (x, y), as window.rs draws it with the
-    texts of relay_ui.rs: the title, six of its lines, the footer and the language switch, and its row of buttons
-    (Allow this call at the left, Deny at the right). Returns the parts, the height and the middle of Allow."""
+KEY_FINGERPRINT = "SHA256:Jq7c0R…"  # the key of the example's signature (made up)
+
+
+def relay_view(lang: str, call: dict) -> dict:
+    """relay_ui.rs: view — the window that asks (per-call) of a call of Claude Code, which has a root: the reason first,
+    the caller's chip, the root command in the box with the root process and the rest of its line under it, what the
+    signature is for, the destination with its host key and the key, the client's ssh command, the countdown and how
+    long an answer lasts (until that program ends), the band, then Allow this call and Deny."""
     t = RELAY[lang]
-    labels = (t["time"], t["caller"], t["reason"], t["command"], t["destination"], t["purpose"])
-    text_h, base = window_layout(len(labels), 1)
-    client_h = text_h + BUTTON_TOP_GAP + BUTTON_H
-    h = 1 + WIN_CAPTION + client_h + 1
-    cx, cy = x + 1, y + 1 + WIN_CAPTION
-    tx = cx + PAD_LEFT
-    right = tx + TEXT_W
-    bx = x + WIN_W - 2 - 19
-    out = [
-        f'<rect x="{num(x)}" y="{num(y)}" width="{num(WIN_W)}" height="{num(h)}" fill="{WIN_CAPTION_BG}" '
-        'filter="url(#shadow)"/>',
-        f'<rect x="{num(cx)}" y="{num(cy)}" width="{num(WIN_W - 2)}" height="{num(client_h)}" fill="{WIN_BG}"/>',
-        text(x + 10, y + 20, t["title"], 12, WIN_CAPTION_INK),
-        f'<rect x="{num(bx)}" y="{num(y + 8)}" width="19" height="19" fill="{WIN_CLOSE}"/>'
-        f'<path d="M{num(bx + 6.5)},{num(y + 14.5)}l6,6M{num(bx + 12.5)},{num(y + 14.5)}l-6,6" stroke="#f6f6f6" '
-        'stroke-width="1.6"/>',
-        f'<rect x="{num(x + 0.5)}" y="{num(y + 0.5)}" width="{num(WIN_W - 1)}" height="{num(h - 1)}" fill="none" '
-        f'stroke="{WIN_BORDER}"/>',
-        text(tx, cy + base[0], t["title"], TITLE_SIZE, WIN_INK, True),
+    time, date = split_time(call["time"])
+    name, pid, frame, command = call["root"]
+    detail = " · ".join(
+        [
+            f"{t['destination']} {call['dest']} · {t['host_key'].replace('{0}', HOST_KEY)}",
+            f"{t['key']} {KEY_FINGERPRINT}",
+        ]
+    )
+    return {
+        "icon": "key",
+        "title": t["title"],
+        "subtitle": t["subtitle"],
+        "time": time,
+        "date": date,
+        "reason_label": t["reason"],
+        "reason": call["reason"],
+        "chips": [("claude", t["claude_pid"].replace("{0}", call["pid"]))],
+        "code_label": t["root_command"],
+        "code": command,
+        "code_note": f"{name} (pid {pid}) · {frame}",
+        "facts": [
+            ("purpose", t["userauth"].replace("{0}", call["user"])),
+            ("detail", detail),
+            ("mono", f"{t['command']}: {call['command']}"),
+        ],
+        "countdown": (
+            t["countdown"],
+            t["covers_name"].replace("{0}", program_name(command)).replace("{1}", str(LIMIT_MINUTES)),
+        ),
+        "band": (t["band_title"], t["band_line"], "ask"),
+        "footer": "",
+        "buttons": [("allow", t["allow"]), ("deny", t["deny"])],
+    }
+
+
+def relay_window(c: Canvas, x: float, y: float, lang: str, call: dict, shown: tuple, press: float) -> tuple:
+    """The relay's window that asks (per-call) with its frame's top left at (x, y), as window.rs draws the view of
+    relay_ui.rs; its countdown runs while it is `shown` (from, to), redrawn every 250 ms, and Allow is pressed at
+    `press` (a border 2 DIPs wide in its label's color, its fill and label as they are). Returns the parts, the height
+    and the middle of Allow."""
+    m = c.m
+    w = lay_out(relay_view(lang, call), lang)
+    opened, closed = shown
+    bx, by, bw, bh = w.at["bar"]
+    tick = COUNTDOWN_MS / 1000
+    share = [(0.0, "transform:scaleX(1)")] + [
+        (opened + k * tick, f"transform:scaleX({1 - k * tick / ANSWER_WAIT:.4f})")
+        for k in range(1, math.ceil((closed - opened) / tick))
     ]
-    for i, (label, value) in enumerate(zip(labels, values, strict=True)):
-        out.append(
-            f'<text x="{num(tx)}" y="{num(cy + base[i + 1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_INK}">'
-            f'<tspan class="b">{esc(label)}: </tspan>{esc(value)}</text>'
-        )
-    footer = t["footer"].replace("{0}", "60")
-    footer_w = min(est_width(footer, BODY_SIZE, True), TEXT_W - 79 - 12)  # window.rs: narrower by the switch
-    out.append(
-        f'<text x="{num(tx)}" y="{num(cy + base[-1])}" font-size="{num(BODY_SIZE)}" fill="{WIN_FOOTER}" class="b" '
-        f'textLength="{num(footer_w)}" lengthAdjust="spacingAndGlyphs">{esc(footer)}</text>'
-    )
-    out.append(switch(right, cy + base[-1], lang))
-    top = cy + client_h - PAD_BOTTOM - BUTTON_H
-    allow_w = max(est_width(t["allow"], BODY_SIZE) + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
-    deny_w = max(est_width(t["deny"], BODY_SIZE) + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
-    for left, w, label, edge, ink in (
-        (tx, allow_w, t["allow"], WIN_BAR, WIN_INK),
-        (right - deny_w, deny_w, t["deny"], WIN_FOOTER, WIN_FOOTER),
-    ):
-        out.append(
-            f'<rect x="{num(left + 0.5)}" y="{num(top + 0.5)}" width="{num(w - 1)}" height="{num(BUTTON_H - 1)}" '
-            f'rx="{num(BUTTON_RADIUS)}" fill="{BUTTON_FILL}" stroke="{edge}"/>'
-            + text(left + w / 2, top + BUTTON_H / 2 + BODY_SIZE * 0.36, label, BODY_SIZE, ink, anchor="middle")
-        )
-    out.append(
-        f'<rect x="{num(tx + 1)}" y="{num(top + 1)}" width="{num(allow_w - 2)}" height="{num(BUTTON_H - 2)}" '
-        f'rx="{num(BUTTON_RADIUS)}" fill="#000"{c.m.pulse(press, 0.25, "opacity:.16")}/>'
-    )
-    return "".join(out), h, (tx + allow_w / 2, top + BUTTON_H / 2)
+    countdown = [
+        box(bx, by, bw, bh, BAR_H / 2, D["line"]),
+        box(bx, by, bw, bh, BAR_H / 2, D["caution"], more=m.track(share, cls="tl")),
+    ]
+    lx, ly, lw, template, rest = w.at["countdown"]
+    for k in range(math.ceil(closed - opened)):  # the seconds left, from the moment the window opens
+        line = para(lx, ly, template.replace("{0}", str(ANSWER_WAIT - k)) + rest, 10, D["secondary"], lw)[0]
+        until = opened + k + 1
+        countdown.append(g(m.at(0.0 if k == 0 else opened + k, None if until >= closed else until), line))
+    left, top, width, height, ink = w.at["allow"]
+    press_attr = m.pulse(press, 0.25, SHOWN)
+    pressed = box(left + 1, top + 1, width - 2, height - 2, BUTTON_RADIUS - 1, "none", ink, 2, press_attr)
+    svg = window_svg(x, y, w, w.svg("".join(countdown)) + pressed)
+    return svg, frame_h(w), (x + 1 + left + width / 2, y + 1 + WIN_CAPTION + top + height / 2)
 
 
 def notification(x: float, y: float, w: float, lang: str, lines: tuple) -> str:
@@ -1989,18 +2687,43 @@ def editor_window(x: float, y: float, w: float, h: float) -> str:
     )
 
 
+NOTE_W, NOTE_H = 320, 96  # a Windows notification
+
+
+def relay_call(lang: str) -> dict:
+    """The call that asks in the relay's scene: Claude Code checks the service on web-02. Its Bash tool ran ssh in a
+    bash, the call's root: the root's name, PID, its line with the command it runs as … (look.rs: root_command's
+    frame) and that command; the client's (ssh.exe's) command line is the toasts' too."""
+    return {
+        "time": f"{DAY} 10:42:07",
+        "pid": "4242",
+        "reason": RELAY_REASONS[lang]["service"],
+        "root": ("bash", "5150", 'bash -c -l "…"', 'ssh deploy@web-02 "systemctl status app"'),
+        "command": RELAY_CALLS["deploy"][1],
+        "dest": RELAY_CALLS["deploy"][2],
+        "user": "deploy",
+    }
+
+
+def relay_screen_h() -> float:
+    """The screen of the relay's scene, down to the bottom of the taskbar: the window that asks at the top right, and
+    the notification under it at the bottom right."""
+    tallest = max(frame_h(lay_out(relay_view(lang, relay_call(lang)), lang)) for lang in LANGS)
+    return math.ceil(WIN_TOP + tallest + 14 + NOTE_H + 12 + 28)
+
+
 def scene_relay(lang: str) -> str:
     """The SSH relay: toasts at the top left (one per call, three at most, four seconds), and the window that asks at
     the top right with its notification at the bottom right, gone together."""
     tx = TEXTS[lang]
     r = RELAY[lang]
     d = 33.0
-    screen_h = 470
+    screen_h = relay_screen_h()
     # without motion: the window asks, its notification is at the bottom right, and a toast is at the top left
     c = Canvas(screen_h + 44, d, rest=24.4)
     c.css.append(".tl{transform-box:fill-box;transform-origin:0 50%}")
     m = c.m
-    c.add(desk(0, 0, W, screen_h), editor_window(80, 92, 440, 270), taskbar(screen_h - 28, 28, "10:42"))
+    c.add(desk(0, 0, W, screen_h), editor_window(80, 92, 440, screen_h - 200), taskbar(screen_h - 28, 28, "10:42"))
     events = [(300, "pwsh", "a1", toast_texts(lang, "pwsh"))]
     events += [(6000 + 300 * i, "ansible", "a2", toast_texts(lang, "ansible", f"web-{i + 1:02d}")) for i in range(8)]
     events += [(t, k, f"a-{k}", toast_texts(lang, k)) for t, k in ((13200, "c1"), (14000, "c2"), (14800, "c3"))]
@@ -2012,23 +2735,15 @@ def scene_relay(lang: str) -> str:
     t_open, t_notify, t_press, t_close = 22.8, 22.9, 25.5, 26.1
 
     # the window that asks, at the top right (it opens and closes with a slide), and its notification
-    reason = RELAY_REASONS[lang]["service"]
-    command = RELAY_CALLS["deploy"][1]
-    values = (
-        f"{DAY} 10:42:07",
-        r["claude_pid"].replace("{0}", "4242"),
-        reason,
-        command,
-        f"deploy@web-02 · {r['host_key'].replace('{0}', HOST_KEY)}",
-        r["userauth"].replace("{0}", "deploy"),
-    )
-    win, _, allow = relay_window(c, W - WIN_RIGHT - WIN_W, 16, lang, values, t_press)
+    call = relay_call(lang)
+    reason, command = call["reason"], call["command"]
+    win, _, allow = relay_window(c, W - WIN_RIGHT - WIN_W, WIN_TOP, lang, call, (t_open, t_close), t_press)
     slide = {"hidden": "opacity:0;transform:translateY(-8px)", "shown": "opacity:1;transform:translateY(0)"}
     c.add(g(m.at(t_open, t_close, 0.3, **slide), win))
-    nw = 320
+    nw = NOTE_W
     note = notification(
         W - 12 - nw,
-        screen_h - 28 - 12 - 96,
+        screen_h - 28 - 12 - NOTE_H,
         nw,
         lang,
         (r["title"], NOTIFY[lang]["toast_reason"].replace("{0}", reason), f"Claude Code · {command}"),
@@ -2046,7 +2761,7 @@ def scene_relay(lang: str) -> str:
         c.add(toast_card(c, card))
     c.add(more_tag(c, more_steps(pushed)))
 
-    rest = (500, 410)
+    rest = (500, screen_h - 60)  # the mouse before and after: on the desktop, above the taskbar
     c.add(
         mouse(m, rest, ((24.6, 25.3, allow), (25.9, 26.6, rest))),
         ripple(m, allow, t_press),
@@ -2061,7 +2776,9 @@ def scene_relay(lang: str) -> str:
 
 
 def relay_html_needles() -> list:
-    """What the HTML page must hold: the times and counts of pass_toast.rs, and the texts of the toast and the window."""
+    """What the HTML page must hold: the times and counts of pass_toast.rs and of the window's countdown, the colors of
+    the dark look, and the texts of the toast and of the window (the band's line by its runs: the page tints the marked
+    words)."""
     times = [
         f"SHOW = {SHOW_MS}",
         f"FADE = {FADE_MS}",
@@ -2076,9 +2793,21 @@ def relay_html_needles() -> list:
         f"MORE_GAP = {MORE_GAP:g}",
         f"MORE_H = {MORE_H:g}",
         f"MORE_PAD = {TOAST_MORE_PAD:g}",
+        f"ANSWER_WAIT = {ANSWER_WAIT}",
+        f"LIMIT = {LIMIT_MINUTES}",
+        f"COUNTDOWN_MS = {COUNTDOWN_MS}",
     ]
-    keys = ("title", "pass_word", "pass_call", "pass_terminal", "no_reason", "allow", "deny")
-    return times + [RELAY[lang][k] for lang in LANGS for k in keys]
+    # every role but those its window does not show (no path in its command, the picture's window is this one)
+    unused = ("code_path", "pic_window")
+    colors = [f"--op-{role.replace('_', '-')}: {rgb};" for role, rgb in DARK.items() if role not in unused]
+    keys = ("title", "subtitle", "reason", "root_command", "command", "countdown", "covers_name", "band_title")
+    keys += ("allow", "deny")
+    keys += ("pass_word", "pass_call", "pass_terminal", "no_reason")
+    texts = [RELAY[lang][k] for lang in LANGS for k in keys]
+    for lang in LANGS:
+        plain, tones = unmark(RELAY[lang]["band_line"])
+        texts += ["".join(ch for ch, _ in run) for _, run in itertools.groupby(zip(plain, tones), key=lambda q: q[1])]
+    return times + colors + texts
 
 
 SCENES = (
@@ -2100,11 +2829,11 @@ def check_sources() -> list:
     for rel, needles in sources().items():
         body = (ROOT / rel).read_text(encoding="utf-8")
         problems += [f"{rel} no longer has {n!r}" for n in needles if n not in body]
-    problems += [
-        f"FOOTER_LINES[{lang!r}] is not the footer of WINDOW[{lang!r}]"
-        for lang in LANGS
-        if " ".join(FOOTER_LINES[lang]) != WINDOW[lang]["footer"]
-    ]
+    # the colors: in the DARK palette, not merely somewhere in the file
+    theme = (ROOT / THEME).read_text(encoding="utf-8")
+    start = theme.find("pub const DARK: Palette = Palette {")
+    dark = theme[start : theme.find("};", start)] if start >= 0 else ""
+    problems += [f"{THEME}: DARK no longer has {n.strip()!r}" for n in dark_needles() if n not in dark]
     page = ROOT / RELAY_HTML
     if not page.is_file():
         problems.append(f"{RELAY_HTML} is missing")
