@@ -5,9 +5,9 @@
   1Password icon in the tray, with a picture of what is asked; of three ways, the user chose A: watch whether
   1Password's prompt comes to the front, and point at the tray when it does not. This document records the design and
   the implementer's decisions)
-- Builds on: `2026-11-22-front-after-allow-design.md` (the window comes to the front after Allow, `AllowSetForegroundWindow`
-  for the process that serves 1Password's pipe, where a hidden prompt waits) and `2026-11-26-modern-window-design.md`
-  (the look: the band and its picture, the palettes)
+- Builds on: `2026-11-22-front-after-allow-design.md` (the window comes to the front after Allow,
+  `AllowSetForegroundWindow` for the process that serves 1Password's pipe, where a hidden prompt waits) and
+  `2026-11-26-modern-window-design.md` (the look: the band and its picture, the palettes)
 
 ## 1. What and why
 
@@ -36,8 +36,8 @@ when it does not, light the window up and point at the tray.
 
 Goal:
 
-- After a click on **Allow this call** or **Allow this terminal for N minutes** (per-call mode), the relay watches whether
-  1Password's prompt comes: a window of 1Password comes to the front, or a new window of 1Password appears (§5).
+- After a click on **Allow this call** or **Allow this terminal for N minutes** (per-call mode), the relay watches
+  whether 1Password's prompt comes: a window of 1Password comes to the front, or a new window of 1Password appears (§5).
 - When it comes: the window says "Approve in 1Password's window", small, with a picture of the question 1Password asks.
 - When it has not come within 2 seconds: the window lights up (a border in the caution color), and a small window next
   to the notification area points at the tray with an arrow: "the 1Password icon (under ^ when hidden) → SSH request
@@ -84,22 +84,25 @@ Within A:
 
 | Decision | Chosen | Not chosen, and why |
 | --- | --- | --- |
-| What counts as the prompt | after the request went: the window in front changes to a window of 1Password (the pipe's server, or a process named `1Password.exe`) or of Windows Hello (`CredentialUIBroker.exe`); or a visible top-level window of 1Password appears that was not there | The window in front only: a prompt shown behind would not count (a guide too many); any window of 1Password visible: its main window may be open all day |
+| What counts as the prompt | after the request went: the window in front changes to a window of 1Password (the pipe's server, or a process named `1Password.exe`) or of Windows Hello (`CredentialUIBroker.exe`); or a top-level window of 1Password appears that was not there; only windows a person can see count (§5) | The window in front only: a prompt shown behind would not count (a guide too many); any window of 1Password visible: its main window may be open all day |
 | How long to wait | 2 seconds after the request went | The checks of 2026-11-22 saw the prompt 0.4–0.6 seconds after the click; 5 seconds: the person may already look away |
 | The light | a border of 2 DIPs in the caution color inside the window, pulsing once a second (steady with Windows' animation effects off), and the frame's border in that color (Windows 11) | Flashing the caption or the taskbar: the window is a tool window, out of the taskbar |
 | The pointer | a layered window like the toasts (click-through, never active, topmost), above the notification area of the primary taskbar, its arrow at the notification area | A balloon of op-reason's own icon: it points at op-reason's icon, not 1Password's; a Windows notification: it goes to the notification center and says nothing about where |
-| Where the notification area is | the window `TrayNotifyWnd` in `Shell_TrayWnd`; else the taskbar's place (`SHAppBarMessage`); else the bottom right of the primary screen's work area | — |
+| Where the notification area is | the window `TrayNotifyWnd` in `Shell_TrayWnd`; else the end of the taskbar (the window rectangle of `Shell_TrayWnd`); else the bottom right of the primary screen's work area | `SHAppBarMessage(ABM_GETTASKBARPOS)`: it asks Explorer, and a busy Explorer would hold up the relay's thread |
 | The seconds left | about 60 from when the request went to 1Password, counted down | 1Password does not say when it started its wait; the checks saw 60 seconds |
 
 ## 5. The watch
 
 - It starts when the request goes to 1Password after a click that allows (after the window came to the front and
-  1Password got the right to the foreground). The relay notes the window in front then, and the visible windows of
-  1Password's processes.
+  1Password got the right to the foreground). The relay notes the window in front then, and the windows of 1Password's
+  processes that a person can see.
 - Every 100 ms while 1Password has the request (the loop that waits for the answer), it looks again:
   - **seen** when the window in front is another one than at the start and belongs to a process of 1Password or to
-    `CredentialUIBroker.exe`, or when a visible top-level window of 1Password is there that was not at the start;
+    `CredentialUIBroker.exe`, or when a top-level window of 1Password is there that was not at the start;
   - **hidden** when 2 seconds have passed without that.
+- Only windows that a person can see count, the one in front too: visible, not minimized, not hidden by DWM (cloaked:
+  another virtual desktop, a suspended app), and not a menu or a tooltip (1Password's menu in the tray is a window of
+  its process; opening it is not the prompt).
 - **seen** holds; **hidden** turns into **seen** when the prompt comes later.
 - The processes of 1Password: the pipe's server, and processes whose image name is `1Password.exe`.
 
@@ -111,8 +114,8 @@ Within A:
 | seen | the band: "Approve in 1Password's window" / "It asks whether the SSH key **GitHub** may be used. If it went behind other windows: the **tray at the bottom right**", with a sketch of 1Password's question (a dialog with a key, two lines of words, two buttons) instead of the screen | — |
 | hidden | lit up: a border of 2.5 DIPs in the caution color inside the window, pulsing once a second (steady with Windows' animation effects off), and the frame's border in that color (Windows 11); the band in the alert colors: "1Password's prompt did not come to the front" / "Open it from the **1Password icon at the right of the taskbar** (under ^ when hidden) → SSH request waiting", with the screen, its tray ringed and an arrow at it; under the band's place, a bar and "1Password closes the request in about N s" (the window's countdown, 60 seconds from the request) | shown: a card with a caution border and an arrow at the notification area: "1Password's prompt is waiting in the tray", "1Password icon (under ^ when hidden) → SSH request waiting", "closes in about N s", and a picture: 1Password's menu with its item "SSH request waiting" highlighted, a line to its icon (with a dot) in the tray, `^` |
 
-The window keeps its title ("SSH key: 1Password is asking") and its footer ("Deny any 1Password prompt that comes without
-this window"). The pictures are sketches drawn with Direct2D's shapes and op-reason's own words, not copies of
+The window keeps its title ("SSH key: 1Password is asking") and its footer ("Deny any 1Password prompt that comes
+without this window"). The pictures are sketches drawn with Direct2D's shapes and op-reason's own words, not copies of
 1Password's windows.
 
 Texts (Japanese):
@@ -128,9 +131,12 @@ Texts (Japanese):
 
 ### 6.1 Where the pointer goes
 
-- The taskbar's edge and place (`SHAppBarMessage(ABM_GETTASKBARPOS)`) and its screen (the screen that holds it, with its
-  DPI); the notification area `TrayNotifyWnd` in `Shell_TrayWnd` when it lies on that taskbar, else the 160 DIPs at the
-  taskbar's end; without a taskbar, the bottom right of the primary screen's work area.
+- The taskbar's window rectangle (`Shell_TrayWnd`; a rectangle is read without a message to Explorer) and its screen
+  (the screen that holds it, with its DPI); its edge from the two: a bar wider than tall at the top or the bottom, one
+  taller than wide at the left or the right, on the side of the screen's middle where the bar's middle is
+  (`relay_prompt::taskbar_side`; a taskbar that hides itself lies mostly outside the screen, on its edge). The
+  notification area `TrayNotifyWnd` in `Shell_TrayWnd` when it lies on that taskbar, else the 160 DIPs at the taskbar's
+  end; without a taskbar, the bottom right of the primary screen's work area.
 - The card goes next to the taskbar on the side of the screen (above a taskbar at the bottom, below one at the top, to
   the side of one at the left or the right), 2 DIPs from it, inside the screen; its arrow's tip at the middle of the
   notification area, at least the card's corner away from the card's corners (`relay_prompt::spot`).
@@ -139,9 +145,10 @@ Texts (Japanese):
 
 The `ssh-sign` record of a request after a click that allows gets `prompt`: `front` (op-reason's window came to the
 front at the click), `seen` (seconds from the request to 1Password's prompt, to a tenth; null when it never came) and
-`hint` (seconds from the request to the pointer; null when it never showed; kept when the prompt came later), for
-example `"prompt":{"front":true,"seen":null,"hint":2.0}`. Other records have no `prompt`. `op-reason --log` does not show
-it. So the next time a prompt does not come, the record says whether op-reason's window was in front.
+`hint` (seconds from the request to the guide of §6's hidden state: the window lit up, and the pointer unless it could
+not be made; null when the guide never came; kept when the prompt came later), for example
+`"prompt":{"front":true,"seen":null,"hint":2.0}`. Other records have no `prompt`. `op-reason --log` does not show it. So
+the next time a prompt does not come, the record says whether op-reason's window was in front.
 
 ## 8. Tests
 
@@ -163,10 +170,15 @@ manual checks (a request while 1Password is locked; the pointer with the taskbar
 | --- | --- |
 | The watch starts when the request goes (after the window came to the front and 1Password got the right to the foreground), and looks every 100 ms from the loop that waits for 1Password's answer | the loop pumps the window's messages every 10 ms already; a look reads the window in front and enumerates the top-level windows, cheap at that rate |
 | "1Password" is the pipe's server and any process named `1Password.exe`; Windows Hello's `CredentialUIBroker.exe` counts only as the window in front | 1Password's windows may belong to another process of the app than the one that serves the pipe; Windows Hello asks for 1Password when it is locked or asks to approve; a new window of Windows Hello's broker could be any other app's |
-| A cloaked window does not count as visible | DWM hides such windows (another virtual desktop, a suspended app) |
+| Only windows a person can see count (§5), the one in front too | DWM hides cloaked windows (another virtual desktop, a suspended app); a hidden or minimized window of 1Password in front shows nothing (a code review found that it would have counted); 1Password's menu in the tray is a window of its process, and opening it is following the guide, not the prompt |
 | The hidden state uses the window's countdown (a bar and the seconds) for the 60 seconds | one countdown in the window, as for the answer wait; the bar is in the caution color already |
 | The pointer is a window of the relay's window thread, dropped with the watch | it lives exactly as long as the request; no thread of its own |
 | The pointer is not shown again after the prompt was seen | seen holds (§5); the band of the seen state still names the tray |
 | `hint` stays in the record when the prompt came later | the record says that the guide was needed, and how long the prompt took |
 | The CI stand-in for 1Password's prompt is a window of the fake agent (`<dir>/prompt-window`), which the relay lets set the foreground window as it lets 1Password | the same path as the real prompt: the pipe's server, the right to the foreground, a window in front |
+| No pointer after op-reason's window was closed with its close button while 1Password asks | the person put the window away; a pointer alone would point at a request whose window is gone |
+| The guide stays until 1Password answers, also when the ssh client has gone (Ctrl+C) | the request is still with 1Password, and the window stayed until its answer before this change too; the relay cannot take a request back from 1Password |
+| With a taskbar at the top, the pointer may cover the top of op-reason's window (both at the top right of the screen) | the pointer lets clicks through, so the close button still works; Windows 11 keeps its taskbar at the bottom |
+| The lit border pulses with ten frames a second | each frame draws the whole window with the software renderer; ten frames keep a pulse a second smooth at half the work of twenty |
+| The pointer's card is 372 DIPs wide | at 340 the Japanese title left its last character alone on a second line (CI's screenshot) |
 | No plan document | §5–§8 are its steps, and it builds on the parts of `2026-11-26-modern-window-design.md` |

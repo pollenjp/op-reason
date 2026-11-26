@@ -367,7 +367,7 @@ locked), the window lights up, counts down the seconds until 1Password closes th
 window next to the notification area points at the tray: the 1Password icon (under ^ when hidden) → **SSH request
 waiting**. The pointer lets clicks through and never takes the focus; it goes when the prompt comes or the request
 ends. The record of the signature says what the relay saw (`prompt`: whether the window came to the front, and when
-the prompt or the pointer came).
+the prompt or the guide came).
 
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
