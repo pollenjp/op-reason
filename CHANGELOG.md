@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-26
 
 - **A modern look for `op-reason.exe`'s windows**, in Windows' dark or light app mode (it follows a change while a
   window is open): the reason first, in large letters (or "no reason given" in its place); the caller, herdr, the WSL
