@@ -28,7 +28,9 @@
   --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace;
   /* Windows' own fonts first; the named fallbacks before system-ui are for systems whose generic families resolve to a serif face */
   --font-win: "Segoe UI", "Yu Gothic UI", "Meiryo UI", Meiryo, "Hiragino Sans", "Noto Sans", "Noto Sans CJK JP", system-ui, sans-serif;
-  /* The stage shows one dark desktop in both themes; what op-reason draws on it is light, as on a real screen. */
+  /* The monospace font of op-reason's window and toasts: Cascadia Mono, else Consolas */
+  --font-win-mono: "Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Noto Sans Mono", ui-monospace, monospace;
+  /* The stage shows one dark desktop in both themes; op-reason draws on it in its dark look (Windows' dark app mode). */
   --scr-wall: #1b262a;
   --scr-wall-2: #23343b;
   --scr-win: #262b31;
@@ -38,19 +40,37 @@
   --scr-dim: #76818b;
   --scr-ink-bar: rgba(255, 255, 255, 0.08);
   --scr-task: #10171a;
-  /* op-reason's colors (crates/op-reason-win/src/win/pass_window.rs and window.rs) and its window's caption */
-  --op-yellow: #ffffe0;
-  --op-gray: #808080;
-  --op-dim: #555555;
-  --op-green: #15803d;
-  --op-pale: #dcfce7;
-  --op-red: #b22222;
-  --op-link: #0066cc;
-  --op-btn: #fafafa;
-  --op-btn-down: #d8d8d8;
-  --op-cap: #f3f3f3;
-  --op-cap-ink: #919191;
-  --op-cap-x: #dadada;
+  /* op-reason's dark look (crates/op-reason-win/src/theme.rs: DARK), by role, for its window and its toasts; and what
+     Windows draws around the window: the thin border and the close button, the caption's only mark */
+  --op-background: #202020;
+  --op-text: #ffffff;
+  --op-secondary: #a0a0a0;
+  --op-tertiary: #8a8a8a;
+  --op-surface: #2b2b2b;
+  --op-line: #3c3c3c;
+  --op-code-bg: #141414;
+  --op-code-border: #333333;
+  --op-code-text: #d4d4d4;
+  --op-accent: #60cdff;
+  --op-on-accent: #000000;
+  --op-caution: #fce100;
+  --op-on-caution: #202020;
+  --op-critical: #ff99a4;
+  --op-success: #6ccb5f;
+  --op-on-success: #000000;
+  --op-success-tint: #1f3a1c;
+  --op-claude: #c3a6ff;
+  --op-band-bg: #1b2a36;
+  --op-band-border: #2d4b63;
+  --op-band-title: #e6f3fb;
+  --op-band-text: #9cc9e8;
+  --op-pic-screen: #15202a;
+  --op-pic-frame: #9cc9e8;
+  --op-pic-taskbar: #2d4b63;
+  --op-pic-stand: #4a6b85;
+  --op-switch-shown: #454545;
+  --op-border: #454545;
+  --op-close: #c8c8c8;
   /* A Windows 11 notification, light */
   --ntf-bg: #f7f7f7;
   --ntf-ink: #1b1b1b;
@@ -108,12 +128,12 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .player { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 14px; min-width: 0; }
 .fit { position: relative; width: 100%; overflow: hidden; border-radius: 10px; background: var(--scr-wall); }
 .stage {
-  position: absolute; top: 0; left: 0; width: 960px; height: 460px; transform-origin: 0 0;
+  position: absolute; top: 0; left: 0; width: 960px; height: 700px; transform-origin: 0 0;
   background: linear-gradient(160deg, var(--scr-wall), var(--scr-wall-2));
   font-family: var(--font-win); overflow: hidden;
 }
 .app {
-  position: absolute; left: 70px; top: 38px; width: 600px; height: 352px;
+  position: absolute; left: 70px; top: 38px; width: 600px; height: 580px;
   background: var(--scr-win); border: 1px solid var(--scr-line); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
@@ -131,13 +151,13 @@ html[lang="ja"] body { word-break: auto-phrase; }
 
 /* Where Windows shows its notifications: a quiet outline while none is there. */
 .ntf-area {
-  position: absolute; right: 12px; top: 316px; width: 300px; height: 92px;
+  position: absolute; right: 12px; top: 556px; width: 300px; height: 92px;
   border: 1px dashed var(--area-edge); border-radius: 8px; color: var(--area-ink);
   font-size: 12px; line-height: 1.45; display: grid; place-content: center; text-align: center; padding: 0 18px;
 }
 /* The Windows notification of the window (Windows 11, light): app, title, two lines. */
 .ntf {
-  position: absolute; right: 12px; top: 316px; width: 300px; height: 92px; z-index: 3;
+  position: absolute; right: 12px; top: 556px; width: 300px; height: 92px; z-index: 3;
   padding: 10px 14px 0; border-radius: 8px; background: var(--ntf-bg); color: var(--ntf-ink);
   border: 1px solid rgba(0, 0, 0, 0.12); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   font-size: 12px; opacity: 0; will-change: transform, opacity;
@@ -148,62 +168,103 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .ntf-t { margin-top: 6px; font-size: 13px; line-height: 18px; font-weight: 700; }
 .ntf-l { font-size: 12px; line-height: 16px; color: #303030; }
 
-/* op-reason's window that asks (window.rs): caption, light yellow client area, title, lines, footer and switch, buttons. */
+/* op-reason's window that asks (window.rs), in the dark look: one surface with round corners whose caption shows its close
+   button only; the header (a tile, the title, the time), the reason, the caller's chip, the command's box, what the
+   signature is for, the countdown with the language switch, the band with its picture of the screen, the buttons. */
 .opr {
   position: absolute; top: 12px; right: 12px; width: 372px; z-index: 4;
-  background: var(--op-yellow); color: #000; border: 1px solid #6f7b83;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); font-size: 12px; opacity: 0; will-change: transform, opacity;
+  background: var(--op-background); color: var(--op-text); border: 1px solid var(--op-border); border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); font-size: 12px; line-height: 16px; opacity: 0; will-change: transform, opacity;
 }
-.opr-cap { display: flex; align-items: center; height: 28px; padding-left: 9px; background: var(--op-cap); color: var(--op-cap-ink); font-size: 12px; white-space: nowrap; }
-.opr-cap-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.opr-x { flex: none; width: 19px; height: 19px; margin: 0 5px 0 8px; display: grid; place-items: center; background: var(--op-cap-x); color: #f6f6f6; font-size: 14px; line-height: 1; }
-.opr-body { padding: 10px 14px 12px; }
-.opr p { margin: 2px 0; }
-.opr-h { font-size: 16px; line-height: 21px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.opr-l { line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.opr-l b { font-weight: 700; }
-.opr-foot { display: flex; align-items: flex-end; align-items: last baseline; gap: 12px; margin: 2px 0; }
-.opr-foot p { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--op-red); font-weight: 700; line-height: 16px; }
-.opr-sw { flex: none; font-size: 11px; line-height: 16px; color: var(--op-gray); white-space: nowrap; }
-.opr-sw b { color: #000; font-weight: 700; }
-.opr-sw u { color: var(--op-link); }
-.opr-btns { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; }
-.opr-btn {
-  height: 28px; min-width: 96px; padding: 0 14px; border: 1px solid var(--op-gray); border-radius: 4px;
-  background: var(--op-btn); line-height: 26px; text-align: center; white-space: nowrap;
+:where(.opr) p { margin: 0; }
+.opr-cap { display: flex; justify-content: flex-end; align-items: center; height: 30px; padding-right: 12px; color: var(--op-close); }
+.opr-body { padding: 12px 14px 11px; }
+.opr-head { display: flex; align-items: flex-start; gap: 10px; }
+.opr-tile { flex: none; width: 28px; height: 28px; border-radius: 7px; background: var(--op-caution); }
+.opr-tile svg, .opr-band svg { display: block; }
+.opr-tile g { stroke: var(--op-on-caution); }
+.opr-titles { flex: 1 1 auto; min-width: 0; margin-top: -1px; }
+.opr-h { font-size: 14px; line-height: 19px; font-weight: 700; }
+.opr-sub { font-size: 11px; line-height: 15px; color: var(--op-secondary); }
+.opr-when { flex: none; text-align: right; font-size: 12px; color: var(--op-secondary); }
+.opr-when small { display: block; font-size: 10px; line-height: 13px; color: var(--op-tertiary); }
+.opr-k { margin-top: 14px; font-size: 10px; line-height: 13px; color: var(--op-secondary); }
+.opr-reason { margin-top: 2px; font-size: 17px; line-height: 23px; font-weight: 700; }
+.opr-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; margin-top: 10px; padding: 0 9px; border-radius: 12px;
+  background: var(--op-surface); box-shadow: inset 0 0 0 1px var(--op-line); font-size: 11px; white-space: nowrap;
 }
-.opr-btn.deny { border-color: var(--op-red); color: var(--op-red); }
-.opr-btn.press { background: var(--op-btn-down); }
+.opr-chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--op-claude); }
+.opr-code {
+  margin-top: 4px; padding: 8px 10px; border-radius: 6px; background: var(--op-code-bg); border: 1px solid var(--op-code-border);
+  color: var(--op-code-text); font-family: var(--font-win-mono); font-size: 12px; line-height: 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.opr-code b { color: var(--op-accent); }
+.opr-for { display: flex; align-items: center; gap: 4px; margin-top: 12px; }
+.opr-for svg { flex: none; }
+.opr-for g { stroke: var(--op-secondary); }
+.opr-detail { margin: 3px 0 0 18px; font-size: 10px; line-height: 13px; color: var(--op-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.opr-detail.mono { margin-top: 2px; font-family: var(--font-win-mono); line-height: 12px; }
+/* under the box, small: the root process and the rest of its line (the box's command as …) */
+.opr-note { margin-top: 4px; font-family: var(--font-win-mono); font-size: 10px; line-height: 12px; color: var(--op-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.opr-bar { margin-top: 14px; height: 4px; border-radius: 2px; background: var(--op-line); overflow: hidden; }
+.opr-bar i { display: block; height: 100%; border-radius: 2px; background: var(--op-caution); transform-origin: 0 50%; }
+.opr-row { display: flex; align-items: flex-start; gap: 12px; margin-top: 7px; }
+.opr-left { flex: 1 1 auto; min-width: 0; padding-top: 5px; font-size: 10px; line-height: 13px; color: var(--op-secondary); }
+/* The switch: a pill, each language its name and 9 px on both sides; the shown one bold on the lighter part. */
+.opr-pill { flex: none; display: flex; height: 24px; border-radius: 12px; background: var(--op-surface); box-shadow: inset 0 0 0 1px var(--op-line); font-size: 11px; line-height: 20px; white-space: nowrap; }
+.opr-pill span { margin: 2px; padding: 0 7px; border-radius: 10px; color: var(--op-secondary); }
+.opr-pill .on { background: var(--op-switch-shown); color: var(--op-text); font-weight: 700; }
+.opr-band { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 7px 9px; min-height: 64px; border-radius: 8px; background: var(--op-band-bg); border: 1px solid var(--op-band-border); }
+.opr-band svg { flex: none; overflow: visible; }
+/* the picture: op-reason's window in the caution color (this window), the prompt dashed and pale (to come), the tray */
+.sk-screen { fill: var(--op-pic-screen); stroke: var(--op-pic-frame); }
+.sk-win { fill: var(--op-caution); stroke: var(--op-secondary); }
+.sk-prompt { fill: rgba(96, 205, 255, 0.35); stroke: var(--op-accent); }
+.sk-task { fill: var(--op-pic-taskbar); }
+.sk-tray { fill: var(--op-caution); }
+.sk-stand { fill: var(--op-pic-stand); }
+.opr-band-t { font-weight: 700; color: var(--op-band-title); }
+.opr-band-l { margin-top: 3px; font-size: 11px; line-height: 15px; color: var(--op-band-text); }
+.opr-band .acc { color: var(--op-accent); }
+.opr-band .cau { color: var(--op-caution); }
+.opr-btns { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.opr-btn { height: 30px; min-width: 96px; padding: 0 14px; border-radius: 6px; line-height: 30px; text-align: center; white-space: nowrap; }
+.opr-btn.allow { background: var(--op-accent); color: var(--op-on-accent); font-weight: 700; }
+.opr-btn.deny { background: var(--op-surface); color: var(--op-critical); box-shadow: inset 0 0 0 1px var(--op-critical); }
+/* a pressed button: a border 2 px wide in its label's color; its fill and its label stay */
+.opr-btn.press { box-shadow: inset 0 0 0 2px currentColor; }
 
-/* The toasts (pass_window.rs): cards of 300 x 70 at the top left, the newest at the top. */
+/* The toasts (pass_window.rs): cards of 300 x 70 at the top left, the newest at the top, in the dark look. */
 .stack { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .card {
   position: absolute; width: 300px; height: 70px; border-radius: 6px;
-  background: var(--op-yellow); color: #000; font-family: var(--font-win); font-size: 12px; line-height: 17px;
-  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 2px 0 1px rgba(0, 0, 0, 0.16), 0 6px 16px rgba(0, 0, 0, 0.3);
+  background: var(--op-surface); color: var(--op-text); font-family: var(--font-win); font-size: 12px; line-height: 17px;
+  box-shadow: inset 0 0 0 1px var(--op-line), 0 2px 0 1px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
 }
 /* A card on the stage: its place (moving and fading), the card at 90% in it, and the ring of its glow at full strength. */
 .stack .slot { position: absolute; top: 0; left: 12px; width: 300px; height: 70px; will-change: transform, opacity; }
 .slot .card { left: 0; top: 0; }
 .t-ico { position: absolute; left: 10px; top: 9.5px; width: 16px; height: 16px; }
-.t-ico circle { fill: var(--op-green); }
-.t-ico path { fill: none; stroke: #fff; stroke-width: 1.8; }
+.t-ico circle { fill: var(--op-success); }
+.t-ico path { fill: none; stroke: var(--op-on-success); stroke-width: 1.8; }
 .t-l1, .t-l2, .t-l3 { position: absolute; left: 36px; width: 252px; white-space: nowrap; }
 .t-l1 { top: 9px; height: 17px; display: flex; align-items: baseline; font-weight: 700; }
-.t-w { flex: none; color: var(--op-green); }
+.t-w { flex: none; color: var(--op-success); }
 .t-c { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-.t-n { flex: none; margin-left: 6px; padding: 0 5px; height: 15px; border-radius: 4px; background: var(--op-pale); color: var(--op-green); font-size: 11px; line-height: 15px; }
-.t-l2 { top: 26px; height: 17px; display: flex; }
+.t-n { flex: none; margin-left: 6px; padding: 0 5px; height: 15px; border-radius: 4px; background: var(--op-success-tint); color: var(--op-success); font-size: 11px; line-height: 15px; }
+/* line 2 in the monospace font: the command cut, the destination whole (at most 60% of the line) */
+.t-l2 { top: 26px; height: 17px; display: flex; font-family: var(--font-win-mono); font-size: 11px; }
 .t-cmd { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .t-dst { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-.t-l3 { top: 43px; height: 16px; font-size: 11px; line-height: 16px; color: var(--op-dim); overflow: hidden; text-overflow: ellipsis; }
-.t-bar { position: absolute; left: 36px; top: 65px; width: 252px; height: 2px; background: var(--op-green); transform-origin: 0 50%; }
-.t-glow { position: absolute; inset: -3.75px; border: 2.5px solid rgba(21, 128, 61, 0.9); border-radius: 9.75px; opacity: 0; pointer-events: none; }
+.t-l3 { top: 43px; height: 16px; font-size: 11px; line-height: 16px; color: var(--op-secondary); overflow: hidden; text-overflow: ellipsis; }
+.t-bar { position: absolute; left: 36px; top: 65px; width: 252px; height: 2px; background: var(--op-success); transform-origin: 0 50%; }
+.t-glow { position: absolute; inset: -3.75px; border: 2.5px solid rgba(108, 203, 95, 0.9); border-radius: 9.75px; opacity: 0; pointer-events: none; }
 /* +N under the third place: the cards pushed out, at 90% like the cards */
 .more {
   position: absolute; left: 12px; top: 242px; height: 16px; padding: 0 6px; border-radius: 4px;
-  background: var(--op-yellow); color: var(--op-dim); font-family: var(--font-win); font-size: 11px; font-weight: 700; line-height: 16px;
-  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 1px 0 1px rgba(0, 0, 0, 0.16); opacity: 0;
+  background: var(--op-surface); color: var(--op-secondary); font-family: var(--font-win); font-size: 11px; font-weight: 700; line-height: 16px;
+  box-shadow: inset 0 0 0 1px var(--op-line), 0 1px 0 1px rgba(0, 0, 0, 0.4); opacity: 0;
 }
 
 .cursor { position: absolute; left: 0; top: 0; z-index: 7; opacity: 0; pointer-events: none; }
@@ -278,7 +339,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 }
 
 .anatomy { margin: 2px 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
-.anatomy .card { position: relative; flex: none; opacity: 0.9; box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.8), 0 2px 0 1px rgba(0, 0, 0, 0.16); }
+.anatomy .card { position: relative; flex: none; opacity: 0.9; box-shadow: inset 0 0 0 1px var(--op-line), 0 2px 0 1px rgba(0, 0, 0, 0.4); }
 .anat-cards { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .anat-cards .more { position: static; display: inline-block; opacity: 0.9; }
 .anatomy figcaption { flex: 1 1 260px; font-size: 0.86rem; color: var(--muted); max-width: 52ch; }
@@ -314,7 +375,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
           <div class="app-bar"><span data-l="en">deploy.yml — Editor</span><span data-l="ja">deploy.yml — エディター</span></div>
           <div class="app-menu" data-l="en"><span>File</span><span>Edit</span><span>View</span><span>Terminal</span></div>
           <div class="app-menu" data-l="ja"><span>ファイル</span><span>編集</span><span>表示</span><span>ターミナル</span></div>
-          <div class="app-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="app-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="ntf-area" id="area"><span data-l="en">Windows' notifications appear here</span><span data-l="ja">Windows の通知はここに出ます</span></div>
         <div class="ntf" id="ntf">
@@ -324,27 +385,39 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
           <div class="ntf-l">Claude Code · ssh.exe deploy@web-02 "systemctl status app"</div>
         </div>
         <div class="opr" id="opr">
-          <div class="opr-cap"><span class="opr-cap-t"><span data-l="en">SSH key: allow this call?</span><span data-l="ja">SSH の鍵: この呼び出しを許可しますか</span></span><span class="opr-x">×</span></div>
+          <div class="opr-cap"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5l9 9M9.5.5l-9 9" stroke="currentColor" stroke-width="1.1"/></svg></div>
           <div class="opr-body">
-            <p class="opr-h"><span data-l="en">SSH key: allow this call?</span><span data-l="ja">SSH の鍵: この呼び出しを許可しますか</span></p>
-            <p class="opr-l" data-l="en"><b>Time:</b> 2026-11-18 18:20:41</p>
-            <p class="opr-l" data-l="ja"><b>時刻:</b> 2026-11-18 18:20:41</p>
-            <p class="opr-l" data-l="en"><b>Caller:</b> Claude Code (pid 4242)</p>
-            <p class="opr-l" data-l="ja"><b>呼び手:</b> Claude Code (pid 4242)</p>
-            <p class="opr-l" data-l="en"><b>Reason:</b> check that the service runs</p>
-            <p class="opr-l" data-l="ja"><b>理由:</b> サービスが動いているかを見る</p>
-            <p class="opr-l" data-l="en"><b>Command:</b> ssh.exe deploy@web-02 "systemctl status app"</p>
-            <p class="opr-l" data-l="ja"><b>コマンド:</b> ssh.exe deploy@web-02 "systemctl status app"</p>
-            <p class="opr-l" data-l="en"><b>Destination:</b> deploy@web-02 · host key SHA256:x5QvN2…</p>
-            <p class="opr-l" data-l="ja"><b>接続先:</b> deploy@web-02 · ホストの鍵 SHA256:x5QvN2…</p>
-            <p class="opr-l" data-l="en"><b>For:</b> logging in as deploy</p>
-            <p class="opr-l" data-l="ja"><b>用途:</b> deploy としてログイン</p>
-            <div class="opr-foot">
-              <p><span data-l="en">per-call mode · an answer covers this call for 60 minutes</span><span data-l="ja">呼び出しごとに決めるモード · 答えはこの呼び出しに 60 分効きます</span></p>
-              <span class="opr-sw"><span data-l="en"><b>English</b> | <u>日本語</u></span><span data-l="ja"><u>English</u> | <b>日本語</b></span></span>
+            <div class="opr-head">
+              <span class="opr-tile"><svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><g fill="none" stroke-width="2"><circle cx="10" cy="14" r="4"/><path d="M14 14h8M19 14v4M22 14v3"/></g></svg></span>
+              <div class="opr-titles">
+                <p class="opr-h"><span data-l="en">SSH key: allow this call?</span><span data-l="ja">SSH の鍵: この呼び出しを許可しますか</span></p>
+                <p class="opr-sub"><span data-l="en">op-reason's relay · per-call mode</span><span data-l="ja">op-reason の中継 · 呼び出しごとに決めるモード</span></p>
+              </div>
+              <p class="opr-when">18:20:41<small>2026-11-18</small></p>
+            </div>
+            <p class="opr-k"><span data-l="en">Reason</span><span data-l="ja">理由</span></p>
+            <p class="opr-reason"><span data-l="en">check that the service runs</span><span data-l="ja">サービスが動いているかを見る</span></p>
+            <span class="opr-chip"><i></i>Claude Code (pid 4242)</span>
+            <p class="opr-k"><span data-l="en">Root command</span><span data-l="ja">起点のコマンド</span></p>
+            <p class="opr-code"><b>ssh</b> deploy@web-02 "systemctl status app"</p>
+            <p class="opr-note">bash (pid 5150) · bash -c -l "…"</p>
+            <p class="opr-for"><svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><g fill="none"><circle cx="7" cy="8" r="6" stroke-width="1.5"/><path d="M4 8h6M8 6l2 2-2 2" stroke-width="1.2"/></g></svg><span data-l="en">logging in as deploy</span><span data-l="ja">deploy としてログイン</span></p>
+            <p class="opr-detail"><span data-l="en">Destination deploy@web-02 · host key SHA256:x5QvN2… · Key SHA256:Jq7c0R…</span><span data-l="ja">接続先 deploy@web-02 · ホストの鍵 SHA256:x5QvN2… · 鍵 SHA256:Jq7c0R…</span></p>
+            <p class="opr-detail mono"><span data-l="en">Command</span><span data-l="ja">コマンド</span>: ssh.exe deploy@web-02 "systemctl status app"</p>
+            <div class="opr-bar"><i id="bar"></i></div>
+            <div class="opr-row">
+              <p class="opr-left" id="left"></p>
+              <p class="opr-pill"><span data-l="en" class="on">English</span><span data-l="en">日本語</span><span data-l="ja">English</span><span data-l="ja" class="on">日本語</span></p>
+            </div>
+            <div class="opr-band">
+              <svg width="64" height="46" viewBox="0 0 64 46" aria-hidden="true"><rect class="sk-screen" x="0" y="0" width="64" height="40" rx="3" stroke-width="1.2"/><rect class="sk-win" x="44" y="4" width="16" height="9" rx="1.5" stroke-width="0.8"/><rect class="sk-prompt" x="22" y="12" width="20" height="13" rx="2" stroke-dasharray="2 2"/><rect class="sk-task" x="1" y="34" width="62" height="5"/><circle class="sk-tray" cx="57" cy="36.5" r="2"/><rect class="sk-stand" x="28" y="40" width="8" height="4"/><rect class="sk-stand" x="22" y="44" width="20" height="2"/></svg>
+              <div>
+                <p class="opr-band-t"><span data-l="en">Allowing brings up 1Password's prompt</span><span data-l="ja">許可すると 1Password の画面が出ます</span></p>
+                <p class="opr-band-l"><span data-l="en">Usually in the <span class="acc">middle of the screen</span>; if not, from the <span class="cau">tray at the bottom right</span></span><span data-l="ja">ふつうは<span class="acc">画面の中央</span>。出ないときは<span class="cau">右下のトレイ</span>から</span></p>
+              </div>
             </div>
             <div class="opr-btns">
-              <span class="opr-btn" id="allow"><span data-l="en">Allow this call</span><span data-l="ja">この呼び出しを許可</span></span>
+              <span class="opr-btn allow" id="allow"><span data-l="en">Allow this call</span><span data-l="ja">この呼び出しを許可</span></span>
               <span class="opr-btn deny"><span data-l="en">Deny</span><span data-l="ja">拒否</span></span>
             </div>
           </div>
@@ -456,7 +529,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 </main>
 
 <script>
-// The motion of the relay's toasts, window and notification on one 960 x 460 desktop, played as a 33-second loop.
+// The motion of the relay's toasts, window and notification on one 960 x 700 desktop, played as a 33-second loop.
 // The cards follow crates/op-reason-win/src/pass_toast.rs (its tests show the rules). ?t=<ms> seeks to that moment and
 // pauses (for screenshots and checks); #ja shows the page in Japanese and #en in English.
 (() => {
@@ -467,12 +540,20 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   const OPACITY = 0.9, MORE_GAP = 4, MORE_H = 16, MORE_PAD = 6;
   // A card's size, how far above its place a new card starts, how long a card pushed out stays once transparent.
   const CARD_W = 300, CARD_H = 70, DROP = 12, LINGER = 40;
-  const SW = 960, SH = 460, TOTAL = 33000;
+  const SW = 960, SH = 700, TOTAL = 33000;
+  // The window's countdown (window.rs redraws it every 250 ms): the seconds left of the relay's default answer wait,
+  // then how long an answer lasts (relay_ui.rs: until the program of the root command ends), and the bar.
+  const ANSWER_WAIT = 60, LIMIT = 60, COUNTDOWN_MS = 250, PROGRAM = 'ssh';
+  const LEFT = {
+    en: { left: '{0} s left to answer', covers: 'Allowing covers this {0} until it ends (at most {1} minutes)' },
+    ja: { left: '答えを待つ残り {0} 秒', covers: '許可は、この {0} が終わるまで効きます (長くても {1} 分)' }
+  };
 
   const $ = id => document.getElementById(id);
   const root = document.documentElement;
   const stage = $('stage'), fit = $('fit'), stackEl = $('stack'), notesEl = $('notes');
   const opr = $('opr'), allowEl = $('allow'), ntfEl = $('ntf'), areaEl = $('area'), cursorEl = $('cursor');
+  const leftEl = $('left'), barEl = $('bar');
   const playerEl = $('player'), playBtn = $('b-play'), railEl = $('rail');
   const nowK = $('now-k'), nowT = $('now-t'), nowB = $('now-b');
 
@@ -738,7 +819,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   }
 
   // ---- the window, its notification, the pointer ----
-  function openWin() { win.op = anim(val(win.op), 1, 200, lin); win.y = anim(val(win.y), 0, 200, easeOut); }
+  function openWin() { win.op = anim(val(win.op), 1, 200, lin); win.y = anim(val(win.y), 0, 200, easeOut); win.at = now; }
   function closeWin() { win.op = anim(val(win.op), 0, 200, lin); win.y = anim(val(win.y), -6, 200, easeOut); }
   function openNtf() {
     ntf.op = anim(val(ntf.op), 1, 200, lin);
@@ -750,7 +831,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     ntf.x = anim(val(ntf.x), 330, 300, easeIn);
     at(now + 300, () => { area.op = anim(val(area.op), 1, 200, lin); });
   }
-  const CURSOR_FROM = { x: 470, y: 330 };
+  const CURSOR_FROM = { x: 470, y: 580 };
   function moveCursor() { cur.op = anim(val(cur.op), 1, 150, lin); cur.t = anim(0, 1, 700, easeInOut); }
   function hideCursor() { cur.op = anim(val(cur.op), 0, 200, lin); }
   // Where the window, its Allow button and the notification are on the stage (read again after a language change).
@@ -859,7 +940,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     all.forEach(c => c.el.remove());
     notes.forEach(n => { if (n.el) n.el.remove(); });
     cards = []; all = []; notes = []; counts = {}; pushed = []; queue = []; qseq = 0; now = 0; pressAt = -1e9;
-    win = { op: still(0), y: still(-6) };
+    win = { op: still(0), y: still(-6), at: null };
     ntf = { op: still(0), x: still(330) };
     area = { op: still(1) };
     cur = { op: still(0), t: still(0) };
@@ -899,6 +980,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     opr.style.opacity = val(win.op).toFixed(3);
     opr.style.transform = 'translateY(' + val(win.y).toFixed(1) + 'px)';
     allowEl.classList.toggle('press', now >= pressAt && now - pressAt < 200);
+    const since = win.at == null ? 0 : Math.max(0, now - win.at);
+    const covers = LEFT[lang].covers.replace('{0}', PROGRAM).replace('{1}', LIMIT);
+    const left = LEFT[lang].left.replace('{0}', ANSWER_WAIT - Math.floor(since / 1000)) + ' · ' + covers;
+    if (leftEl.textContent !== left) leftEl.textContent = left;
+    barEl.style.transform = 'scaleX(' + (1 - Math.floor(since / COUNTDOWN_MS) * COUNTDOWN_MS / 1000 / ANSWER_WAIT).toFixed(4) + ')';
     ntfEl.style.opacity = val(ntf.op).toFixed(3);
     ntfEl.style.transform = 'translateX(' + val(ntf.x).toFixed(1) + 'px)';
     areaEl.style.opacity = val(area.op).toFixed(3);

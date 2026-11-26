@@ -13,7 +13,7 @@ Every call
 3. shows a window with who calls, where, why and the command, next to 1Password's approval prompt, and
 4. is recorded in a log (`op-reason-log`).
 
-![Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the staging VM" read "op://Private/proxmox/token". op-reason's window opens at the top right of the screen with the time, the caller (Claude Code and its process id), the place, the reason and the command, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. After a click on Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, by Claude, with the reason and the command.](docs/images/readme-1-call.en.svg)
+![Animation: in a WSL terminal, Claude Code runs op --reason "read the Proxmox API token to create the staging VM" read "op://Private/proxmox/token". op-reason's window opens at the top right of the screen, dark: the reason first, in large letters; the caller (Claude Code and its process id), the repository with its branch and the directory as chips; the command in a monospace box; a band that marks where 1Password's prompt usually opens; and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. After a click on Approve, op prints the value (hidden here), op-reason signs out and its window closes, and op-reason-log shows the call as one line: approved, by Claude, with the reason and the command.](docs/images/readme-1-call.en.svg)
 
 It was written for AI coding agents (such as Claude Code) that run `op` on your behalf: you see what each request is
 for before you approve it, one approval never covers later requests, and you can review every call afterwards.
@@ -197,6 +197,17 @@ op --reason "read the Proxmox API token to create the staging VM" read "op://Pri
 The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves the same, except that `--help` and
 `--version` alone are the wrapper's own. On Windows, type `op-reason`.
 
+### The window
+
+`op-reason.exe` draws the window of a call at the top right of the screen you work on: the reason first, in large
+letters; the caller (Claude Code with its process id, or a person), herdr's workspace and pane, the repository with its
+branch, and the directory as chips; the command in a monospace box, the program and the file names in color; the
+references the call reads ([below](#the-references-a-call-reads)); a band with a small picture of the screen that marks
+where 1Password's prompt usually opens (the middle of the screen) and where it waits when it does not (1Password's icon
+in the tray at the bottom right, under ^ when hidden); and the red line that tells you to deny prompts that come without
+the window. It follows Windows' app mode (Settings → Personalization → Colors), dark or light, also when the mode changes
+while the window is open. The PowerShell launcher's window (the fallback) keeps its plain look.
+
 ### Wrapper options (first argument only)
 
 | Command | What it does |
@@ -270,7 +281,7 @@ the notification, the messages and `op-reason-log`, on Windows and on WSL. The c
 to `OPREASON_LANG` (on WSL, `op-reason --settings` updates the copy `~/.local/state/op-reason/lang.json`; otherwise the
 next call does).
 
-![Animation: op-reason's window opens in English, its default, at the top right of the screen, with English | 日本語 at the right of its last line, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now bold and English is the link. The prompt keeps the focus, and the choice is kept in %LOCALAPPDATA%\op-reason\settings.json. After the approval, the next call opens its window in Japanese.](docs/images/readme-5-language.en.svg)
+![Animation: op-reason's window opens in English, its default, at the top right of the screen, with the language switch, a pill of English and 日本語, at the right of its last row, and the 1Password approval prompt (drawn as a plain box) opens in the middle of the screen. A click on 日本語 turns the window Japanese at once: 日本語 is now bold on the lighter half of the pill, and English is the half to click. The prompt keeps the focus, and the choice is kept in %LOCALAPPDATA%\op-reason\settings.json. After the approval, the next call opens its window in Japanese.](docs/images/readme-5-language.en.svg)
 
 ### Exit codes
 
@@ -332,16 +343,21 @@ ssh-family commands typed later in that shell, not programs that live on (a term
 command-line tool). Requests forwarded back from a remote host (`ssh -A`) are each a call of their own: the relay
 tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with an older `ssh.exe` every signature asks.
 
-The window shows who asks (Claude Code, a person, a program; for WSL calls also herdr's workspace and pane, the
-distribution, the repository and the branch), the root process, the reason (or "no reason given"), the ssh command, the
-destination with its host key, what the signature is for (logging in as which user, or an SSHSIG namespace such as
-`git`) and the key's name in 1Password. Only a click answers it (a press and a release on a button): it opens without
-taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click on Allow this
-call or Allow this terminal, it comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
-that 1Password shows its prompt at once ([why](#starting-it)); then the window that had the front gets it back, unless
-another window took it meanwhile. It stays behind when the window in front belongs to the program the relay was
-started from (a terminal program, which 1Password sees in front already), and **Deny** never takes the front. No
-answer within 60 seconds fails that signature without remembering anything.
+The window puts the reason first (or "no reason given" in its place), then who asks as chips (Claude Code, a person, a
+program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
+directory), the root command in a monospace box (`git push origin fix/login`: the wrappers of a shell and of Claude
+Code's Bash tool taken off when they match exactly; the root process and the rest of its line in small type under it),
+what the signature is for (logging in as which user, or an SSHSIG namespace such as `git`), the destination with its
+host key and the key's name in 1Password, and the ssh command in small type. A bar shows the seconds left to answer,
+next to how long an answer lasts ("Allowing covers this git push until it ends (at most 60 minutes)"), and a band says
+that 1Password's prompt comes after Allow, usually in the middle of the screen, otherwise from the tray. Only a click
+answers it (a press and a release on a button): it opens without taking the focus and has no default button, so a key
+typed elsewhere never answers it. **After a click on Allow this call or Allow this terminal, it comes to the front**
+until 1Password has answered ("SSH key: 1Password is asking"), so that 1Password shows its prompt at once
+([why](#starting-it)); then the window that had the front gets it back, unless another window took it meanwhile. It
+stays behind when the window in front belongs to the program the relay was started from (a terminal program, which
+1Password sees in front already), and **Deny** never takes the front. No answer within 60 seconds fails that signature
+without remembering anything.
 
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
@@ -359,13 +375,14 @@ op-reason shows three things on the screen, each in its own place
 | The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
 
 - **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a
-  card for four seconds, then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed
-  for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them
-  (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top,
-  three at most: a fourth pushes the oldest out at once, and `+N` under the third card counts the cards pushed out
-  until four seconds after their last signature. A card is drawn at 90% opacity, so that the text behind it shows
-  through faintly. Toasts never take the focus, let clicks through, make no sound and stay out of the notification
-  center. With Windows' animation effects off they neither slide nor fade.
+  card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds, then fades: `Passed ·
+  <caller>`, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and
+  the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts
+  its four seconds again; each other call gets its own card at the top, three at most: a fourth pushes the oldest out at
+  once, and `+N` under the third card counts the cards pushed out until four seconds after their last signature. A card
+  is drawn at 90% opacity, so that the text behind it shows through faintly. Toasts never take the focus, let clicks
+  through, make no sound and stay out of the notification center. With Windows' animation effects off they neither slide
+  nor fade.
 - **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
   and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
   stays at the top right of the primary screen, and its notifications stay. They open without taking the focus; only
@@ -374,7 +391,7 @@ op-reason shows three things on the screen, each in its own place
   timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
   did not ask, 1Password did not answer, the relay has no parent process) stay.
 
-![Animation of a Windows desktop. A signature that passes without a window shows a small light yellow card, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right, with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
+![Animation of a Windows desktop. A signature that passes without a window shows a small dark card in the colors of op-reason's window, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right (the root command in a box, the seconds left to answer counting down), with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
 
 🌐 [HTML version: the relay's windows, toasts and notifications](docs/html/relay-screens.html)
 

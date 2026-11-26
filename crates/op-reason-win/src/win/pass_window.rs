@@ -1,5 +1,7 @@
 //! The toasts of the SSH relay (design `2026-11-18-pass-toasts-design.md` §4): signatures that pass without a window
-//! show as cards at the top left of the screen of the foreground window. One layered window holds every card
+//! show as cards at the top left of the screen of the foreground window, in the colors and fonts of op-reason's windows
+//! (design `2026-11-26-modern-window-design.md` §4.12): the look of Windows' app mode when the first card of an empty
+//! stack comes, the command and its destination in the monospace font. One layered window holds every card
 //! ([`crate::pass_toast::Stack`] decides them) and is drawn with Direct2D into a bitmap with an alpha channel
 //! (`UpdateLayeredWindow`). Each card is drawn into a Direct2D layer that is put on the bitmap at the card's opacity
 //! (90% once shown), so that the text behind shows through the whole card alike; the ring of a card that glows is drawn
@@ -59,9 +61,10 @@ use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::screen::{self, Screen};
-use super::window;
+use super::window::{self, color};
 use crate::pass_toast::{CARD_H, CARD_W, CardView, EDGE, MORE_H, OPACITY, Stack, more_y};
 use crate::relay_ui::PassTexts;
+use crate::theme::{self, Rgb, Theme};
 
 const CLASS_NAME: PCWSTR = w!("op-reason-pass-toast");
 const EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(
@@ -100,22 +103,8 @@ const MORE_RADIUS: f32 = 4.0;
 // the tag's text is drawn at its top: its line is as high as the tag
 const _: () = assert!(SMALL_LINE.0 == MORE_H);
 
-const fn rgb(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
-    D2D1_COLOR_F {
-        r: r as f32 / 255.0,
-        g: g as f32 / 255.0,
-        b: b as f32 / 255.0,
-        a: 1.0,
-    }
-}
-/// The window's colors: light yellow, black, gray, dark gray (`window.rs`), and a green for "passed".
-const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);
-const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);
-const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);
-const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);
-const GREEN: D2D1_COLOR_F = rgb(0x15, 0x80, 0x3D);
-const PALE_GREEN: D2D1_COLOR_F = rgb(0xDC, 0xFC, 0xE7);
-const WHITE: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xFF);
+/// The shadow under a card: black at this opacity, stronger on a dark desktop.
+const SHADOW: (f32, f32) = (0.16, 0.4);
 
 /// A toast for the UI thread.
 struct Pass {
@@ -222,17 +211,19 @@ fn px(dip: f32, dpi: u32) -> i32 {
     (dip * dpi as f32 / 96.0).ceil() as i32
 }
 
-/// The text formats of a card: one line each, cut with an ellipsis, every line as high as the others.
+/// The text formats of a card: one line each, cut with an ellipsis, every line as high as the others; the command and
+/// its destination in the monospace font of the windows' command.
 struct Fonts {
     dw: IDWriteFactory,
     bold: IDWriteTextFormat,
-    body: IDWriteTextFormat,
     small: IDWriteTextFormat,
     chip: IDWriteTextFormat,
+    mono: IDWriteTextFormat,
 }
 
 fn one_line(
     dw: &IDWriteFactory,
+    family: PCWSTR,
     bold: bool,
     size: f32,
     (height, baseline): (f32, f32),
@@ -243,7 +234,7 @@ fn one_line(
     } else {
         DWRITE_FONT_WEIGHT_NORMAL
     };
-    let f = window::format(dw, weight, size, locale)?;
+    let f = window::format_in(dw, family, weight, size, locale)?;
     // SAFETY: a valid format and a trimming sign made for it.
     unsafe {
         f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -319,14 +310,14 @@ impl Lines {
         let destination = match &t.destination {
             Some(d) => Some(text(
                 fonts,
-                &fonts.body,
+                &fonts.mono,
                 &format!(" → {d}"),
                 TEXT_W * DEST_SHARE,
             )?),
             None => None,
         };
         let dest_w = destination.as_ref().map_or(0.0, |d| d.width);
-        let command = text(fonts, &fonts.body, &t.command, TEXT_W - dest_w)?;
+        let command = text(fonts, &fonts.mono, &t.command, TEXT_W - dest_w)?;
         let why = text(fonts, &fonts.small, &t.why, TEXT_W)?;
         Ok(Lines {
             texts: t.clone(),
@@ -344,6 +335,8 @@ impl Lines {
 /// The memory bitmap the cards are drawn into, the Direct2D target bound to it, its brushes and its layer.
 struct Surface {
     paint: Paint,
+    /// The look its brushes are of.
+    theme: Theme,
     /// Each card is drawn into it in turn, and put on the bitmap at the card's opacity.
     layer: ID2D1Layer,
     /// Dropped before the device context it is bound to.
@@ -372,7 +365,7 @@ impl Drop for Gdi {
 }
 
 impl Surface {
-    fn new(d2d: &ID2D1Factory, (w, h): (i32, i32), dpi: u32) -> Result<Surface> {
+    fn new(d2d: &ID2D1Factory, (w, h): (i32, i32), dpi: u32, theme: Theme) -> Result<Surface> {
         // SAFETY: GDI and Direct2D calls with valid arguments; the guard frees what was made on any error.
         unsafe {
             let dc = CreateCompatibleDC(None);
@@ -426,7 +419,8 @@ impl Surface {
                 },
             )?;
             Ok(Surface {
-                paint: Paint::new(&rt)?,
+                paint: Paint::new(&rt, theme)?,
+                theme,
                 layer: rt.CreateLayer(None)?,
                 rt,
                 gdi,
@@ -451,22 +445,29 @@ struct Paint {
 }
 
 impl Paint {
-    fn new(rt: &ID2D1DCRenderTarget) -> Result<Paint> {
-        let brush = |c: D2D1_COLOR_F, a: f32| {
-            let c = D2D1_COLOR_F { a, ..c };
+    /// The brushes of the cards in the look of `theme`: the surface with the line's border, the success color for
+    /// "Passed", the check, the bar, the ring and the ×N tag (on its tint), the text and secondary colors.
+    fn new(rt: &ID2D1DCRenderTarget, theme: Theme) -> Result<Paint> {
+        let p = theme::palette(theme);
+        let brush = |c: Rgb, a: f32| {
             // SAFETY: the color lives across the call.
-            unsafe { rt.CreateSolidColorBrush(&c, None) }
+            unsafe { rt.CreateSolidColorBrush(&color(c, a), None) }
+        };
+        let shadow = if theme == Theme::Dark {
+            SHADOW.1
+        } else {
+            SHADOW.0
         };
         Ok(Paint {
-            fill: brush(LIGHT_YELLOW, 1.0)?,
-            border: brush(GRAY, 0.8)?,
-            shadow: brush(BLACK, 0.16)?,
-            glow: brush(GREEN, 0.9)?,
-            green: brush(GREEN, 1.0)?,
-            pale: brush(PALE_GREEN, 1.0)?,
-            white: brush(WHITE, 1.0)?,
-            black: brush(BLACK, 1.0)?,
-            dim: brush(DIM, 1.0)?,
+            fill: brush(p.surface, 1.0)?,
+            border: brush(p.line, 1.0)?,
+            shadow: brush(Rgb(0, 0, 0), shadow)?,
+            glow: brush(p.success, 0.9)?,
+            green: brush(p.success, 1.0)?,
+            pale: brush(p.success_tint, 1.0)?,
+            white: brush(p.on_success, 1.0)?,
+            black: brush(p.text, 1.0)?,
+            dim: brush(p.secondary, 1.0)?,
         })
     }
 
@@ -521,6 +522,8 @@ struct Ui {
     surface: Option<Surface>,
     /// The screen of the cards shown, chosen when the first card of an empty stack came.
     screen: Option<Screen>,
+    /// The look of the cards shown, read when the first card of an empty stack came.
+    theme: Theme,
     stack: Stack<Mark>,
     lines: HashMap<u64, Lines>,
     /// The count of the cards pushed out and its text, while there are any.
@@ -579,10 +582,17 @@ impl Ui {
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let loc = window::locale();
             let fonts = Fonts {
-                bold: one_line(&dw, true, BODY_SIZE, BODY_LINE, &loc)?,
-                body: one_line(&dw, false, BODY_SIZE, BODY_LINE, &loc)?,
-                small: one_line(&dw, false, SMALL_SIZE, SMALL_LINE, &loc)?,
-                chip: one_line(&dw, true, SMALL_SIZE, SMALL_LINE, &loc)?,
+                bold: one_line(&dw, w!("Segoe UI"), true, BODY_SIZE, BODY_LINE, &loc)?,
+                small: one_line(&dw, w!("Segoe UI"), false, SMALL_SIZE, SMALL_LINE, &loc)?,
+                chip: one_line(&dw, w!("Segoe UI"), true, SMALL_SIZE, SMALL_LINE, &loc)?,
+                mono: one_line(
+                    &dw,
+                    window::mono_family(&dw),
+                    false,
+                    SMALL_SIZE,
+                    BODY_LINE,
+                    &loc,
+                )?,
                 dw,
             };
             let hinstance = GetModuleHandleW(None)?;
@@ -606,6 +616,7 @@ impl Ui {
                 fonts,
                 surface: None,
                 screen: None,
+                theme: super::theme::current(),
                 stack: Stack::new(animation_on(), forget_ms),
                 lines: HashMap::new(),
                 more: None,
@@ -621,12 +632,13 @@ impl Ui {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// A toast came: the first card of an empty stack chooses the screen and reads the animation setting.
+    /// A toast came: the first card of an empty stack chooses the screen and reads the animation setting and the look.
     fn pass(&mut self, now: u64, p: Pass) {
         self.stack.advance(now);
         if self.stack.is_empty() {
             self.screen = Some(screen::of_foreground());
             self.stack.set_animate(animation_on());
+            self.theme = super::theme::current();
         }
         self.stack.pass(now, p.call, &p.answer, p.texts);
         self.raise = true;
@@ -698,10 +710,10 @@ impl Ui {
         if self
             .surface
             .as_ref()
-            .is_none_or(|s| s.size != size || s.dpi != screen.dpi)
+            .is_none_or(|s| s.size != size || s.dpi != screen.dpi || s.theme != self.theme)
         {
             self.surface = None;
-            self.surface = Some(Surface::new(&self.d2d, size, screen.dpi)?);
+            self.surface = Some(Surface::new(&self.d2d, size, screen.dpi, self.theme)?);
         }
         let frame = self.stack.frame(now);
         // the lines of each card, laid out again when its count or texts changed (before BeginDraw: nothing may return

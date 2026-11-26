@@ -1,22 +1,27 @@
-//! The approval window, drawn with Direct2D and DirectWrite. Same look and behavior as the A' launcher's WPF window:
-//! top right of the work area, always on top, never takes the focus by itself, not in the taskbar, light yellow,
-//! the title in bold, one "label: value" line per fact, an orange line while other op.exe run, and the footer in
-//! red. It asks nothing; the decision is made in the 1Password prompt.
+//! The approval window, drawn with Direct2D and DirectWrite (design `2026-11-26-modern-window-design.md`): top right of
+//! the work area, always on top, never takes the focus by itself, not in the taskbar. It draws the [`look::View`] of its
+//! texts: a header with a tile, the title and the time; the reason as the largest text; chips for who and where; the
+//! command in a monospace box with colored words; the references (an `op` call) or what the signature is for (the
+//! relay); the seconds left to answer (the relay); a band with a picture of the screen that marks where 1Password's
+//! prompt usually comes and the tray; the orange line while other op.exe run; the red footer. Its colors follow
+//! Windows' app mode, dark or light ([`crate::theme`]), also when it changes while the window is open; its caption keeps
+//! the close button and the window's text but draws neither ([`super::theme::frame`]).
 //!
-//! Its controls are the language switch `English | 日本語` at the right of the footer (design
-//! `2026-11-15-language-toggle-design.md` §4): a click on the other language lays the window out again in that
-//! language and hands the choice to the caller; the links of the references the call reads (design
-//! `2026-11-17-refs-in-window-design.md` §4): a click opens the item in the 1Password app; and, in the SSH relay's
-//! window (design `2026-11-17-ssh-relay-design.md` §6), a row of buttons under the footer: a press and a release on a
-//! button is the answer, which the owner reads with [`Window::answer`]. None of them activates the window, and the
-//! window has no default button: a key typed elsewhere never reaches it.
+//! Its controls are the language switch `English | 日本語`, a pill at the right of the footer's row (or of the
+//! countdown's row in the relay's window that asks; design `2026-11-15-language-toggle-design.md` §4): a click on the
+//! other language lays the window out again in that language and hands the choice to the caller; the links of the
+//! references the call reads (design `2026-11-17-refs-in-window-design.md` §4): a click opens the item in the 1Password
+//! app; and, in the SSH relay's window (design `2026-11-17-ssh-relay-design.md` §6), a row of buttons at the bottom: a
+//! press and a release on a button is the answer, which the owner reads with [`Window::answer`]. None of them activates
+//! the window, and the window has no default button: a key typed elsewhere never reaches it.
 //!
 //! Only its owner brings it to the front, after the click on a button that hands an SSH request on to 1Password
 //! ([`Window::come_forward`]; design `2026-11-22-front-after-allow-design.md` §5): the click lets this process set the
 //! foreground window. The window then gives the front back when it closes, unless another window took it meanwhile.
 //!
 //! It opens on the screen of the foreground window, with that screen's DPI, and stays there ([`super::screen`]; design
-//! `2026-11-18-pass-toasts-design.md` §5).
+//! `2026-11-18-pass-toasts-design.md` §5). It is laid out for that screen's work area: a window that would be taller
+//! draws its reason smaller, then leaves the band out, then cuts the command's box (design §4.13).
 //!
 //! The steps in which a window's thread waits on Windows (making the window, showing it, drawing it) are noted in
 //! process-wide atomics ([`busy`]), so that the SSH relay's watchdog can say where a window that does not appear waits
@@ -39,19 +44,21 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_CAP_STYLE_FLAT, D2D1_DASH_STYLE_DASH,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1DCRenderTarget,
-    ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_LINE_JOIN_MITER, D2D1_PRESENT_OPTIONS_NONE,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1_STROKE_STYLE_PROPERTIES, D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory,
+    ID2D1HwndRenderTarget, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_HIT_TEST_METRICS, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
-    IDWriteTextLayout,
+    DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN};
 use windows::Win32::Graphics::Gdi::{
@@ -74,49 +81,80 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_SHOWNOACTIVATE,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SIZE,
-    WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_SYSMENU,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
+    WM_SETTINGCHANGE, WM_SIZE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, SendMessageW, SetCursor, SetTimer, SetWindowTextW,
-    WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR, WM_TIMER,
+    EndMenu, GetCursorPos, HTCLIENT, IDC_HAND, KillTimer, SendMessageW, SetCursor, SetTimer,
+    SetWindowTextW, WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETCURSOR,
+    WM_TIMER,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
-use crate::ui::{self, Both, Button, Texts};
+use crate::look::{self, ChipKind, FactKind, Icon, Reason, Sketch, Tone, Word};
+use crate::theme::{self, Palette, Rgb, Theme};
+use crate::ui::{self, Both, Button, Rect, Texts};
 
-// Layout in DIPs, as the launcher's WPF window.
+// The frame and the margins (DIPs).
 const OUTER_WIDTH: f32 = 520.0;
 const PAD_LEFT: f32 = 14.0;
-const PAD_TOP: f32 = 10.0;
+const PAD_TOP: f32 = 12.0;
 const PAD_RIGHT: f32 = 14.0;
-const PAD_BOTTOM: f32 = 12.0;
-const LINE_GAP: f32 = 2.0;
+/// Below the footer's row (the switch) or the buttons: the tests click 21 and 26 DIPs above the client area's bottom.
+const PAD_BOTTOM: f32 = 11.0;
 const SCREEN_MARGIN: f32 = 16.0;
-const TITLE_SIZE: f32 = 16.0;
-const BODY_SIZE: f32 = 12.0;
-// The language switch at the right of the footer: its size, the gap before it, and the room around the clickable word.
-const SWITCH_SIZE: f32 = 11.0;
-const SWITCH_GAP: f32 = 12.0;
-const SWITCH_HIT_X: f32 = 4.0;
-const SWITCH_HIT_Y: f32 = 3.0;
-/// The width of a switch part's layout: wide enough never to wrap.
+/// Between the parts of the window.
+const SECTION_GAP: f32 = 14.0;
+// The header: the tile, and the room between it, the title and the time.
+const TILE: f32 = 28.0;
+const TILE_RADIUS: f32 = 7.0;
+const TILE_GAP: f32 = 10.0;
+// Font sizes (DIPs).
+const TITLE_SIZE: f32 = 14.0;
+const REASON_SIZE: f32 = 17.0;
+/// The reason of a window that would be taller than its screen's work area.
+const REASON_COMPACT_SIZE: f32 = 14.0;
+const CODE_SIZE: f32 = 12.0;
+const REF_SIZE: f32 = 11.0;
+// The chips: their height, the room around their text, the mark before it, the gap between chips.
+const CHIP_H: f32 = 24.0;
+const CHIP_PAD: f32 = 9.0;
+const CHIP_MARK: f32 = 16.0;
+const CHIP_GAP: f32 = 6.0;
+// The command's box.
+const CODE_PAD_X: f32 = 10.0;
+const CODE_PAD_Y: f32 = 8.0;
+const CODE_RADIUS: f32 = 6.0;
+/// How far the references, "and N more" and the hint are indented (after their small square).
+const REF_INDENT: f32 = 14.0;
+/// The column of a mark before a line (a note, the purpose, the footer's shield).
+const MARK_W: f32 = 18.0;
+// The band and its picture.
+const BAND_PAD_X: f32 = 10.0;
+const BAND_PAD_Y: f32 = 8.0;
+const BAND_RADIUS: f32 = 8.0;
+const SKETCH: (f32, f32) = (64.0, 46.0);
+// The language switch's pill: its height, the room around each name, the gap before it.
+const PILL_H: f32 = 24.0;
+const PILL_PAD: f32 = 9.0;
+const PILL_GAP: f32 = 12.0;
+/// The bar of the seconds left to answer.
+const BAR_H: f32 = 4.0;
+/// The width of a layout that must not wrap.
 const NO_WRAP: f32 = 10_000.0;
-/// How far the references, "and N more" and the hint are indented under their head.
-const REF_INDENT: f32 = 12.0;
 /// How long a closing window waits for the threads that open links.
 const OPENING_WAIT: Duration = Duration::from_secs(2);
 // The row of buttons at the bottom (the SSH relay's window): its height, the gap above it and between buttons, the room
 // around a label, the narrowest button and the corners. The tests click 20 DIPs inside the first button's left edge
 // and the last button's right edge, 26 DIPs above the client area's bottom (PAD_BOTTOM and half of BUTTON_H).
-const BUTTON_H: f32 = 28.0;
-const BUTTON_TOP_GAP: f32 = 10.0;
+const BUTTON_H: f32 = 30.0;
+const BUTTON_TOP_GAP: f32 = 14.0;
 const BUTTON_GAP: f32 = 8.0;
 const BUTTON_PAD_X: f32 = 14.0;
 const BUTTON_MIN_W: f32 = 96.0;
-const BUTTON_RADIUS: f32 = 4.0;
+const BUTTON_RADIUS: f32 = 6.0;
 /// Buttons take no press until this long after they appear: a click meant for the window underneath, at the moment this
 /// one comes up on top, must not answer it.
 const BUTTON_ARMING: Duration = Duration::from_millis(400);
@@ -124,18 +162,12 @@ const BUTTON_ARMING: Duration = Duration::from_millis(400);
 const CLASS_NAME: PCWSTR = w!("op-reason-approval");
 /// The timer of [`Window::watch`].
 const WATCH_TIMER: usize = 1;
+/// The timer that redraws the countdown ([`Window::set_deadline`]).
+const COUNTDOWN_TIMER: usize = 2;
+const COUNTDOWN_MS: u32 = 250;
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CAPTION.0 | WS_SYSMENU.0);
 const EX_STYLE: WINDOW_EX_STYLE =
     WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0 | WS_EX_NOACTIVATE.0);
-
-const fn rgb(r: u8, g: u8, b: u8) -> D2D1_COLOR_F {
-    D2D1_COLOR_F {
-        r: r as f32 / 255.0,
-        g: g as f32 / 255.0,
-        b: b as f32 / 255.0,
-        a: 1.0,
-    }
-}
 
 /// A step in which the thread of a window waits on Windows ([`busy`]): the window's own, and those of the relay's
 /// opening of a window around it.
@@ -223,39 +255,217 @@ impl Drop for Busy {
     }
 }
 
-const LIGHT_YELLOW: D2D1_COLOR_F = rgb(0xFF, 0xFF, 0xE0);
-const BLACK: D2D1_COLOR_F = rgb(0, 0, 0);
-const DARK_ORANGE: D2D1_COLOR_F = rgb(0xFF, 0x8C, 0x00);
-const FIREBRICK: D2D1_COLOR_F = rgb(0xB2, 0x22, 0x22);
-const LINK_BLUE: D2D1_COLOR_F = rgb(0x00, 0x66, 0xCC);
-const GRAY: D2D1_COLOR_F = rgb(0x80, 0x80, 0x80);
-/// "and N more" and the hint under the references.
-const DIM: D2D1_COLOR_F = rgb(0x55, 0x55, 0x55);
-const BUTTON_FILL: D2D1_COLOR_F = rgb(0xFA, 0xFA, 0xFA);
-const BUTTON_PRESSED: D2D1_COLOR_F = rgb(0xD8, 0xD8, 0xD8);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Title,
-    Line,
-    Others,
-    Footer,
+/// A color of Direct2D at `alpha`.
+pub(super) fn color(c: Rgb, alpha: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: f32::from(c.0) / 255.0,
+        g: f32::from(c.1) / 255.0,
+        b: f32::from(c.2) / 255.0,
+        a: alpha,
+    }
 }
 
-struct Para {
+/// A role of the palette ([`Palette`]), resolved at each draw: the theme may change while the window is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ink {
+    Background,
+    Text,
+    Secondary,
+    Tertiary,
+    Surface,
+    Line,
+    CodeBg,
+    CodeBorder,
+    CodeText,
+    CodePath,
+    Accent,
+    OnAccent,
+    Caution,
+    OnCaution,
+    Critical,
+    Orange,
+    Success,
+    Claude,
+    BandBg,
+    BandBorder,
+    BandTitle,
+    BandText,
+    PicScreen,
+    PicFrame,
+    PicTaskbar,
+    PicStand,
+    PicWindow,
+    SwitchShown,
+}
+
+impl Ink {
+    const ALL: [Ink; 28] = [
+        Ink::Background,
+        Ink::Text,
+        Ink::Secondary,
+        Ink::Tertiary,
+        Ink::Surface,
+        Ink::Line,
+        Ink::CodeBg,
+        Ink::CodeBorder,
+        Ink::CodeText,
+        Ink::CodePath,
+        Ink::Accent,
+        Ink::OnAccent,
+        Ink::Caution,
+        Ink::OnCaution,
+        Ink::Critical,
+        Ink::Orange,
+        Ink::Success,
+        Ink::Claude,
+        Ink::BandBg,
+        Ink::BandBorder,
+        Ink::BandTitle,
+        Ink::BandText,
+        Ink::PicScreen,
+        Ink::PicFrame,
+        Ink::PicTaskbar,
+        Ink::PicStand,
+        Ink::PicWindow,
+        Ink::SwitchShown,
+    ];
+
+    fn rgb(self, p: &Palette) -> Rgb {
+        match self {
+            Ink::Background => p.background,
+            Ink::Text => p.text,
+            Ink::Secondary => p.secondary,
+            Ink::Tertiary => p.tertiary,
+            Ink::Surface => p.surface,
+            Ink::Line => p.line,
+            Ink::CodeBg => p.code_bg,
+            Ink::CodeBorder => p.code_border,
+            Ink::CodeText => p.code_text,
+            Ink::CodePath => p.code_path,
+            Ink::Accent => p.accent,
+            Ink::OnAccent => p.on_accent,
+            Ink::Caution => p.caution,
+            Ink::OnCaution => p.on_caution,
+            Ink::Critical => p.critical,
+            Ink::Orange => p.orange,
+            Ink::Success => p.success,
+            Ink::Claude => p.claude,
+            Ink::BandBg => p.band_bg,
+            Ink::BandBorder => p.band_border,
+            Ink::BandTitle => p.band_title,
+            Ink::BandText => p.band_text,
+            Ink::PicScreen => p.pic_screen,
+            Ink::PicFrame => p.pic_frame,
+            Ink::PicTaskbar => p.pic_taskbar,
+            Ink::PicStand => p.pic_stand,
+            Ink::PicWindow => p.pic_window,
+            Ink::SwitchShown => p.switch_shown,
+        }
+    }
+}
+
+/// A text laid out at its place (DIPs of the client area).
+struct Label {
     layout: IDWriteTextLayout,
-    color: D2D1_COLOR_F,
-    height: f32,
-    role: Role,
-    /// The baseline of its last line, from its top (the switch sits on the footer's).
-    last_baseline: f32,
-    /// How far it is drawn right of the text area's left edge.
-    indent: f32,
+    x: f32,
+    y: f32,
+    h: f32,
+    ink: Ink,
+    /// Ranges in other inks (UTF-16 units): set as drawing effects at each draw, with that draw's brushes.
+    tints: Vec<(u32, u32, Ink)>,
     /// The URL a click on its text opens (a reference of the call).
     link: Option<String>,
+    /// Drawn inside this rectangle only (the command's box cut to the work area).
+    clip: Option<Rect>,
 }
 
-/// What the left button went down on: a language of the switch, the paragraph of a link, or a button.
+/// A shape, drawn before the texts.
+enum Part {
+    /// A rectangle with round corners, filled (an ink at an opacity) and stroked (an ink and a width), dashed or not.
+    Box {
+        r: Rect,
+        radius: f32,
+        fill: Option<(Ink, f32)>,
+        stroke: Option<(Ink, f32)>,
+        dashed: bool,
+    },
+    Dot {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        fill: Option<Ink>,
+        stroke: Option<(Ink, f32)>,
+    },
+    Line {
+        a: (f32, f32),
+        b: (f32, f32),
+        ink: Ink,
+        width: f32,
+    },
+}
+
+/// The language switch laid out: its two halves (English, 日本語) and their names.
+struct Pill {
+    rects: [Rect; 2],
+    names: [Label; 2],
+}
+
+/// A button of the row: what it answers, where it is, its label.
+struct ButtonAt {
+    button: Button,
+    rect: Rect,
+    label: Label,
+}
+
+/// The countdown laid out: its bar, and where the line of the seconds left goes (redrawn each second).
+struct CountdownAt {
+    bar: Rect,
+    x: f32,
+    y: f32,
+    w: f32,
+    /// "N s left to answer" with `{0}` for N.
+    template: String,
+    /// What follows it: " · " and how long an answer lasts.
+    rest: String,
+}
+
+/// Everything the window draws, laid out for one language.
+struct Layout {
+    parts: Vec<Part>,
+    labels: Vec<Label>,
+    pill: Option<Pill>,
+    buttons: Vec<ButtonAt>,
+    countdown: Option<CountdownAt>,
+    /// The client area's height (DIPs).
+    height: f32,
+    /// The height of the command's text, for cutting it when the window would be too tall.
+    code_h: f32,
+}
+
+/// How much a window that would be taller than the work area gives up (design §4.13); each level includes the ones
+/// before it.
+#[derive(Clone, Copy, PartialEq)]
+enum Fit {
+    Full,
+    /// The reason drawn smaller.
+    SmallReason,
+    /// No band.
+    NoBand,
+    /// The command's text cut to this height.
+    CutCode(f32),
+}
+
+impl Fit {
+    fn small_reason(self) -> bool {
+        self != Fit::Full
+    }
+
+    fn no_band(self) -> bool {
+        matches!(self, Fit::NoBand | Fit::CutCode(_))
+    }
+}
+
+/// What the left button went down on: a language of the switch, a link (its label), or a button.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Target {
     Switch(Lang),
@@ -263,29 +473,834 @@ enum Target {
     Button(usize),
 }
 
-/// A button of the row: what it answers, and its label laid out.
-struct ButtonBox {
-    button: Button,
-    layout: IDWriteTextLayout,
-    width: f32,
-    height: f32,
-}
-
-/// One part of the language switch: a language's name or the bar.
-struct Piece {
-    layout: IDWriteTextLayout,
-    color: D2D1_COLOR_F,
-    part: ui::SwitchPart,
-}
-
-/// The text formats, kept to lay the window out again in the other language.
+/// The text formats, kept to lay the window out again (another language, the orange line).
 struct Fonts {
     dw: IDWriteFactory,
     title: IDWriteTextFormat,
-    body: IDWriteTextFormat,
-    bold: IDWriteTextFormat,
-    switch: IDWriteTextFormat,
-    switch_bold: IDWriteTextFormat,
+    reason: IDWriteTextFormat,
+    reason_small: IDWriteTextFormat,
+    f12: IDWriteTextFormat,
+    f12b: IDWriteTextFormat,
+    f11: IDWriteTextFormat,
+    f11b: IDWriteTextFormat,
+    f10: IDWriteTextFormat,
+    m12: IDWriteTextFormat,
+    m11: IDWriteTextFormat,
+    m10: IDWriteTextFormat,
+}
+
+impl Fonts {
+    fn new(dw: IDWriteFactory) -> Result<Fonts> {
+        let loc = locale();
+        let mono = mono_family(&dw);
+        let normal = DWRITE_FONT_WEIGHT_NORMAL;
+        let bold = DWRITE_FONT_WEIGHT_BOLD;
+        Ok(Fonts {
+            title: format(&dw, bold, TITLE_SIZE, &loc)?,
+            reason: format(&dw, bold, REASON_SIZE, &loc)?,
+            reason_small: format(&dw, bold, REASON_COMPACT_SIZE, &loc)?,
+            f12: format(&dw, normal, 12.0, &loc)?,
+            f12b: format(&dw, bold, 12.0, &loc)?,
+            f11: format(&dw, normal, 11.0, &loc)?,
+            f11b: format(&dw, bold, 11.0, &loc)?,
+            f10: format(&dw, normal, 10.0, &loc)?,
+            m12: format_in(&dw, mono, normal, CODE_SIZE, &loc)?,
+            m11: format_in(&dw, mono, normal, REF_SIZE, &loc)?,
+            m10: format_in(&dw, mono, normal, 10.0, &loc)?,
+            dw,
+        })
+    }
+
+    /// A text laid out in `fmt`, wrapped at `max_w`: the layout, its width and height.
+    fn text(
+        &self,
+        fmt: &IDWriteTextFormat,
+        s: &str,
+        max_w: f32,
+    ) -> Result<(IDWriteTextLayout, f32, f32)> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
+        unsafe {
+            let layout = self
+                .dw
+                .CreateTextLayout(&wide, fmt, max_w.max(1.0), f32::MAX)?;
+            let mut m = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut m)?;
+            Ok((layout, m.widthIncludingTrailingWhitespace, m.height))
+        }
+    }
+
+    /// [`Fonts::text`] no taller than `max_h`, its last line ending with `…` when it is cut.
+    fn cut_text(
+        &self,
+        fmt: &IDWriteTextFormat,
+        s: &str,
+        max_w: f32,
+        max_h: f32,
+    ) -> Result<(IDWriteTextLayout, f32, f32)> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        // SAFETY: DirectWrite copies the text; the trimming sign is made for this format; out parameters on the stack.
+        unsafe {
+            let layout = self
+                .dw
+                .CreateTextLayout(&wide, fmt, max_w.max(1.0), max_h.max(1.0))?;
+            let sign = self.dw.CreateEllipsisTrimmingSign(fmt)?;
+            layout.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                },
+                &sign,
+            )?;
+            let mut m = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut m)?;
+            Ok((
+                layout,
+                m.widthIncludingTrailingWhitespace,
+                m.height.min(max_h),
+            ))
+        }
+    }
+}
+
+/// Lays a window's view out ([`look::View`], design §4.2, §4.3).
+struct Builder<'a> {
+    f: &'a Fonts,
+    parts: Vec<Part>,
+    labels: Vec<Label>,
+    /// The text area: from `PAD_LEFT`, this wide.
+    width: f32,
+}
+
+impl Builder<'_> {
+    fn right(&self) -> f32 {
+        PAD_LEFT + self.width
+    }
+
+    /// Lays a text out and puts it at (`x`, `y`); returns its index, width and height.
+    fn label(
+        &mut self,
+        fmt: &IDWriteTextFormat,
+        s: &str,
+        (x, y): (f32, f32),
+        max_w: f32,
+        ink: Ink,
+    ) -> Result<(usize, f32, f32)> {
+        let (layout, w, h) = self.f.text(fmt, s, max_w)?;
+        self.labels.push(Label {
+            layout,
+            x,
+            y,
+            h,
+            ink,
+            tints: Vec::new(),
+            link: None,
+            clip: None,
+        });
+        Ok((self.labels.len() - 1, w, h))
+    }
+
+    /// A text with marked words ([`look::marked`]): the accent and the caution color.
+    fn marked(
+        &mut self,
+        fmt: &IDWriteTextFormat,
+        s: &str,
+        at: (f32, f32),
+        max_w: f32,
+        ink: Ink,
+    ) -> Result<f32> {
+        let m = look::marked(s);
+        let (i, _, h) = self.label(fmt, &m.text, at, max_w, ink)?;
+        self.labels[i].tints = m
+            .spans
+            .iter()
+            .map(|(start, len, tone)| {
+                let ink = match tone {
+                    Tone::Accent => Ink::Accent,
+                    Tone::Caution => Ink::Caution,
+                    Tone::Plain => ink,
+                };
+                (*start, *len, ink)
+            })
+            .collect();
+        Ok(h)
+    }
+
+    fn rect(&mut self, r: Rect, radius: f32, fill: Option<(Ink, f32)>, stroke: Option<(Ink, f32)>) {
+        self.parts.push(Part::Box {
+            r,
+            radius,
+            fill,
+            stroke,
+            dashed: false,
+        });
+    }
+
+    fn line(&mut self, a: (f32, f32), b: (f32, f32), ink: Ink, width: f32) {
+        self.parts.push(Part::Line { a, b, ink, width });
+    }
+
+    /// The header's tile: a lock on the accent color, or a key on the caution color.
+    fn tile(&mut self, icon: Icon, x: f32, y: f32) {
+        let (fill, ink) = match icon {
+            Icon::Lock => (Ink::Accent, Ink::OnAccent),
+            Icon::Key => (Ink::Caution, Ink::OnCaution),
+        };
+        self.rect(rect(x, y, TILE, TILE), TILE_RADIUS, Some((fill, 1.0)), None);
+        match icon {
+            Icon::Lock => {
+                self.rect(
+                    rect(x + 9.5, y + 7.0, 9.0, 10.0),
+                    4.5,
+                    None,
+                    Some((ink, 2.0)),
+                );
+                self.rect(
+                    rect(x + 8.0, y + 13.0, 12.0, 9.0),
+                    2.0,
+                    Some((ink, 1.0)),
+                    None,
+                );
+            }
+            Icon::Key => {
+                self.parts.push(Part::Dot {
+                    cx: x + 10.0,
+                    cy: y + 14.0,
+                    r: 4.0,
+                    fill: None,
+                    stroke: Some((ink, 2.0)),
+                });
+                self.line((x + 14.0, y + 14.0), (x + 22.0, y + 14.0), ink, 2.0);
+                self.line((x + 19.0, y + 14.0), (x + 19.0, y + 18.0), ink, 2.0);
+                self.line((x + 22.0, y + 14.0), (x + 22.0, y + 17.0), ink, 2.0);
+            }
+        }
+    }
+
+    /// The footer's shield (12 × 14).
+    fn shield(&mut self, x: f32, y: f32) {
+        let p = [
+            (6.0, 0.0),
+            (12.0, 2.5),
+            (12.0, 7.0),
+            (6.0, 14.0),
+            (0.0, 7.0),
+            (0.0, 2.5),
+            (6.0, 0.0),
+        ];
+        for w in p.windows(2) {
+            self.line(
+                (x + w[0].0, y + w[0].1),
+                (x + w[1].0, y + w[1].1),
+                Ink::Critical,
+                1.5,
+            );
+        }
+    }
+
+    /// A note's mark: "!" on a round caution mark.
+    fn note_mark(&mut self, x: f32, y: f32) {
+        self.parts.push(Part::Dot {
+            cx: x + 6.0,
+            cy: y + 7.0,
+            r: 6.0,
+            fill: Some(Ink::Caution),
+            stroke: None,
+        });
+        self.line((x + 6.0, y + 3.8), (x + 6.0, y + 8.0), Ink::OnCaution, 1.8);
+        self.parts.push(Part::Dot {
+            cx: x + 6.0,
+            cy: y + 10.2,
+            r: 1.0,
+            fill: Some(Ink::OnCaution),
+            stroke: None,
+        });
+    }
+
+    /// The purpose's mark: an arrow into a circle.
+    fn purpose_mark(&mut self, x: f32, y: f32) {
+        let (cx, cy) = (x + 7.0, y + 8.0);
+        self.parts.push(Part::Dot {
+            cx,
+            cy,
+            r: 6.0,
+            fill: None,
+            stroke: Some((Ink::Secondary, 1.5)),
+        });
+        self.line((cx - 3.0, cy), (cx + 3.0, cy), Ink::Secondary, 1.2);
+        self.line((cx + 1.0, cy - 2.0), (cx + 3.0, cy), Ink::Secondary, 1.2);
+        self.line((cx + 3.0, cy), (cx + 1.0, cy + 2.0), Ink::Secondary, 1.2);
+    }
+
+    /// The band's picture of the screen (design §4.9).
+    fn sketch(&mut self, kind: Sketch, x: f32, y: f32) {
+        self.rect(
+            rect(x, y, SKETCH.0, 40.0),
+            3.0,
+            Some((Ink::PicScreen, 1.0)),
+            Some((Ink::PicFrame, 1.2)),
+        );
+        let window = if kind == Sketch::Ask {
+            Ink::Caution
+        } else {
+            Ink::PicWindow
+        };
+        self.rect(
+            rect(x + 44.0, y + 4.0, 16.0, 9.0),
+            1.5,
+            Some((window, 1.0)),
+            Some((Ink::Secondary, 0.8)),
+        );
+        let prompt = rect(x + 22.0, y + 12.0, 20.0, 13.0);
+        let (fill, stroke, dashed) = match kind {
+            Sketch::Op => (Some((Ink::Accent, 1.0)), None, false),
+            Sketch::Ask => (Some((Ink::Accent, 0.35)), Some((Ink::Accent, 1.0)), true),
+            Sketch::Asking => (None, Some((Ink::Accent, 1.0)), true),
+        };
+        self.parts.push(Part::Box {
+            r: prompt,
+            radius: 2.0,
+            fill,
+            stroke,
+            dashed,
+        });
+        self.rect(
+            rect(x + 1.0, y + 34.0, 62.0, 5.0),
+            0.0,
+            Some((Ink::PicTaskbar, 1.0)),
+            None,
+        );
+        self.parts.push(Part::Dot {
+            cx: x + 57.0,
+            cy: y + 36.5,
+            r: if kind == Sketch::Asking { 3.0 } else { 2.0 },
+            fill: Some(Ink::Caution),
+            stroke: None,
+        });
+        self.rect(
+            rect(x + 28.0, y + 40.0, 8.0, 4.0),
+            0.0,
+            Some((Ink::PicStand, 1.0)),
+            None,
+        );
+        self.rect(
+            rect(x + 22.0, y + 44.0, 20.0, 2.0),
+            0.0,
+            Some((Ink::PicStand, 1.0)),
+            None,
+        );
+    }
+
+    /// The switch's pill ending at `right`, its top at `top`; the language shown bold on its darker (lighter) half.
+    fn pill(&self, lang: Lang, right: f32, top: f32) -> Result<Pill> {
+        let mut laid = Vec::with_capacity(2);
+        for (name, l) in ui::SWITCH {
+            let fmt = if l == lang { &self.f.f11b } else { &self.f.f11 };
+            laid.push((self.f.text(fmt, name, NO_WRAP)?, l));
+        }
+        let rects = look::pill([laid[0].0.1, laid[1].0.1], PILL_PAD, right, top, PILL_H);
+        let mut names = laid
+            .into_iter()
+            .zip(rects)
+            .map(|(((layout, _, h), l), r)| Label {
+                layout,
+                x: r.left + PILL_PAD,
+                y: top + (PILL_H - h) / 2.0,
+                h,
+                ink: if l == lang { Ink::Text } else { Ink::Secondary },
+                tints: Vec::new(),
+                link: None,
+                clip: None,
+            });
+        let (Some(en), Some(ja)) = (names.next(), names.next()) else {
+            unreachable!("two languages");
+        };
+        Ok(Pill {
+            rects,
+            names: [en, ja],
+        })
+    }
+
+    /// The width of the pill (it does not depend on where it goes).
+    fn pill_width(&self, lang: Lang) -> Result<f32> {
+        let p = self.pill(lang, 0.0, 0.0)?;
+        Ok(p.rects[1].right - p.rects[0].left)
+    }
+}
+
+fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    }
+}
+
+/// Lays `text` out in `lang`, `width` wide; the orange line counts only with `others`. A layout taller than `max_h`
+/// gives up what design §4.13 says, in turn.
+fn lay_out(
+    fonts: &Fonts,
+    text: &Texts,
+    lang: Lang,
+    width: f32,
+    others: bool,
+    max_h: f32,
+) -> Result<Layout> {
+    let mut layout = build(fonts, text, lang, width, others, Fit::Full)?;
+    for fit in [Fit::SmallReason, Fit::NoBand] {
+        if layout.height <= max_h {
+            return Ok(layout);
+        }
+        layout = build(fonts, text, lang, width, others, fit)?;
+    }
+    if layout.height > max_h {
+        let keep = (layout.code_h - (layout.height - max_h)).max(2.0 * CODE_SIZE * 1.4);
+        if keep < layout.code_h {
+            layout = build(fonts, text, lang, width, others, Fit::CutCode(keep))?;
+        }
+    }
+    Ok(layout)
+}
+
+/// One layout of the view, top to bottom (design §4.2, §4.3).
+fn build(
+    fonts: &Fonts,
+    t: &Texts,
+    lang: Lang,
+    width: f32,
+    others: bool,
+    fit: Fit,
+) -> Result<Layout> {
+    let v = &t.view;
+    let mut b = Builder {
+        f: fonts,
+        parts: Vec::new(),
+        labels: Vec::new(),
+        width,
+    };
+    let x0 = PAD_LEFT;
+    let right = b.right();
+    let mut y = PAD_TOP;
+
+    // the header: the tile, the title and the subtitle, the time and the date at the right
+    b.tile(v.icon, x0, y);
+    let (_, time_w, time_h) = b.label(&fonts.f12, &v.time, (0.0, y), NO_WRAP, Ink::Secondary)?;
+    let time_i = b.labels.len() - 1;
+    b.labels[time_i].x = right - time_w;
+    let mut right_w = time_w;
+    let mut date_h = 0.0;
+    if !v.date.is_empty() {
+        let (i, w, h) = b.label(
+            &fonts.f10,
+            &v.date,
+            (0.0, y + time_h),
+            NO_WRAP,
+            Ink::Tertiary,
+        )?;
+        b.labels[i].x = right - w;
+        right_w = right_w.max(w);
+        date_h = h;
+    }
+    let tx = x0 + TILE + TILE_GAP;
+    let tw = (right - right_w - 12.0 - tx).max(width / 3.0);
+    let (_, _, title_h) = b.label(&fonts.title, &t.title, (tx, y - 1.0), tw, Ink::Text)?;
+    let (_, _, sub_h) = b.label(
+        &fonts.f11,
+        &v.subtitle,
+        (tx, y - 1.0 + title_h),
+        tw,
+        Ink::Secondary,
+    )?;
+    y += TILE.max(title_h + sub_h - 1.0).max(time_h + date_h) + SECTION_GAP;
+
+    // the reason, the largest text (or the words in its place, in the caution color)
+    let (_, _, h) = b.label(&fonts.f10, &v.reason_label, (x0, y), width, Ink::Secondary)?;
+    y += h + 2.0;
+    let (reason, ink) = match &v.reason {
+        Reason::Given(r) => (r.as_str(), Ink::Text),
+        Reason::Missing(m) => (m.as_str(), Ink::Caution),
+    };
+    let fmt = if fit.small_reason() {
+        &fonts.reason_small
+    } else {
+        &fonts.reason
+    };
+    let (_, _, h) = b.label(fmt, reason, (x0, y), width, ink)?;
+    y += h + 10.0;
+
+    // the chips, in rows
+    let mut chips = Vec::with_capacity(v.chips.len());
+    for c in &v.chips {
+        let mark = match c.kind {
+            ChipKind::Claude | ChipKind::Person | ChipKind::Other | ChipKind::Repo => CHIP_MARK,
+            ChipKind::Herdr | ChipKind::Wsl | ChipKind::Folder => 0.0,
+        };
+        let (layout, w, h) = fonts.text(&fonts.f11, &c.text, width - 2.0 * CHIP_PAD - mark)?;
+        let chip_w = (2.0 * CHIP_PAD + mark + w).min(width);
+        chips.push((c.kind, layout, chip_w, (h + 8.0).max(CHIP_H), h, mark));
+    }
+    if !chips.is_empty() {
+        let widths: Vec<f32> = chips.iter().map(|c| c.2).collect();
+        let at = look::flow(&widths, width, CHIP_GAP);
+        let rows = at.last().map_or(0, |a| a.0 + 1);
+        let mut row_h = vec![0f32; rows];
+        for (i, (r, _)) in at.iter().enumerate() {
+            row_h[*r] = row_h[*r].max(chips[i].3);
+        }
+        let mut row_y = Vec::with_capacity(rows);
+        let mut yy = y;
+        for h in &row_h {
+            row_y.push(yy);
+            yy += h + CHIP_GAP;
+        }
+        for ((kind, layout, w, h, text_h, mark), (r, cx)) in chips.into_iter().zip(at) {
+            let (cx, cy) = (x0 + cx, row_y[r]);
+            b.rect(
+                rect(cx, cy, w, h),
+                CHIP_H / 2.0,
+                Some((Ink::Surface, 1.0)),
+                Some((Ink::Line, 1.0)),
+            );
+            let mid = cy + CHIP_H / 2.0;
+            let dot = match kind {
+                ChipKind::Claude => Some(Ink::Claude),
+                ChipKind::Person => Some(Ink::Success),
+                ChipKind::Other => Some(Ink::Secondary),
+                _ => None,
+            };
+            if let Some(ink) = dot {
+                b.parts.push(Part::Dot {
+                    cx: cx + CHIP_PAD + 5.0,
+                    cy: mid,
+                    r: 5.0,
+                    fill: Some(ink),
+                    stroke: None,
+                });
+            } else if kind == ChipKind::Repo {
+                b.rect(
+                    rect(cx + CHIP_PAD, mid - 5.0, 10.0, 10.0),
+                    2.0,
+                    None,
+                    Some((Ink::Secondary, 1.5)),
+                );
+            }
+            let ty = if text_h + 8.0 <= CHIP_H {
+                cy + (CHIP_H - text_h) / 2.0
+            } else {
+                cy + 4.0
+            };
+            b.labels.push(Label {
+                layout,
+                x: cx + CHIP_PAD + mark,
+                y: ty,
+                h: text_h,
+                ink: Ink::Text,
+                tints: Vec::new(),
+                link: None,
+                clip: None,
+            });
+        }
+        y = yy - CHIP_GAP + SECTION_GAP;
+    }
+
+    // the command, in its box with colored words
+    let (_, _, h) = b.label(&fonts.f10, &v.code_label, (x0, y), width, Ink::Secondary)?;
+    y += h + 4.0;
+    let inner_w = width - 2.0 * CODE_PAD_X;
+    let (code, _, code_h) = match fit {
+        Fit::CutCode(keep) => fonts.cut_text(&fonts.m12, &v.code, inner_w, keep)?,
+        _ => fonts.text(&fonts.m12, &v.code, inner_w)?,
+    };
+    let mut tints = Vec::new();
+    for (start, len, word) in look::color_words(&v.code) {
+        match word {
+            Word::Program => {
+                // SAFETY: a valid layout; the range is inside its text.
+                unsafe {
+                    code.SetFontWeight(
+                        DWRITE_FONT_WEIGHT_BOLD,
+                        DWRITE_TEXT_RANGE {
+                            startPosition: start,
+                            length: len,
+                        },
+                    )?;
+                }
+                tints.push((start, len, Ink::Accent));
+            }
+            Word::Path => tints.push((start, len, Ink::CodePath)),
+            Word::Plain => {}
+        }
+    }
+    let box_h = code_h + 2.0 * CODE_PAD_Y;
+    b.rect(
+        rect(x0, y, width, box_h),
+        CODE_RADIUS,
+        Some((Ink::CodeBg, 1.0)),
+        Some((Ink::CodeBorder, 1.0)),
+    );
+    b.labels.push(Label {
+        layout: code,
+        x: x0 + CODE_PAD_X,
+        y: y + CODE_PAD_Y,
+        h: code_h,
+        ink: Ink::CodeText,
+        tints,
+        link: None,
+        clip: matches!(fit, Fit::CutCode(_)).then(|| rect(x0, y, width, box_h)),
+    });
+    y += box_h;
+    if let Some(note) = &v.code_note {
+        y += 4.0;
+        let (_, _, h) = b.label(&fonts.m10, note, (x0, y), width, Ink::Tertiary)?;
+        y += h;
+    }
+
+    // the references of an op call: a small square before each, the links underlined
+    if let Some(r) = &t.refs {
+        y += 12.0;
+        let (_, _, h) = b.label(&fonts.f10, &r.head, (x0, y), width, Ink::Secondary)?;
+        y += h + 4.0;
+        for (text, url) in &r.items {
+            let ink = if url.is_some() {
+                Ink::Accent
+            } else {
+                Ink::Text
+            };
+            let (i, _, h) = b.label(
+                &fonts.m11,
+                text,
+                (x0 + REF_INDENT, y),
+                width - REF_INDENT,
+                ink,
+            )?;
+            if url.is_some() {
+                let length = text.encode_utf16().count() as u32;
+                // SAFETY: a valid layout; the range is its whole text.
+                unsafe {
+                    b.labels[i].layout.SetUnderline(
+                        true,
+                        DWRITE_TEXT_RANGE {
+                            startPosition: 0,
+                            length,
+                        },
+                    )?;
+                }
+                b.labels[i].link = url.clone();
+            }
+            let line = h.min(REF_SIZE * 1.4);
+            b.rect(
+                rect(x0 + 2.0, y + (line - 6.0) / 2.0, 6.0, 6.0),
+                1.5,
+                Some((Ink::CodePath, 1.0)),
+                None,
+            );
+            y += h + 2.0;
+        }
+        for line in [&r.more, &r.hint].into_iter().flatten() {
+            let (_, _, h) = b.label(
+                &fonts.f11,
+                line,
+                (x0 + REF_INDENT, y),
+                width - REF_INDENT,
+                Ink::Secondary,
+            )?;
+            y += h + 2.0;
+        }
+    }
+
+    // the relay: what the signature is for, the destination and the key, the ssh command
+    if !v.facts.is_empty() {
+        y += 12.0;
+        for fact in &v.facts {
+            let at = (x0 + MARK_W, y);
+            let w = width - MARK_W;
+            match fact.kind {
+                FactKind::Purpose => {
+                    b.purpose_mark(x0, y);
+                    let (_, _, h) = b.label(&fonts.f12, &fact.text, at, w, Ink::Text)?;
+                    y += h + 3.0;
+                }
+                FactKind::Detail => {
+                    let (_, _, h) = b.label(&fonts.f10, &fact.text, at, w, Ink::Tertiary)?;
+                    y += h + 2.0;
+                }
+                FactKind::Mono => {
+                    let (_, _, h) = b.label(&fonts.m10, &fact.text, at, w, Ink::Tertiary)?;
+                    y += h + 2.0;
+                }
+            }
+        }
+    }
+
+    // the notes of an op call
+    for n in &v.notes {
+        y += 8.0;
+        b.note_mark(x0, y + 1.0);
+        let (_, _, h) = b.label(
+            &fonts.f11,
+            n,
+            (x0 + MARK_W, y),
+            width - MARK_W,
+            Ink::Secondary,
+        )?;
+        y += h;
+    }
+
+    // the seconds left to answer (the relay's window that asks), with the switch at the right of its row
+    let mut pill = None;
+    let mut countdown = None;
+    if let Some(template) = &v.countdown {
+        y += SECTION_GAP;
+        let bar = rect(x0, y, width, BAR_H);
+        y += BAR_H + 7.0;
+        let p = b.pill(lang, right, y)?;
+        let pill_w = p.rects[1].right - p.rects[0].left;
+        let w = width - pill_w - PILL_GAP;
+        let rest = if v.status.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", v.status)
+        };
+        // measured with the widest number (an answer wait of an hour), so that the row keeps its height
+        let (_, _, h) = fonts.text(
+            &fonts.f10,
+            &format!("{}{rest}", template.replace("{0}", "0000")),
+            w,
+        )?;
+        countdown = Some(CountdownAt {
+            bar,
+            x: x0,
+            y: y + 5.0,
+            w,
+            template: template.clone(),
+            rest,
+        });
+        pill = Some(p);
+        y += (h + 5.0).max(PILL_H);
+    }
+
+    // the band: where 1Password's prompt usually comes, and the tray (kept on a small screen while 1Password asks)
+    if !fit.no_band() || v.band.keep {
+        y += SECTION_GAP;
+        let bx = x0 + BAND_PAD_X + SKETCH.0 + 12.0;
+        let bw = right - BAND_PAD_X - bx;
+        let first = b.labels.len();
+        let th = b.marked(&fonts.f12b, &v.band.title, (bx, 0.0), bw, Ink::BandTitle)?;
+        let lh = b.marked(&fonts.f11, &v.band.line, (bx, 0.0), bw, Ink::BandText)?;
+        let inner = th + 3.0 + lh;
+        let bh = inner.max(SKETCH.1) + 2.0 * BAND_PAD_Y;
+        let ty = y + (bh - inner) / 2.0;
+        b.labels[first].y = ty;
+        b.labels[first + 1].y = ty + th + 3.0;
+        // the box goes under the texts: parts are drawn first
+        b.rect(
+            rect(x0, y, width, bh),
+            BAND_RADIUS,
+            Some((Ink::BandBg, 1.0)),
+            Some((Ink::BandBorder, 1.0)),
+        );
+        b.sketch(v.band.sketch, x0 + BAND_PAD_X, y + (bh - SKETCH.1) / 2.0);
+        y += bh;
+    }
+
+    // the orange line, while other op.exe run
+    if others && !t.others.is_empty() {
+        y += 10.0;
+        let (_, _, h) = b.label(&fonts.f11b, &t.others, (x0, y), width, Ink::Orange)?;
+        y += h;
+    }
+
+    // the footer, with the switch at the right of its row's bottom when the countdown has not taken it
+    let pill_here = pill.is_none();
+    if !v.footer.is_empty() || pill_here {
+        y += 12.0;
+        let pill_w = if pill_here {
+            b.pill_width(lang)? + PILL_GAP
+        } else {
+            0.0
+        };
+        let mut h = 0.0;
+        let mut text_i = None;
+        if !v.footer.is_empty() {
+            let (i, _, fh) = b.label(
+                &fonts.f11,
+                &v.footer,
+                (x0 + MARK_W, y),
+                width - MARK_W - pill_w,
+                Ink::Critical,
+            )?;
+            text_i = Some(i);
+            h = fh;
+        }
+        let row = if pill_here { h.max(PILL_H) } else { h };
+        let ty = if pill_here && h < PILL_H {
+            y + (PILL_H - h) / 2.0
+        } else {
+            y
+        };
+        if let Some(i) = text_i {
+            b.labels[i].y = ty;
+            b.shield(x0, ty + 1.0);
+        }
+        if pill_here {
+            pill = Some(b.pill(lang, right, y + row - PILL_H)?);
+        }
+        y += row;
+    }
+
+    // the buttons (the relay's window that asks): Deny at the right end
+    let mut buttons = Vec::with_capacity(t.buttons.len());
+    if !t.buttons.is_empty() {
+        y += BUTTON_TOP_GAP;
+        let mut x = x0;
+        for (button, label) in &t.buttons {
+            let fmt = if *button == Button::Allow {
+                &fonts.f12b
+            } else {
+                &fonts.f12
+            };
+            let (layout, w, h) = fonts.text(fmt, label, NO_WRAP)?;
+            let bw = (w + 2.0 * BUTTON_PAD_X).max(BUTTON_MIN_W);
+            let left = if *button == Button::Deny {
+                (right - bw).max(x)
+            } else {
+                x
+            };
+            let ink = match button {
+                Button::Allow => Ink::OnAccent,
+                Button::AllowTerminal => Ink::Accent,
+                Button::Deny => Ink::Critical,
+            };
+            buttons.push(ButtonAt {
+                button: *button,
+                rect: rect(left, y, bw, BUTTON_H),
+                label: Label {
+                    layout,
+                    x: left + (bw - w) / 2.0,
+                    y: y + (BUTTON_H - h) / 2.0,
+                    h,
+                    ink,
+                    tints: Vec::new(),
+                    link: None,
+                    clip: None,
+                },
+            });
+            x = left + bw + BUTTON_GAP;
+        }
+        y += BUTTON_H;
+    }
+    y += PAD_BOTTOM;
+    Ok(Layout {
+        parts: b.parts,
+        labels: b.labels,
+        pill,
+        buttons,
+        countdown,
+        height: y,
+        code_h,
+    })
 }
 
 /// Where the window draws ([`State::make_surface`]).
@@ -309,16 +1324,20 @@ impl Surface {
 
 struct State {
     d2d: ID2D1Factory,
+    /// The dashes of the prompt in the band's picture.
+    dash: Option<ID2D1StrokeStyle>,
     target: Option<Surface>,
     fonts: Fonts,
     /// The width of the text area (DIPs).
     width: f32,
+    /// The tallest client area that fits the work area (DIPs).
+    max_h: f32,
     texts: Both,
     /// The language shown.
     lang: Lang,
-    paras: Vec<Para>,
-    switch: Vec<Piece>,
+    layout: Layout,
     show_others: bool,
+    theme: Theme,
     dpi: u32,
     destroyed: bool,
     /// Draw emoji in color (turned off if drawing fails with it).
@@ -333,8 +1352,6 @@ struct State {
     on_choose: Option<Box<dyn FnMut(Lang)>>,
     /// The threads that open links (waited for a moment when the window closes).
     opening: Vec<JoinHandle<()>>,
-    /// The row of buttons (none in the windows of `op` calls).
-    buttons: Vec<ButtonBox>,
     /// When the buttons appeared ([`BUTTON_ARMING`]).
     buttons_since: Instant,
     /// The button pressed and released (the answer).
@@ -344,100 +1361,20 @@ struct State {
     front_before: Option<HWND>,
     /// Draw with Direct2D's software renderer into the window's device context ([`Window::draw_without_gpu`]).
     software: bool,
+    /// The end of the answer wait and its length ([`Window::set_deadline`]).
+    deadline: Option<(Instant, Duration)>,
+    /// The line of the seconds left as last laid out: the seconds and the layout.
+    countdown_text: Option<(u64, IDWriteTextLayout)>,
 }
 
 impl State {
-    fn client_height_dip(&self) -> f32 {
-        let row = if self.buttons.is_empty() {
-            0.0
-        } else {
-            BUTTON_TOP_GAP + BUTTON_H
-        };
-        PAD_TOP
-            + self
-                .paras
-                .iter()
-                .filter(|p| self.show_others || p.role != Role::Others)
-                .map(|p| p.height + 2.0 * LINE_GAP)
-                .sum::<f32>()
-            + row
-            + PAD_BOTTOM
-    }
-
-    /// Where each button is (DIPs of the client area): a row at the bottom, the buttons that allow from the left, Deny at
-    /// the right (after the others when they leave no room).
-    fn button_rects(&self) -> Vec<ui::Rect> {
-        let bottom = self.client_height_dip() - PAD_BOTTOM;
-        let top = bottom - BUTTON_H;
-        let mut x = PAD_LEFT;
-        let mut rects = Vec::with_capacity(self.buttons.len());
-        for b in &self.buttons {
-            let w = (b.width + 2.0 * BUTTON_PAD_X).max(BUTTON_MIN_W);
-            let left = if b.button == Button::Deny {
-                (PAD_LEFT + self.width - w).max(x)
-            } else {
-                x
-            };
-            rects.push(ui::Rect {
-                left,
-                top,
-                right: left + w,
-                bottom,
-            });
-            x = left + w + BUTTON_GAP;
-        }
-        rects
-    }
-
-    /// The paragraphs shown, each with its top (DIPs).
-    fn tops(&self) -> Vec<(usize, f32)> {
-        let mut y = PAD_TOP;
-        let mut out = Vec::with_capacity(self.paras.len());
-        for (i, p) in self.paras.iter().enumerate() {
-            if p.role == Role::Others && !self.show_others {
-                continue;
-            }
-            y += LINE_GAP;
-            out.push((i, y));
-            y += p.height + LINE_GAP;
-        }
-        out
-    }
-
-    /// Where the switch ends and the baseline it sits on: the right of the text area, the footer's last line.
-    fn switch_anchor(&self) -> Option<(f32, f32)> {
-        let (i, top) = self
-            .tops()
-            .into_iter()
-            .find(|(i, _)| self.paras[*i].role == Role::Footer)?;
-        Some((PAD_LEFT + self.width, top + self.paras[i].last_baseline))
-    }
-
-    fn switch_parts(&self) -> Vec<ui::SwitchPart> {
-        self.switch.iter().map(|p| p.part).collect()
-    }
-
-    /// The language a click at the point (DIPs of the client area) chooses.
-    fn hit(&self, x: f32, y: f32) -> Option<Lang> {
-        let (right, baseline) = self.switch_anchor()?;
-        ui::switch_hit(
-            &self.switch_parts(),
-            right,
-            baseline,
-            self.lang,
-            (SWITCH_HIT_X, SWITCH_HIT_Y),
-            (x, y),
-        )
-    }
-
-    /// The link under the point (DIPs of the client area): the index of its paragraph. Only the text itself counts
+    /// The link under the point (DIPs of the client area): the index of its label. Only the text itself counts
     /// (DirectWrite's hit test), on any of its lines.
     fn link_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.tops().into_iter().find_map(|(i, top)| {
-            let p = &self.paras[i];
-            p.link.as_ref()?;
-            let (lx, ly) = (x - PAD_LEFT - p.indent, y - top);
-            if lx < 0.0 || ly < 0.0 || ly >= p.height {
+        self.layout.labels.iter().enumerate().find_map(|(i, l)| {
+            l.link.as_ref()?;
+            let (lx, ly) = (x - l.x, y - l.y);
+            if lx < 0.0 || ly < 0.0 || ly >= l.h {
                 return None;
             }
             let mut trailing = BOOL(0);
@@ -445,7 +1382,7 @@ impl State {
             let mut m = DWRITE_HIT_TEST_METRICS::default();
             // SAFETY: a valid layout and out parameters on the stack.
             unsafe {
-                p.layout
+                l.layout
                     .HitTestPoint(lx, ly, &mut trailing, &mut inside, &mut m)
                     .ok()?;
             }
@@ -455,13 +1392,17 @@ impl State {
 
     /// What a press or a release at the point is on: the switch's other language, a link, or a button.
     fn target(&self, x: f32, y: f32) -> Option<Target> {
-        self.hit(x, y)
+        self.layout
+            .pill
+            .as_ref()
+            .and_then(|p| look::pill_hit(&p.rects, self.lang, x, y))
             .map(Target::Switch)
             .or_else(|| self.link_at(x, y).map(Target::Link))
             .or_else(|| {
-                self.button_rects()
+                self.layout
+                    .buttons
                     .iter()
-                    .position(|r| r.contains(x, y))
+                    .position(|b| b.rect.contains(x, y))
                     .map(Target::Button)
             })
     }
@@ -469,18 +1410,17 @@ impl State {
     /// Lays the window out in `lang`. Everything is built before anything is replaced, so a failure keeps the old
     /// layout.
     fn relayout(&mut self, lang: Lang) -> Result<()> {
-        let switch = build_switch(&self.fonts, lang)?;
-        let paras = build_paras(
+        let layout = lay_out(
             &self.fonts,
             self.texts.get(lang),
+            lang,
             self.width,
-            footer_width(self.width, &switch),
+            self.show_others,
+            self.max_h,
         )?;
-        let buttons = build_buttons(&self.fonts, self.texts.get(lang))?;
-        self.switch = switch;
-        self.paras = paras;
-        self.buttons = buttons;
+        self.layout = layout;
         self.lang = lang;
+        self.countdown_text = None;
         Ok(())
     }
 
@@ -533,6 +1473,37 @@ impl State {
         }))
     }
 
+    /// The share of the answer wait left and the seconds left (rounded up); all of it before the deadline is known.
+    fn left(&self) -> (f32, Option<u64>) {
+        match self.deadline {
+            Some((end, total)) => {
+                let left = end.saturating_duration_since(Instant::now());
+                let share = left.as_secs_f32() / total.as_secs_f32().max(0.001);
+                (
+                    share.clamp(0.0, 1.0),
+                    Some(left.as_secs_f32().ceil() as u64),
+                )
+            }
+            None => (1.0, None),
+        }
+    }
+
+    /// The line of the seconds left, laid out again when the second changed.
+    fn countdown_line(&mut self, secs: Option<u64>) -> Result<()> {
+        let Some(c) = self.layout.countdown.as_ref() else {
+            return Ok(());
+        };
+        let key = secs.unwrap_or(u64::MAX);
+        if self.countdown_text.as_ref().is_some_and(|(s, _)| *s == key) {
+            return Ok(());
+        }
+        let n = secs.map_or_else(|| "…".to_owned(), |s| s.to_string());
+        let s = format!("{}{}", c.template.replace("{0}", &n), c.rest);
+        let (layout, _, _) = self.fonts.text(&self.fonts.f10, &s, c.w)?;
+        self.countdown_text = Some((key, layout));
+        Ok(())
+    }
+
     /// Draws a frame: into the window's device context `hdc` of WM_PAINT for a DC render target.
     fn render(&mut self, hwnd: HWND, hdc: HDC) -> Result<()> {
         let busy = Busy::enter(Step::Target);
@@ -553,97 +1524,188 @@ impl State {
             self.target = None;
             return Ok(());
         }
+        let (share, secs) = self.left();
+        self.countdown_line(secs)?;
         let Some(surface) = self.target.as_ref() else {
             return Ok(());
         };
         let t = surface.rt();
-        // Brushes and positions first, so that nothing can return between BeginDraw and EndDraw.
-        let mut brushes = Vec::with_capacity(self.paras.len());
-        for p in &self.paras {
+        let p = theme::palette(self.theme);
+        // Brushes, drawing effects and positions first, so that nothing can return between BeginDraw and EndDraw.
+        let mut brushes: Vec<ID2D1SolidColorBrush> = Vec::with_capacity(Ink::ALL.len());
+        for ink in Ink::ALL {
             // SAFETY: the color lives across the call.
-            brushes.push(unsafe { t.CreateSolidColorBrush(&p.color, None)? });
+            brushes.push(unsafe { t.CreateSolidColorBrush(&color(ink.rgb(p), 1.0), None)? });
         }
-        let mut switch_brushes = Vec::with_capacity(self.switch.len());
-        for p in &self.switch {
-            // SAFETY: the color lives across the call.
-            switch_brushes.push(unsafe { t.CreateSolidColorBrush(&p.color, None)? });
+        let brush = |i: Ink| &brushes[Ink::ALL.iter().position(|x| *x == i).unwrap_or(0)];
+        let mut faint = Vec::new();
+        for part in &self.layout.parts {
+            faint.push(match part {
+                Part::Box {
+                    fill: Some((ink, alpha)),
+                    ..
+                } if *alpha < 1.0 => {
+                    // SAFETY: the color lives across the call.
+                    Some(unsafe { t.CreateSolidColorBrush(&color(ink.rgb(p), *alpha), None)? })
+                }
+                _ => None,
+            });
         }
-        let rects = self.button_rects();
+        for l in &self.layout.labels {
+            for (start, len, ink) in &l.tints {
+                // SAFETY: a valid layout and a brush of this target; the range is inside its text.
+                unsafe {
+                    l.layout.SetDrawingEffect(
+                        brush(*ink),
+                        DWRITE_TEXT_RANGE {
+                            startPosition: *start,
+                            length: *len,
+                        },
+                    )?;
+                }
+            }
+        }
         let pressed = match self.pressed {
             Some(Target::Button(i)) => Some(i),
             _ => None,
         };
-        // SAFETY: the colors live across the calls.
-        let (fill, fill_pressed, border, deny) = unsafe {
-            (
-                t.CreateSolidColorBrush(&BUTTON_FILL, None)?,
-                t.CreateSolidColorBrush(&BUTTON_PRESSED, None)?,
-                t.CreateSolidColorBrush(&GRAY, None)?,
-                t.CreateSolidColorBrush(&FIREBRICK, None)?,
-            )
-        };
-        // SAFETY: the color lives across the call.
-        let black = unsafe { t.CreateSolidColorBrush(&BLACK, None)? };
-        let tops = self.tops();
-        let origins = self
-            .switch_anchor()
-            .map(|(right, baseline)| ui::switch_origins(&self.switch_parts(), right, baseline))
-            .unwrap_or_default();
         let options = if self.color_fonts {
             D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT
         } else {
             D2D1_DRAW_TEXT_OPTIONS_NONE
         };
+        let dash = self.dash.as_ref();
+        let text = |l: &Label| {
+            // SAFETY: (caller) inside BeginDraw and EndDraw, with a brush of this target.
+            unsafe {
+                if let Some(c) = l.clip {
+                    t.PushAxisAlignedClip(&d2d_rect(c), D2D1_ANTIALIAS_MODE_ALIASED);
+                }
+                t.DrawTextLayout(Vector2 { X: l.x, Y: l.y }, &l.layout, brush(l.ink), options);
+                if l.clip.is_some() {
+                    t.PopAxisAlignedClip();
+                }
+            }
+        };
         // SAFETY: Direct2D drawing between BeginDraw and EndDraw on the target we own.
         let r = unsafe {
             t.BeginDraw();
-            t.Clear(Some(&LIGHT_YELLOW));
-            for (i, top) in &tops {
-                t.DrawTextLayout(
-                    Vector2 {
-                        X: PAD_LEFT + self.paras[*i].indent,
-                        Y: *top,
-                    },
-                    &self.paras[*i].layout,
-                    &brushes[*i],
-                    options,
-                );
+            t.Clear(Some(&color(p.background, 1.0)));
+            for (part, faint) in self.layout.parts.iter().zip(&faint) {
+                match part {
+                    Part::Box {
+                        r,
+                        radius,
+                        fill,
+                        stroke,
+                        dashed,
+                    } => {
+                        let rr = rounded(*r, *radius);
+                        if let Some((ink, _)) = fill {
+                            t.FillRoundedRectangle(&rr, faint.as_ref().unwrap_or(brush(*ink)));
+                        }
+                        if let Some((ink, width)) = stroke {
+                            let style = if *dashed { dash } else { None };
+                            t.DrawRoundedRectangle(&rr, brush(*ink), *width, style);
+                        }
+                    }
+                    Part::Dot {
+                        cx,
+                        cy,
+                        r,
+                        fill,
+                        stroke,
+                    } => {
+                        let e = D2D1_ELLIPSE {
+                            point: Vector2 { X: *cx, Y: *cy },
+                            radiusX: *r,
+                            radiusY: *r,
+                        };
+                        if let Some(ink) = fill {
+                            t.FillEllipse(&e, brush(*ink));
+                        }
+                        if let Some((ink, width)) = stroke {
+                            t.DrawEllipse(&e, brush(*ink), *width, None);
+                        }
+                    }
+                    Part::Line { a, b, ink, width } => {
+                        t.DrawLine(
+                            Vector2 { X: a.0, Y: a.1 },
+                            Vector2 { X: b.0, Y: b.1 },
+                            brush(*ink),
+                            *width,
+                            None,
+                        );
+                    }
+                }
             }
-            for ((p, brush), (x, y)) in self.switch.iter().zip(&switch_brushes).zip(&origins) {
-                t.DrawTextLayout(Vector2 { X: *x, Y: *y }, &p.layout, brush, options);
+            for l in &self.layout.labels {
+                text(l);
             }
-            for (i, (b, r)) in self.buttons.iter().zip(&rects).enumerate() {
-                let rounded = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: r.left,
-                        top: r.top,
-                        right: r.right,
-                        bottom: r.bottom,
-                    },
-                    radiusX: BUTTON_RADIUS,
-                    radiusY: BUTTON_RADIUS,
+            if let Some(c) = &self.layout.countdown {
+                t.FillRoundedRectangle(&rounded(c.bar, BAR_H / 2.0), brush(Ink::Line));
+                let filled = Rect {
+                    right: c.bar.left + (c.bar.right - c.bar.left) * share,
+                    ..c.bar
                 };
-                let (face, ink) = if b.button == Button::Deny {
-                    (&deny, &deny)
-                } else {
-                    (&border, &black)
+                if share > 0.0 {
+                    t.FillRoundedRectangle(&rounded(filled, BAR_H / 2.0), brush(Ink::Caution));
+                }
+                if let Some((_, layout)) = &self.countdown_text {
+                    t.DrawTextLayout(
+                        Vector2 { X: c.x, Y: c.y },
+                        layout,
+                        brush(Ink::Secondary),
+                        options,
+                    );
+                }
+            }
+            if let Some(pill) = &self.layout.pill {
+                let all = Rect {
+                    left: pill.rects[0].left,
+                    ..pill.rects[1]
                 };
-                let back = if pressed == Some(i) {
-                    &fill_pressed
-                } else {
-                    &fill
-                };
-                t.FillRoundedRectangle(&rounded, back);
-                t.DrawRoundedRectangle(&rounded, face, 1.0, None);
-                t.DrawTextLayout(
-                    Vector2 {
-                        X: r.left + (r.right - r.left - b.width) / 2.0,
-                        Y: r.top + (BUTTON_H - b.height) / 2.0,
-                    },
-                    &b.layout,
-                    ink,
-                    options,
+                t.FillRoundedRectangle(&rounded(all, PILL_H / 2.0), brush(Ink::Surface));
+                t.DrawRoundedRectangle(
+                    &rounded(inset(all, 0.5), PILL_H / 2.0),
+                    brush(Ink::Line),
+                    1.0,
+                    None,
                 );
+                let shown = usize::from(self.lang == Lang::Ja);
+                t.FillRoundedRectangle(
+                    &rounded(inset(pill.rects[shown], 2.0), PILL_H / 2.0 - 2.0),
+                    brush(Ink::SwitchShown),
+                );
+                for name in &pill.names {
+                    text(name);
+                }
+            }
+            for (i, b) in self.layout.buttons.iter().enumerate() {
+                let rr = rounded(b.rect, BUTTON_RADIUS);
+                let (fill, border) = match b.button {
+                    Button::Allow => (Ink::Accent, None),
+                    Button::AllowTerminal => (Ink::Surface, Some(Ink::Accent)),
+                    Button::Deny => (Ink::Surface, Some(Ink::Critical)),
+                };
+                t.FillRoundedRectangle(&rr, brush(fill));
+                // a pressed button: a wider border, in its label's color (the fill and the label stay)
+                if pressed == Some(i) {
+                    t.DrawRoundedRectangle(
+                        &rounded(inset(b.rect, 1.0), BUTTON_RADIUS - 1.0),
+                        brush(b.label.ink),
+                        2.0,
+                        None,
+                    );
+                } else if let Some(ink) = border {
+                    t.DrawRoundedRectangle(
+                        &rounded(inset(b.rect, 0.5), BUTTON_RADIUS),
+                        brush(ink),
+                        1.0,
+                        None,
+                    );
+                }
+                text(&b.label);
             }
             t.EndDraw(None, None)
         };
@@ -662,6 +1724,32 @@ impl State {
             }
         }
         Ok(())
+    }
+}
+
+fn d2d_rect(r: Rect) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
+}
+
+fn rounded(r: Rect, radius: f32) -> D2D1_ROUNDED_RECT {
+    D2D1_ROUNDED_RECT {
+        rect: d2d_rect(r),
+        radiusX: radius,
+        radiusY: radius,
+    }
+}
+
+fn inset(r: Rect, by: f32) -> Rect {
+    Rect {
+        left: r.left + by,
+        top: r.top + by,
+        right: r.right - by,
+        bottom: r.bottom - by,
     }
 }
 
@@ -720,10 +1808,21 @@ pub(super) fn format(
     size: f32,
     locale: &[u16],
 ) -> Result<IDWriteTextFormat> {
+    format_in(dw, w!("Segoe UI"), weight, size, locale)
+}
+
+/// A text format of `family` that wraps words.
+pub(super) fn format_in(
+    dw: &IDWriteFactory,
+    family: PCWSTR,
+    weight: DWRITE_FONT_WEIGHT,
+    size: f32,
+    locale: &[u16],
+) -> Result<IDWriteTextFormat> {
     // SAFETY: the strings are NUL-terminated and outlive the call.
     unsafe {
         let f = dw.CreateTextFormat(
-            w!("Segoe UI"),
+            family,
             None,
             weight,
             DWRITE_FONT_STYLE_NORMAL,
@@ -736,234 +1835,25 @@ pub(super) fn format(
     }
 }
 
-fn para(
-    dw: &IDWriteFactory,
-    fmt: &IDWriteTextFormat,
-    text: &str,
-    bold_prefix: usize,
-    width: f32,
-    color: D2D1_COLOR_F,
-    role: Role,
-) -> Result<Para> {
-    let wide: Vec<u16> = text.encode_utf16().collect();
-    // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
-    unsafe {
-        let layout = dw.CreateTextLayout(&wide, fmt, width, f32::MAX)?;
-        if bold_prefix > 0 {
-            layout.SetFontWeight(
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_TEXT_RANGE {
-                    startPosition: 0,
-                    length: bold_prefix as u32,
-                },
-            )?;
-        }
-        let mut m = DWRITE_TEXT_METRICS::default();
-        layout.GetMetrics(&mut m)?;
-        let last_baseline = last_baseline(&layout)?;
-        Ok(Para {
-            layout,
-            color,
-            height: m.height,
-            role,
-            last_baseline,
-            indent: 0.0,
-            link: None,
-        })
-    }
-}
-
-/// The baseline of a layout's last line, from the layout's top.
-fn last_baseline(layout: &IDWriteTextLayout) -> Result<f32> {
-    let mut count = 0u32;
-    // SAFETY: valid layout and out parameters; the first call only counts the lines (it fails for want of room).
-    let lines = unsafe {
-        let _ = layout.GetLineMetrics(None, &mut count);
-        let mut lines = vec![DWRITE_LINE_METRICS::default(); count.max(1) as usize];
-        layout.GetLineMetrics(Some(&mut lines), &mut count)?;
-        lines.truncate(count as usize);
-        lines
+/// The monospace family of the command (design §4.5): Cascadia Mono when the system has it (Windows 11), else Consolas.
+pub(super) fn mono_family(dw: &IDWriteFactory) -> PCWSTR {
+    let mut fonts: Option<IDWriteFontCollection> = None;
+    // SAFETY: an out parameter on the stack, and plain queries of the collection.
+    let cascadia = unsafe {
+        dw.GetSystemFontCollection(&mut fonts, false).is_ok()
+            && fonts.is_some_and(|c| {
+                let mut index = 0u32;
+                let mut exists = BOOL(0);
+                c.FindFamilyName(w!("Cascadia Mono"), &mut index, &mut exists)
+                    .is_ok()
+                    && exists.as_bool()
+            })
     };
-    Ok(match lines.split_last() {
-        Some((last, before)) => before.iter().map(|l| l.height).sum::<f32>() + last.baseline,
-        None => 0.0,
-    })
-}
-
-/// The title, the lines (with the block of references after the command line), the orange line and the footer
-/// (narrower, to leave room for the switch).
-fn build_paras(fonts: &Fonts, text: &Texts, width: f32, footer_width: f32) -> Result<Vec<Para>> {
-    let dw = &fonts.dw;
-    let mut paras = vec![para(
-        dw,
-        &fonts.title,
-        &text.title,
-        0,
-        width,
-        BLACK,
-        Role::Title,
-    )?];
-    for (k, (label, value)) in text.lines.iter().enumerate() {
-        if k == text.refs_at {
-            add_refs(fonts, text.refs.as_ref(), width, &mut paras)?;
-        }
-        let head = format!("{label}: ");
-        let line = format!("{head}{value}");
-        paras.push(para(
-            dw,
-            &fonts.body,
-            &line,
-            head.encode_utf16().count(),
-            width,
-            BLACK,
-            Role::Line,
-        )?);
+    if cascadia {
+        w!("Cascadia Mono")
+    } else {
+        w!("Consolas")
     }
-    if text.refs_at >= text.lines.len() {
-        add_refs(fonts, text.refs.as_ref(), width, &mut paras)?;
-    }
-    paras.push(para(
-        dw,
-        &fonts.bold,
-        &text.others,
-        0,
-        width,
-        DARK_ORANGE,
-        Role::Others,
-    )?);
-    paras.push(para(
-        dw,
-        &fonts.bold,
-        &text.footer,
-        0,
-        footer_width,
-        FIREBRICK,
-        Role::Footer,
-    )?);
-    Ok(paras)
-}
-
-/// The block of references: the head in bold, then each reference indented (a link blue and underlined, like the
-/// switch's), then "and N more" and the hint in dark gray.
-fn add_refs(
-    fonts: &Fonts,
-    refs: Option<&ui::RefLines>,
-    width: f32,
-    paras: &mut Vec<Para>,
-) -> Result<()> {
-    let Some(r) = refs else {
-        return Ok(());
-    };
-    let dw = &fonts.dw;
-    let head = format!("{}:", r.head);
-    paras.push(para(dw, &fonts.bold, &head, 0, width, BLACK, Role::Line)?);
-    let inner = (width - REF_INDENT).max(width / 2.0);
-    for (text, url) in &r.items {
-        let color = if url.is_some() { LINK_BLUE } else { BLACK };
-        let mut p = para(dw, &fonts.body, text, 0, inner, color, Role::Line)?;
-        if url.is_some() {
-            let length = text.encode_utf16().count() as u32;
-            // SAFETY: a valid layout; the range is its whole text.
-            unsafe {
-                p.layout.SetUnderline(
-                    true,
-                    DWRITE_TEXT_RANGE {
-                        startPosition: 0,
-                        length,
-                    },
-                )?;
-            }
-        }
-        p.indent = REF_INDENT;
-        p.link = url.clone();
-        paras.push(p);
-    }
-    for line in [&r.more, &r.hint].into_iter().flatten() {
-        let mut p = para(dw, &fonts.body, line, 0, inner, DIM, Role::Line)?;
-        p.indent = REF_INDENT;
-        paras.push(p);
-    }
-    Ok(())
-}
-
-/// The buttons of the texts, each label laid out on one line.
-fn build_buttons(fonts: &Fonts, text: &Texts) -> Result<Vec<ButtonBox>> {
-    text.buttons
-        .iter()
-        .map(|(button, label)| {
-            let wide: Vec<u16> = label.encode_utf16().collect();
-            // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
-            unsafe {
-                let layout = fonts
-                    .dw
-                    .CreateTextLayout(&wide, &fonts.body, NO_WRAP, f32::MAX)?;
-                let mut m = DWRITE_TEXT_METRICS::default();
-                layout.GetMetrics(&mut m)?;
-                Ok(ButtonBox {
-                    button: *button,
-                    layout,
-                    width: m.widthIncludingTrailingWhitespace,
-                    height: m.height,
-                })
-            }
-        })
-        .collect()
-}
-
-/// The parts of the switch with `shown` in bold black; the other language blue and underlined (the link), the bar gray.
-fn build_switch(fonts: &Fonts, shown: Lang) -> Result<Vec<Piece>> {
-    ui::SWITCH_LABELS
-        .iter()
-        .map(|(text, lang)| {
-            let link = lang.is_some_and(|l| l != shown);
-            let is_shown = *lang == Some(shown);
-            let fmt = if is_shown {
-                &fonts.switch_bold
-            } else {
-                &fonts.switch
-            };
-            let color = if link {
-                LINK_BLUE
-            } else if is_shown {
-                BLACK
-            } else {
-                GRAY
-            };
-            let wide: Vec<u16> = text.encode_utf16().collect();
-            // SAFETY: DirectWrite copies the text; the out parameter lives on the stack.
-            unsafe {
-                let layout = fonts.dw.CreateTextLayout(&wide, fmt, NO_WRAP, f32::MAX)?;
-                if link {
-                    layout.SetUnderline(
-                        true,
-                        DWRITE_TEXT_RANGE {
-                            startPosition: 0,
-                            length: wide.len() as u32,
-                        },
-                    )?;
-                }
-                let mut m = DWRITE_TEXT_METRICS::default();
-                layout.GetMetrics(&mut m)?;
-                let baseline = last_baseline(&layout)?;
-                Ok(Piece {
-                    layout,
-                    color,
-                    part: ui::SwitchPart {
-                        width: m.widthIncludingTrailingWhitespace,
-                        height: m.height,
-                        baseline,
-                        lang: *lang,
-                    },
-                })
-            }
-        })
-        .collect()
-}
-
-/// The footer's width: the text area less the switch and the gap before it (never less than half of it).
-fn footer_width(width: f32, switch: &[Piece]) -> f32 {
-    let taken: f32 = switch.iter().map(|p| p.part.width).sum();
-    (width - taken - SWITCH_GAP).max(width / 2.0)
 }
 
 fn scale(dip: f32, dpi: u32) -> i32 {
@@ -1002,41 +1892,52 @@ impl Window {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             busy.next(Step::Layout);
-            let loc = locale();
-            let fonts = Fonts {
-                title: format(&dw, DWRITE_FONT_WEIGHT_BOLD, TITLE_SIZE, &loc)?,
-                body: format(&dw, DWRITE_FONT_WEIGHT_NORMAL, BODY_SIZE, &loc)?,
-                bold: format(&dw, DWRITE_FONT_WEIGHT_BOLD, BODY_SIZE, &loc)?,
-                switch: format(&dw, DWRITE_FONT_WEIGHT_NORMAL, SWITCH_SIZE, &loc)?,
-                switch_bold: format(&dw, DWRITE_FONT_WEIGHT_BOLD, SWITCH_SIZE, &loc)?,
-                dw,
-            };
+            let fonts = Fonts::new(dw)?;
+            let dash = d2d
+                .CreateStrokeStyle(
+                    &D2D1_STROKE_STYLE_PROPERTIES {
+                        startCap: D2D1_CAP_STYLE_FLAT,
+                        endCap: D2D1_CAP_STYLE_FLAT,
+                        dashCap: D2D1_CAP_STYLE_FLAT,
+                        lineJoin: D2D1_LINE_JOIN_MITER,
+                        miterLimit: 10.0,
+                        dashStyle: D2D1_DASH_STYLE_DASH,
+                        dashOffset: 0.0,
+                    },
+                    None,
+                )
+                .ok();
 
             let screen = super::screen::of_foreground();
             let dpi = screen.dpi;
+            let theme = super::theme::current();
 
-            // The text width: the outer width minus the side frames and the padding.
+            // The text width: the outer width minus the side frames and the padding; the tallest client area that
+            // fits the work area with the margins and the frame.
             let mut frame = RECT::default();
             AdjustWindowRectExForDpi(&mut frame, STYLE, false, EX_STYLE, dpi)?;
-            let frame_w_dip = (frame.right - frame.left) as f32 * 96.0 / dpi as f32;
-            let width = OUTER_WIDTH - frame_w_dip - PAD_LEFT - PAD_RIGHT;
+            let k = 96.0 / dpi.max(1) as f32;
+            let width = OUTER_WIDTH - (frame.right - frame.left) as f32 * k - PAD_LEFT - PAD_RIGHT;
+            let max_h = (screen.work.bottom - screen.work.top) as f32 * k
+                - 2.0 * SCREEN_MARGIN
+                - (frame.bottom - frame.top) as f32 * k;
 
-            let switch = build_switch(&fonts, lang)?;
-            let paras = build_paras(&fonts, texts.get(lang), width, footer_width(width, &switch))?;
-            let buttons = build_buttons(&fonts, texts.get(lang))?;
+            let layout = lay_out(&fonts, texts.get(lang), lang, width, others, max_h)?;
             let title = HSTRING::from(texts.get(lang).title.as_str());
 
             let hinstance = GetModuleHandleW(None)?;
             let state = Box::into_raw(Box::new(State {
                 d2d,
+                dash,
                 target: None,
                 fonts,
                 width,
+                max_h,
                 texts: texts.clone(),
                 lang,
-                paras,
-                switch,
+                layout,
                 show_others: others,
+                theme,
                 dpi,
                 destroyed: false,
                 color_fonts: true,
@@ -1045,13 +1946,14 @@ impl Window {
                 pressed: None,
                 on_choose: Some(on_choose),
                 opening: Vec::new(),
-                buttons,
                 buttons_since: Instant::now(),
                 answer: None,
                 front_before: None,
                 software: false,
+                deadline: None,
+                countdown_text: None,
             }));
-            let (w, h) = match outer_size((*state).client_height_dip(), dpi) {
+            let (w, h) = match outer_size((*state).layout.height, dpi) {
                 Ok(s) => s,
                 Err(e) => {
                     drop(Box::from_raw(state));
@@ -1083,6 +1985,7 @@ impl Window {
                     return Err(e);
                 }
             };
+            super::theme::frame(hwnd, theme);
             Ok(Window { hwnd, state })
         }
     }
@@ -1138,6 +2041,16 @@ impl Window {
             let st = &mut *self.state;
             st.software = true;
             st.target = None;
+        }
+    }
+
+    /// The end of the answer wait, `total` long (the relay's window that asks): its bar and seconds are drawn from it
+    /// and redrawn by a timer.
+    pub fn set_deadline(&self, deadline: Instant, total: Duration) {
+        // SAFETY: `state` stays valid until Drop; the reference ends before SetTimer.
+        unsafe {
+            (*self.state).deadline = Some((deadline, total));
+            let _ = SetTimer(Some(self.hwnd), COUNTDOWN_TIMER, COUNTDOWN_MS, None);
         }
     }
 
@@ -1204,36 +2117,13 @@ impl Window {
         }
     }
 
-    /// Puts new texts in (the same window: a changed count of waiting calls, the buttons gone after an answer) and lays
-    /// the window out again in the language shown; the top right corner stays.
-    pub fn set_texts(&self, texts: &Both) {
-        if !self.is_open() {
-            return;
-        }
-        // SAFETY: `state` stays valid until Drop; the reference ends before the Win32 calls, which re-enter the window
-        // procedure.
-        let (title, client_h, dpi) = unsafe {
-            let st = &mut *self.state;
-            let old = std::mem::replace(&mut st.texts, texts.clone());
-            let had = st.buttons.len();
-            if st.relayout(st.lang).is_err() {
-                st.texts = old;
-                return;
-            }
-            // the same buttons (a new count of waiting calls): a press in progress stays; new buttons arm again
-            if st.buttons.len() != had {
-                st.pressed = None;
-                st.buttons_since = Instant::now();
-            }
-            (
-                HSTRING::from(st.texts.get(st.lang).title.as_str()),
-                st.client_height_dip(),
-                st.dpi,
-            )
-        };
+    /// Fits the window's height to its layout (the top right corner stays) and redraws it.
+    fn fit(&self) {
+        // SAFETY: `state` stays valid until Drop; the values are read before the Win32 calls, which re-enter the
+        // window procedure.
+        let (client_h, dpi) = unsafe { ((*self.state).layout.height, (*self.state).dpi) };
         // SAFETY: valid window handle on its own thread.
         unsafe {
-            let _ = SetWindowTextW(self.hwnd, &title);
             if let Ok((w, h)) = outer_size(client_h, dpi) {
                 let _ = SetWindowPos(
                     self.hwnd,
@@ -1249,6 +2139,36 @@ impl Window {
         }
     }
 
+    /// Puts new texts in (the same window: a changed count of waiting calls, the buttons gone after an answer) and lays
+    /// the window out again in the language shown; the top right corner stays.
+    pub fn set_texts(&self, texts: &Both) {
+        if !self.is_open() {
+            return;
+        }
+        // SAFETY: `state` stays valid until Drop; the reference ends before the Win32 calls, which re-enter the window
+        // procedure.
+        let title = unsafe {
+            let st = &mut *self.state;
+            let old = std::mem::replace(&mut st.texts, texts.clone());
+            let had = st.layout.buttons.len();
+            if st.relayout(st.lang).is_err() {
+                st.texts = old;
+                return;
+            }
+            // the same buttons (a new count of waiting calls): a press in progress stays; new buttons arm again
+            if st.layout.buttons.len() != had {
+                st.pressed = None;
+                st.buttons_since = Instant::now();
+            }
+            HSTRING::from(st.texts.get(st.lang).title.as_str())
+        };
+        // SAFETY: valid window handle on its own thread.
+        unsafe {
+            let _ = SetWindowTextW(self.hwnd, &title);
+        }
+        self.fit();
+    }
+
     /// Shows or hides the "other op.exe" line and fits the height.
     pub fn set_others(&self, show: bool) {
         if !self.is_open() {
@@ -1257,29 +2177,18 @@ impl Window {
         // Read what we need, then call Win32 without holding a reference into the state: SetWindowPos runs the
         // window procedure, which takes its own reference.
         // SAFETY: `state` stays valid until Drop; the reference ends before the calls below.
-        let (changed, client_h, dpi) = unsafe {
+        let changed = unsafe {
             let st = &mut *self.state;
-            let changed = st.show_others != show;
-            st.show_others = show;
-            (changed, st.client_height_dip(), st.dpi)
-        };
-        if !changed {
-            return;
-        }
-        if let Ok((w, h)) = outer_size(client_h, dpi) {
-            // SAFETY: valid window handle on its own thread.
-            unsafe {
-                let _ = SetWindowPos(
-                    self.hwnd,
-                    None,
-                    0,
-                    0,
-                    w,
-                    h,
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            if st.show_others == show {
+                false
+            } else {
+                st.show_others = show;
+                let lang = st.lang;
+                st.relayout(lang).is_ok()
             }
+        };
+        if changed {
+            self.fit();
         }
     }
 }
@@ -1353,7 +2262,7 @@ fn dip_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
     (f32::from(x) * k, f32::from(y) * k)
 }
 
-/// Whether the mouse pointer is on the switch's clickable word or on a link.
+/// Whether the mouse pointer is on the switch's other language, a link or a button.
 ///
 /// # Safety
 ///
@@ -1387,7 +2296,7 @@ unsafe fn choose(hwnd: HWND, ptr: *mut State, lang: Lang) {
         }
         (
             HSTRING::from(st.texts.get(lang).title.as_str()),
-            st.client_height_dip(),
+            st.layout.height,
             st.dpi,
         )
     };
@@ -1473,8 +2382,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 );
                 LRESULT(0)
             }
+            // Windows' app mode changed: the frame and the colors follow, the layout stays
+            WM_SETTINGCHANGE if super::theme::changed(lparam) => {
+                let now = super::theme::current();
+                let changed = {
+                    let st = &mut *ptr;
+                    let changed = st.theme != now;
+                    st.theme = now;
+                    changed
+                };
+                if changed {
+                    super::theme::frame(hwnd, now);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-            // The hand over the switch's clickable word and over links; elsewhere the class's arrow.
+            // The hand over the switch's other language, links and buttons; elsewhere the class's arrow.
             WM_SETCURSOR
                 if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && pointer_on_target(hwnd, ptr) =>
             {
@@ -1536,7 +2460,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     Some(Target::Switch(lang)) => choose(hwnd, ptr, lang),
                     Some(Target::Link(i)) => {
                         let st = &mut *ptr;
-                        if let Some(url) = st.paras.get(i).and_then(|p| p.link.clone())
+                        if let Some(url) = st.layout.labels.get(i).and_then(|l| l.link.clone())
                             && let Some(t) = super::shell::open_item(&url)
                         {
                             st.opening.push(t);
@@ -1545,7 +2469,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     Some(Target::Button(i)) => {
                         let st = &mut *ptr;
                         if st.answer.is_none() {
-                            st.answer = st.buttons.get(i).map(|b| b.button);
+                            st.answer = st.layout.buttons.get(i).map(|b| b.button);
                         }
                     }
                     None => {}
@@ -1560,6 +2484,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // end a menu loop and a move/size loop, so that the caller's wait runs again
                     let _ = EndMenu();
                     let _ = SendMessageW(hwnd, WM_CANCELMODE, None, None);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == COUNTDOWN_TIMER => {
+                if (*ptr).layout.countdown.is_some() {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else {
+                    let _ = KillTimer(Some(hwnd), COUNTDOWN_TIMER);
                 }
                 LRESULT(0)
             }

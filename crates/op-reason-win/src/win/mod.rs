@@ -1,6 +1,6 @@
 //! The Windows-only part: lock and holder file, process list, window, toast, op.exe and its Job Object, console events,
-//! opening an item in the 1Password app ([`shell`]), the screen the windows open on ([`screen`]), the relay's toasts
-//! ([`pass_window`]), and the flows that tie them together (the entry face in [`app`], the runner face in [`run`], the
+//! opening an item in the 1Password app ([`shell`]), the screen the windows open on ([`screen`]), Windows' app mode and
+//! the windows' frame ([`theme`]), the relay's toasts ([`pass_window`]), and the flows that tie them together (the entry face in [`app`], the runner face in [`run`], the
 //! SSH relay in [`relay`]).
 
 pub mod app;
@@ -16,5 +16,6 @@ pub mod run;
 pub mod screen;
 pub mod settings;
 pub mod shell;
+pub mod theme;
 pub mod toast;
 pub mod window;

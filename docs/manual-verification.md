@@ -6,7 +6,7 @@ CI runs op-reason with fake `op-reason.exe`, `powershell.exe` and `op.exe` only:
 there, and the Windows runners have no WSL2. These checks need a person, a Windows machine with the 1Password app and
 the 1Password CLI, and WSL. The WSL checks (1–14 and R) take about 30 minutes and show about fifteen approval prompts.
 The checks of the references (F) add about ten minutes, the checks of the SSH relay (S) about an hour, the checks of
-the settings (G) about twenty minutes.
+the settings (G) about twenty minutes, the checks of the look (V) about fifteen minutes.
 
 ## Rules while checking
 
@@ -408,6 +408,24 @@ The `start` record of the relay that answers now:
 | N9 | In PowerShell: `& $exe --reason 'check N9' vault list; $LASTEXITCODE`, and `& $exe --ssh-agent --status; $LASTEXITCODE` | The vaults and 0, the prompt back when the call ends, as before; the relay's line and 0 |
 | N10 | A call without a console: `Start-Process $exe -ArgumentList '--reason "check N10" vault list'` (one string, the reason in double quotes: `Start-Process` joins an array's items with spaces and does not quote them); approve 1Password; then `& $exe --log --since 5m` | op-reason's window and 1Password's prompt as usual; no console window at all (`Start-Process` starts it with a console of its own before Windows 11 24H2, with none now, and `op.exe` then gets one that is never shown); the log has the call's end with exit 0 |
 | N11 | `& $exe --settings set relay.autostart off`; then `& $exe --ssh-agent` in the same PowerShell, Ctrl+C after its first line; turn the other task of preparation 3 on again | The task is gone. The relay started by hand prints its line, stays in the terminal and stops on Ctrl+C; its `start` record says `console: shared`. The other task's relay answers again |
+
+## Checks of the look of the windows (V1–V6)
+
+The windows of `op-reason.exe` and of the relay in Windows' dark and light app mode
+([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md)). CI takes screenshots of
+both modes but cannot show 1Password's prompt next to them, nor a person's desktop. About 15 minutes, with about five
+prompts. Use the Windows zip of the pull request (as in the preparation; `$exe` below), and the relay of the SSH checks'
+preparation (started in a terminal with `$exe`). Start in the dark mode: Settings → Personalization → Colors → Choose
+your mode → Dark.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| V1 | `op --reason "check V1: dark" vault list >/dev/null`; before approving, look at op-reason's window, and note where 1Password's prompt opens | A dark window at the top right: a caption without a title (only its close button) in the window's color, rounded corners; a blue tile with a lock, the title, "op-reason · asking 1Password for approval", the time and the date; "Reason" and the reason in large letters; chips for the caller, the repository and its branch, and the directory; the command in a box with `op vault` in blue; the band with the picture of the screen; the red line with a shield; the switch as a pill at the bottom right. Note whether 1Password's prompt opened in the middle of the screen, as the band says |
+| V2 | `op --reason "check V2: light while open" vault list >/dev/null`; while its window is open, switch the mode to Light in Settings; approve | The window turns light at once (colors and caption) and keeps its place and layout; 1Password's prompt keeps the focus |
+| V3 | In the light mode, in a PowerShell: `$env:OPREASON_SSH_REASON = 'check V3: light'; ssh -T git@github.com`; look at the window, then click **Allow this call** and approve | A light window: a tile with a key; the reason; chips for the person, the repository and the directory; the root command `ssh -T git@github.com` in the box; "logging in as git", the destination and the key in small type; the bar of the seconds left and "Allowing covers this ssh until it ends (at most 60 minutes)"; the band; the buttons **Allow this call** (blue), **Allow this terminal for 60 minutes** (outlined) and **Deny** (outlined in red) at the right. After the click: "SSH key: 1Password is asking" with the band that names the tray |
+| V4 | In a Claude Code session in WSL whose `ssh` goes through `op-reason-ssh`: ask it to run `git ls-remote origin` in a repository with an SSH remote; **Deny** | The box shows `git ls-remote origin`, not the shell that Claude Code wraps it in; under the box the root line in small type (`bash (pid …) · bash -c "source …`); the line says "Allowing covers this git ls-remote until it ends (at most 60 minutes)" |
+| V5 | Set the display's scale to 150% (Settings → System → Display), then `op --reason "check V5: a long reason that goes on and on so that it takes two or three lines of the window at this scale, to see the layout" vault list >/dev/null`, approve; set the scale back | The window is sharp at 150%; the reason wraps, nothing overlaps the switch or the band, and the window stays inside the screen |
+| V6 | S20's four commands, once in the dark mode and once in the light mode | The cards in the windows' colors: a dark (light) face with a thin border, "Passed" and the check in green, the command and its destination in a monospace font; places, sizes and times as before |
 
 ## Open question: does plain `signout` close only one process's session?
 
