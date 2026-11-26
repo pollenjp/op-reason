@@ -441,7 +441,7 @@ program's file name.
 | Approach | The box | Trade-off |
 | --- | --- | --- |
 | A: tell the launcher, show the ssh command (chosen) | The ssh command; under it the root process and "Claude Code's PowerShell tool" | The script cannot be shown in any case; small, portable and testable on Linux; a `git push` shows as its ssh command (`git-receive-pack '…'`) |
-| B: show the process that the script started, from the chain (`git push origin main`) | The program below PowerShell on the chain | Closer to the Bash tool's box, but the chain would have to travel to the window, and with the script unseen the line of §4.8 could still not name it; more for the Windows side alone |
+| B: show the process that the script started, from the chain (`git push origin main`) | The program below PowerShell on the chain | Closer to the Bash tool's box, but another process's command line would have to travel to the window, and with the script unseen the line of §4.8 could still not name it; more for the Windows side alone |
 | C: keep the line, fix only the name of §4.8 | The launcher's line | The command a person reads stays in the small line, which is what was wrong |
 
 **Decisions.**
