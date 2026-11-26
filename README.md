@@ -197,6 +197,17 @@ op --reason "read the Proxmox API token to create the staging VM" read "op://Pri
 The examples use `op`, the symlink. Called as `op-reason`, the wrapper behaves the same, except that `--help` and
 `--version` alone are the wrapper's own. On Windows, type `op-reason`.
 
+### The window
+
+`op-reason.exe` draws the window of a call at the top right of the screen you work on: the reason first, in large
+letters; the caller (Claude Code with its process id, or a person), herdr's workspace and pane, the repository with its
+branch, and the directory as chips; the command in a monospace box, the program and the file names in color; the
+references the call reads ([below](#the-references-a-call-reads)); a band with a small picture of the screen that marks
+where 1Password's prompt usually opens (the middle of the screen) and where it waits when it does not (1Password's icon
+in the tray at the bottom right, under ^ when hidden); and the red line that tells you to deny prompts that come without
+the window. It follows Windows' app mode (Settings → Personalization → Colors), dark or light, also when the mode changes
+while the window is open. The PowerShell launcher's window (the fallback) keeps its plain look.
+
 ### Wrapper options (first argument only)
 
 | Command | What it does |
@@ -332,10 +343,14 @@ ssh-family commands typed later in that shell, not programs that live on (a term
 command-line tool). Requests forwarded back from a remote host (`ssh -A`) are each a call of their own: the relay
 tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with an older `ssh.exe` every signature asks.
 
-The window shows who asks (Claude Code, a person, a program; for WSL calls also herdr's workspace and pane, the
-distribution, the repository and the branch), the root process, the reason (or "no reason given"), the ssh command, the
-destination with its host key, what the signature is for (logging in as which user, or an SSHSIG namespace such as
-`git`) and the key's name in 1Password. Only a click answers it (a press and a release on a button): it opens without
+The window puts the reason first (or "no reason given" in its place), then who asks as chips (Claude Code, a person, a
+program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
+directory), the root command in a monospace box (`git push origin fix/login`: the wrappers of a shell and of Claude
+Code's Bash tool taken off when they match exactly, with the whole root line under it), what the signature is for
+(logging in as which user, or an SSHSIG namespace such as `git`), the destination with its host key and the key's name
+in 1Password, and the ssh command in small type. A bar shows the seconds left to answer, next to how long an answer lasts
+("Allowing covers this git push until it ends (at most 60 minutes)"), and a band says that 1Password's prompt comes after
+Allow, usually in the middle of the screen, otherwise from the tray. Only a click answers it (a press and a release on a button): it opens without
 taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click on Allow this
 call or Allow this terminal, it comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
 that 1Password shows its prompt at once ([why](#starting-it)); then the window that had the front gets it back, unless
@@ -359,7 +374,7 @@ op-reason shows three things on the screen, each in its own place
 | The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
 
 - **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a
-  card for four seconds, then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed
+  card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds, then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed
   for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them
   (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top,
   three at most: a fourth pushes the oldest out at once, and `+N` under the third card counts the cards pushed out

@@ -81,7 +81,8 @@ what the PowerShell entry and the launcher do, in one process:
 4. **Lock** `Local\op-reason` before the `start` record, waiting up to `OPREASON_LOCK_WAIT` seconds (a time-out is a
    `refused` record with `lock-timeout`, exit 75); write `holder.json`. A mutex that cannot be used at all is recorded
    as `lock: failed`, and the call goes on.
-5. **Start** record; the window (Direct2D and DirectWrite, the launcher's texts; at the top right of the work area of
+5. **Start** record; the window (Direct2D and DirectWrite, the launcher's texts drawn as a view: the reason first, chips,
+   the command's box, the band; dark or light as Windows' app mode; at the top right of the work area of
    the screen of the foreground window, with that screen's DPI) and the toast (on a worker thread; tagged, and removed
    from the screen and the notification center when the window closes, unless no window could be shown);
    `op.exe` with the caller's stdin and stdout, its stderr copied through while the tail is kept for `denied` and
@@ -93,7 +94,13 @@ what the PowerShell entry and the launcher do, in one process:
    the mutex and exit with `op`'s code. Ctrl+C: `interrupted`, 130; the console closed: 129.
 
 The window and toast texts are a Rust copy of the launcher's table (`crates/op-reason-win/src/ui.rs`). A test reads
-`Get-Texts` out of `launcher.ps1` and fails when the two differ: change both together.
+`Get-Texts` out of `launcher.ps1` and fails when the two differ: change both together. The window of `op-reason.exe`
+draws a view built next to those lines (`look.rs`: the parts top to bottom, the colored words of the command, the
+switch's pill), with a few words of its own (`Words` in `ui.rs`: the subtitle, the band), in the palette of Windows' app
+mode (`theme.rs`; `win/theme.rs` reads `AppsUseLightTheme` and sets the frame: no caption text, the caption in the
+background color, dark in the dark mode, rounded corners;
+[2026-11-26-modern-window-design.md](../superpowers/specs/2026-11-26-modern-window-design.md)). The launcher's WPF
+window keeps its plain look.
 
 ## One call from WSL in op-reason.exe (the runner face)
 
@@ -205,11 +212,13 @@ no GPU, no swap chain, no wait for the display's refresh); the windows of `op` c
    cards pushed out, each gone four seconds after its call's last signature (`crates/op-reason-win/src/pass_toast.rs`
    decides the cards, `src/win/pass_window.rs` draws them, each card in a Direct2D layer at its opacity).
    Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
-   `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons and the toast,
-   and keeps the footer's count of waiting calls current. The toast (the Windows notification) is removed when the
+   `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons, the bar of the
+   seconds left to answer and the toast, and keeps the count of waiting calls current. The window's box shows the root's
+   command, with the wrappers of a shell and of Claude Code's Bash tool taken off when they match exactly (from the
+   record's line of up to 1000 characters; `look::root_command`), and says how long an answer lasts with its name. The toast (the Windows notification) is removed when the
    window closes, except after a time-out (`timeout`), which leaves it. A click (press and release on a button) is
    remembered for the call (Allow this terminal: also for the shell and the key); after Allow the window drops its
-   buttons ("1Password is asking", with a last line on where 1Password keeps a prompt it did not show) until 1Password
+   buttons ("1Password is asking", with a band that says where 1Password keeps a prompt it did not show) until 1Password
    answers, then closes, and the lock and the turn pass on. Right after a click that allows, the window comes to the
    front (`SetForegroundWindow`: the click was the last input, so Windows lets the relay set the foreground window),
    unless the window in front belongs to one of the relay's ancestors other than `explorer.exe` (the terminal program a
@@ -430,12 +439,12 @@ is never shown. Older Windows ignore the element. So:
 | `tests/windows/entry-plan.test.ps1` | the call table and the reference table against the Windows entry (Windows PowerShell 5.1 in CI, PowerShell 7 on Linux) |
 | `tests/windows/launcher.test.ps1` | the launcher on Windows PowerShell 5.1 with a fake `op.exe` (arguments, binary stdin, the mutex, stderr scan, the references and the account copy, the window and its screenshots; on CI, a real click on a link with a temporary `onepassword:` handler) |
 | `tests/windows/entry.test.ps1` | `op-reason.ps1` and `op-reason.cmd` end to end on Windows PowerShell 5.1 |
-| `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
-| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the texts of its window (both phases, both languages, the last line while 1Password asks) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion), when the window stays behind (the program that started the relay in front), when the watchdog records a window stuck and going on |
+| `cargo test` in `crates/op-reason-win` (Linux) | the exe's window and toast texts against `launcher.ps1` (the block of references too), the view of a call's window, the palettes (every text color at 4.5:1 on its background in both modes), the colored words of a command, the rows of chips and the switch's pill, its usage, the payload and status of `--run`, the command-line length, the account copy and the item URL |
+| `cargo test` in `crates/op-reason-win` (Linux): the relay | its options, the view of its window (both phases, both languages, the root command with the wrappers taken off, how long an answer lasts, the band while 1Password asks) and toasts, its usage, the toasts of signatures that pass (their texts, one card per call, the fourth card and `+N`, the opacity, the times, the counts, no motion), when the window stays behind (the program that started the relay in front), when the watchdog records a window stuck and going on |
 | `crates/op-reason-win/tests/relay.rs` (Windows) | `op-reason.exe --ssh-agent` with the fake agent, client and `wsl.exe` of `fake-ssh`: messages unchanged, a signature waiting for the window, an unanswered one not remembered, Allow and Deny (real clicks on CI) covering the call, two requests of a call and one answer, the time limit, no agent, the pipe's DACL and a name taken first, one relay per session, `--status`, op-reason's lock, a WSL call with and without `OPREASON_SSH_CALL`, show-only and its toast, a forwarded connection, a slow answer, no answer, a parent that ends; on CI, the toast of signatures that pass (one card, layered, click-through, at the top left of the work area, gone after four seconds; four calls: three cards and `+1`), the window's notification in the notification center (removed with its window, left after a time-out; nothing is checked where the runner keeps no notification history), the icon in the notification area (added, hidden and shown again at once by `relay.tray-icon`, Hide this icon recorded `from: tray`, none when the setting is off), and the front (with a plain window of `fake-ssh front` in front: the window opens behind, Deny leaves the front, after Allow the window is in front while the agent answers and then gives the front back; with that window's process as the relay's parent, the window stays behind; no record of the watchdog of the windows) |
 | `crates/op-reason-win/tests/settings.rs` (Windows) | `op-reason.exe --settings`: the skill on Windows and in a chosen folder with a temporary profile (a foreign `SKILL.md` and a junction refused), a WSL distribution through the fake `wsl.exe` of `fake-ssh`, the Start menu shortcut in a temporary `APPDATA`; on CI, the settings window (`op-reason --settings` returns at once and one window opens, a double click opens it, its controls place the skill and write `lang`, no console window for the programs it starts), op-reason's task under a test name (made, its relay answering, a stop refused while the lock is held, a stop that outlasts the trigger of every minute, a start, a mode change that starts the relay again, removal; no console window and a relay without a console at the task's start, a restart and the icon's restart) and a relay started outside the task, never stopped |
 | `crates/op-reason-win/tests/exe.rs` (Windows) | `op-reason.exe` end to end with a fake `op.exe`: arguments, stdin, stderr, exit codes, the mutex and the holder, refusals and records, the window, `--` from PowerShell, the log viewer; `--run` in every mode (the first write, the lock time-out, `lock: skipped`, bad payloads, an unwritable status file); killing the exe ends `op.exe` (Job Object); the manifest's console allocation policy, a call started as WSL starts one without a terminal (`CREATE_NO_WINDOW` and pipes) and as a program without a console starts one (`DETACHED_PROCESS` and pipes): no console window for `op.exe`; a call under a pseudoconsole (as from a terminal); the chosen language in both faces and `chosenLang`; the references (`ui.refs`, a template on stdin, files), the account copy from whoami; a desktop call's notification removed when its window closes (where the runner keeps notification history); on CI, a real click on the language switch (the caption switches, `settings.json` is written, the focus stays) and on a link (a temporary `onepassword:` handler gets the item's URL, the window stays inactive) |
-| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) and toasts |
+| `.github/scripts/windows-exe-shots.ps1` | screenshots and timings of `op-reason.exe` (both faces) and the PowerShell entry on the Windows runner, and the SSH relay's window (per-call and show-only) and toasts, in Windows' dark app mode and, for a call's window with references, the relay's windows and the toasts, in the light mode too |
 | `.github/scripts/windows-dist.ps1` | the Windows zip of the release and its entries |
 | `tests/release-notes.test.sh` | `.github/scripts/release-notes.sh` (the notes of a release: the version's section of `CHANGELOG.md`; the versions of `Cargo.toml`, `crates/op-reason-win` and the PowerShell entry agree, also with the tag) on made-up repositories and on this one |
 | [manual-verification.md](../manual-verification.md) | checks with the real 1Password app (by hand) |

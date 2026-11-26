@@ -5,7 +5,8 @@ English: [manual-verification.md](manual-verification.md)
 CI は偽の `op-reason.exe`・`powershell.exe`・`op.exe` でしか op-reason を流せません (1Password のデスクトップアプリは CI で
 動かず、CI の Windows の runner では WSL2 も動きません)。ここの確認には、人と、1Password のアプリと 1Password CLI の入った
 Windows と、WSL が要ります。WSL の確認 (1〜14 と R) で 30 分ほどかかり、承認の画面が 15 回ほど出ます。
-参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 1 時間ほど、設定の確認 (G) は 20 分ほど足します。
+参照の一覧の確認 (F) は 10 分ほど、SSH の中継の確認 (S) は 1 時間ほど、設定の確認 (G) は 20 分ほど、見た目の確認 (V) は
+15 分ほど足します。
 
 ## 確かめる間の決まり
 
@@ -396,6 +397,23 @@ GitHub の runner (Windows Server 2025) でコンソールの窓を見張り、z
 | N9 | PowerShell で `& $exe --reason 'check N9' vault list; $LASTEXITCODE` と `& $exe --ssh-agent --status; $LASTEXITCODE` | 今までどおり vault の一覧と 0、呼び出しが終わるとプロンプトが戻る。中継の行と 0 |
 | N10 | コンソールの無い呼び出し: `Start-Process $exe -ArgumentList '--reason "check N10" vault list'` (1 つの文字列にし、理由を二重引用符で囲む: `Start-Process` は配列の要素を引用符なしで空白でつなぐ)。1Password で承認。そのあと `& $exe --log --since 5m` | いつもどおり op-reason の窓と 1Password の確認。コンソールの窓が一つも出ない (`Start-Process` は Windows 11 24H2 より前は自分のコンソールを付けて起こし、今は付けない。そのとき `op.exe` は見えないコンソールを持つ)。記録にその呼び出しの終わり (終了コード 0) |
 | N11 | `& $exe --settings set relay.autostart off`。続けて同じ PowerShell で `& $exe --ssh-agent` を起こし、最初の行が出たら Ctrl+C。用意 3 のほかのタスクを有効に戻す | タスクが消える。手で起こした中継は行を出して端末に留まり、Ctrl+C で止まる。その `start` の記録は `console: shared`。ほかのタスクの中継がまた答える |
+
+## 窓の見た目を確かめること (V1〜V6)
+
+Windows のアプリのモードが暗いとき・明るいときの、`op-reason.exe` の窓と中継の窓
+([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md))。CI は両方のモードのスクショを
+撮りますが、1Password の画面を横に出すことも、人のデスクトップで見ることもできません。約 15 分で、承認の画面は 5 回ほど
+出ます。pull request の Windows の zip (用意のとおり。下では `$exe`) と、SSH の中継の確認の用意の中継 (`$exe` で端末から
+起こしたもの) を使います。暗いモードから始めます: 設定 → 個人用設定 → 色 → モードを選ぶ → ダーク。
+
+| # | すること | 期待すること |
+| --- | --- | --- |
+| V1 | `op --reason "check V1: dark" vault list >/dev/null`。承認する前に op-reason の窓を見て、1Password の画面がどこに出たかを控える | 右上に暗い窓が出る: 題名の無いキャプション (閉じるボタンだけ) が窓と同じ色で、角が丸い。錠前の青いタイル・題名・「op-reason · 1Password に承認を求めています」・時刻と日付。「理由」と、大きな字の理由。呼び手・repository と branch・ディレクトリのチップ。枠の中のコマンドで、`op vault` が青い。画面の絵のある帯。盾の付いた赤い行。右下の丸い言語の切り替え。1Password の画面が、帯のとおり画面の中央に出たかを控える |
+| V2 | `op --reason "check V2: light while open" vault list >/dev/null`。窓が出ている間に、設定でモードをライトにする。承認する | 窓はすぐ明るくなり (色とキャプション)、場所と配置はそのまま。1Password の画面がフォーカスを持ったまま |
+| V3 | 明るいモードで、PowerShell で `$env:OPREASON_SSH_REASON = 'check V3: light'; ssh -T git@github.com`。窓を見てから **この呼び出しを許可** を押し、承認する | 明るい窓: 鍵のタイル。理由。人・repository・ディレクトリのチップ。枠の中の起点のコマンド `ssh -T git@github.com`。小さな字の「git としてログイン」・接続先・鍵。答えを待つ残り秒の帯と「許可は、この ssh が終わるまで効きます (長くても 60 分)」。帯。ボタンは **この呼び出しを許可** (青)・**このターミナルを 60 分許可** (枠)・右端の **拒否** (赤い枠)。押した後は「SSH の鍵: 1Password が確認しています」で、帯がトレイを指す |
+| V4 | `ssh` が `op-reason-ssh` を通る WSL の Claude Code に、SSH の remote のある repository で `git ls-remote origin` を打たせる。**拒否** | 枠には Claude Code が包む shell ではなく `git ls-remote origin` が出て、その下に起点の行が小さく出る (`bash (pid …) · bash -c "source …`)。「許可は、この git ls-remote が終わるまで効きます (長くても 60 分)」 |
+| V5 | 画面の拡大率を 150% にし (設定 → システム → ディスプレイ)、`op --reason "check V5: この拡大率で窓の 2〜3 行を占めるように長く長く書いた理由で、配置を見るためのもの" vault list >/dev/null` を承認する。拡大率を戻す | 150% でも窓の字がにじまない。理由が折り返され、切り替えや帯に重ならず、窓は画面の中に収まる |
+| V6 | S20 の 4 つのコマンドを、暗いモードと明るいモードで 1 回ずつ | カードは窓と同じ色: 暗い (明るい) 地に細い枠、緑の「通過」とチェック、等幅の字のコマンドと接続先。場所・大きさ・時間は前のまま |
 
 ## まだ分かっていないこと: `--all` の無い `signout` は 1 つのプロセスの session だけを閉じるか
 
