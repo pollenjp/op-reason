@@ -1,0 +1,835 @@
+//! What `op-reason.exe`'s windows draw, and the portable decisions behind it (design
+//! `2026-11-26-modern-window-design.md` §4): the parts of a window ([`View`], built by [`crate::ui`] and
+//! [`crate::relay_ui`], drawn by the Windows side), the colors of a command's words ([`color_words`]), the command a
+//! person reads in a root's command line ([`root_command`]), the name in the relay's line about how long an answer lasts
+//! ([`program_name`]), the marked words of the band ([`marked`]), the rows of chips ([`flow`]) and the language switch's
+//! pill ([`pill`], [`pill_hit`]).
+
+use op_reason_core::lang::Lang;
+
+use crate::ui::Rect;
+
+/// The mark in the header's tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    /// An `op` call: a lock on the accent color.
+    Lock,
+    /// The SSH relay: a key on the caution color.
+    Key,
+}
+
+/// The reason, or the words that stand in its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reason {
+    Given(String),
+    /// None was given: "no reason given", drawn in the caution color.
+    Missing(String),
+}
+
+/// What a chip stands for (its mark or dot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    /// Claude Code: a purple dot.
+    Claude,
+    /// A person: a green dot.
+    Person,
+    /// A program, or a caller nobody can see: a gray dot.
+    Other,
+    Herdr,
+    Wsl,
+    /// The repository and its branch: a small repository mark.
+    Repo,
+    /// The directory.
+    Folder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chip {
+    pub kind: ChipKind,
+    pub text: String,
+}
+
+/// A small line under the command (the relay).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactKind {
+    /// What the signature is for (12 DIPs, the text color, with a mark).
+    Purpose,
+    /// The destination, the host keys, the key (10 DIPs, tertiary).
+    Detail,
+    /// The ssh command (10 DIPs, tertiary, monospace).
+    Mono,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fact {
+    pub kind: FactKind,
+    pub text: String,
+}
+
+/// The picture of the screen in the band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sketch {
+    /// An `op` call: 1Password's prompt in the middle, filled.
+    Op,
+    /// The relay asks: op-reason's window highlighted, the prompt dashed and pale (to come).
+    Ask,
+    /// 1Password asks: the prompt dashed, the tray's dot larger.
+    Asking,
+}
+
+/// The band: two lines (the first bold) with marked words ([`marked`]), and its picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Band {
+    pub title: String,
+    pub line: String,
+    pub sketch: Sketch,
+}
+
+/// Everything a window shows, top to bottom (design §4.2, §4.3). The buttons, the references, the orange line and the
+/// switch come from [`crate::ui::Texts`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct View {
+    pub icon: Icon,
+    pub subtitle: String,
+    /// `HH:MM:SS` (or the whole time when it has another form).
+    pub time: String,
+    /// `YYYY-MM-DD` (empty when the time has another form).
+    pub date: String,
+    pub reason_label: String,
+    pub reason: Reason,
+    pub chips: Vec<Chip>,
+    pub code_label: String,
+    /// The command in the monospace box ([`color_words`]).
+    pub code: String,
+    /// Under the box, small: the root process line when the box shows less than it.
+    pub code_note: Option<String>,
+    pub facts: Vec<Fact>,
+    /// The notes (`shared-cleared`, `lock-skipped`), each with a mark.
+    pub notes: Vec<String>,
+    /// The relay's window that asks: the seconds left to answer, `{0}` for the number.
+    pub countdown: Option<String>,
+    /// After the countdown: how long an answer lasts, and the count of waiting calls.
+    pub status: String,
+    pub band: Band,
+    /// The red line with the shield (empty: none).
+    pub footer: String,
+}
+
+/// `YYYY-MM-DD HH:MM:SS` as the time and the date; another form as it is, without a date.
+pub fn split_time(time: &str) -> (String, String) {
+    let b = time.as_bytes();
+    let shaped = b.len() == 19
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b' ',
+            13 | 16 => *c == b':',
+            _ => c.is_ascii_digit(),
+        });
+    if shaped {
+        (time[11..].to_owned(), time[..10].to_owned())
+    } else {
+        (time.to_owned(), String::new())
+    }
+}
+
+/// The color of marked words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    /// `⟦…⟧`: the accent color.
+    Accent,
+    /// `⟪…⟫`: the caution color.
+    Caution,
+}
+
+/// A text without its marks, and the spans of marked words (start and length in UTF-16 units of `text`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marked {
+    pub text: String,
+    pub spans: Vec<(u32, u32, Tone)>,
+}
+
+/// Takes the marks out of a text of the band: `⟦…⟧` for the accent color, `⟪…⟫` for the caution color. A mark that does
+/// not close is a plain character.
+pub fn marked(s: &str) -> Marked {
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    let mut units = 0u32;
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
+        let (close, tone) = match c {
+            '⟦' => ('⟧', Tone::Accent),
+            '⟪' => ('⟫', Tone::Caution),
+            _ => ('\0', Tone::Plain),
+        };
+        let after = &rest[c.len_utf8()..];
+        if tone != Tone::Plain
+            && let Some(end) = after.find(close)
+        {
+            let inner = &after[..end];
+            let len = inner.encode_utf16().count() as u32;
+            spans.push((units, len, tone));
+            text.push_str(inner);
+            units += len;
+            rest = &after[end + close.len_utf8()..];
+            continue;
+        }
+        text.push(c);
+        units += c.len_utf16() as u32;
+        rest = after;
+    }
+    Marked { text, spans }
+}
+
+/// A word of a command line as op-reason displays it ([`op_reason_core::ssh::cmdline::display`]): words between
+/// spaces, a word in double quotes holding spaces (`\"` a quote inside).
+struct Token {
+    /// The word without its quotes.
+    value: String,
+    /// Where it is in the line (bytes, quotes included).
+    start: usize,
+    end: usize,
+}
+
+/// The words of a displayed command line; `None` when a quote does not close.
+fn tokens(s: &str) -> Option<Vec<Token>> {
+    let mut out = Vec::new();
+    let mut it = s.char_indices().peekable();
+    while let Some(&(i, c)) = it.peek() {
+        if c == ' ' || c == '\t' {
+            it.next();
+            continue;
+        }
+        let start = i;
+        let mut value = String::new();
+        let mut quoted = false;
+        let mut end = s.len();
+        while let Some(&(j, c)) = it.peek() {
+            if !quoted && (c == ' ' || c == '\t') {
+                end = j;
+                break;
+            }
+            it.next();
+            match c {
+                '"' => quoted = !quoted,
+                '\\' if quoted && it.peek().is_some_and(|&(_, n)| n == '"') => {
+                    it.next();
+                    value.push('"');
+                }
+                c => value.push(c),
+            }
+        }
+        if quoted {
+            return None;
+        }
+        out.push(Token { value, start, end });
+    }
+    Some(out)
+}
+
+/// The UTF-16 offset of byte `at` of `s`.
+fn utf16_at(s: &str, at: usize) -> u32 {
+    s[..at].encode_utf16().count() as u32
+}
+
+/// The color of a command's word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Word {
+    /// The program and its subcommand: the accent color, bold.
+    Program,
+    /// A file name, a path, a reference: the path color.
+    Path,
+    /// Options and the rest: the command's text color.
+    Plain,
+}
+
+/// A word made of letters, digits, `-` and `_`, starting with a letter (a subcommand such as `inject` or `push`).
+fn plain_word(w: &str) -> bool {
+    w.chars().next().is_some_and(|c| c.is_alphabetic())
+        && w.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A file name, a path or a reference (design §4.6).
+fn path_word(w: &str) -> bool {
+    if w.starts_with(['/', '~', '.']) || w.starts_with("op://") || w.contains('\\') {
+        return true;
+    }
+    let c: Vec<char> = w.chars().collect();
+    c.windows(3)
+        .any(|t| t[1] == '.' && t[0].is_alphanumeric() && t[2].is_alphanumeric())
+}
+
+/// The colored words of a command as the window shows it (design §4.6): ranges in UTF-16 units of `command`, with
+/// their color; the spaces between words are not in any range. A line whose quote does not close is one plain range.
+pub fn color_words(command: &str) -> Vec<(u32, u32, Word)> {
+    let Some(words) = tokens(command) else {
+        let n = command.encode_utf16().count() as u32;
+        return if n == 0 {
+            Vec::new()
+        } else {
+            vec![(0, n, Word::Plain)]
+        };
+    };
+    let mut out: Vec<(u32, u32, Word)> = Vec::with_capacity(words.len());
+    for (i, t) in words.iter().enumerate() {
+        let start = utf16_at(command, t.start);
+        let len = utf16_at(command, t.end) - start;
+        let kind = if i == 0 || (i == 1 && plain_word(&t.value)) {
+            Word::Program
+        } else if path_word(&t.value) {
+            Word::Path
+        } else {
+            Word::Plain
+        };
+        // the program and its subcommand: one range with the space between them
+        match out.last_mut() {
+            Some(last) if i == 1 && kind == Word::Program => last.1 = start + len - last.0,
+            _ => out.push((start, len, kind)),
+        }
+    }
+    out
+}
+
+/// A shell's name without its folder and `.exe`, in lowercase.
+fn base_name(w: &str) -> String {
+    let name = w
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(w)
+        .to_ascii_lowercase();
+    name.strip_suffix(".exe").map(str::to_owned).unwrap_or(name)
+}
+
+/// The words after a wrapper, as one command line: one word's value (a quoted command), or the words as they were.
+fn rest_line(s: &str, rest: &[Token]) -> Option<String> {
+    match rest {
+        [] => None,
+        [one] => Some(one.value.clone()),
+        [first, .., last] => Some(s[first.start..last.end].to_owned()),
+    }
+}
+
+/// One shell started to run one command (design §4.7, rule 1): the command it runs, when the line has exactly that
+/// shape.
+fn unwrap_shell(s: &str) -> Option<String> {
+    let words = tokens(s)?;
+    let (program, args) = words.split_first()?;
+    match base_name(&program.value).as_str() {
+        "bash" | "sh" | "zsh" | "dash" | "fish" => {
+            let mut command = false;
+            let mut rest = Vec::new();
+            for a in args {
+                let v = &a.value;
+                if v.len() > 1 && v.starts_with('-') && !v.starts_with("--") {
+                    command |= v.contains('c');
+                } else if v.starts_with("--") && rest.is_empty() {
+                    // --login, --norc …: options without values
+                } else {
+                    rest.push(a);
+                }
+            }
+            match rest.as_slice() {
+                [one] if command => Some(one.value.clone()),
+                _ => None,
+            }
+        }
+        "cmd" => {
+            let at = args
+                .iter()
+                .position(|a| a.value.eq_ignore_ascii_case("/c"))?;
+            let before_ok = args[..at].iter().all(|a| {
+                ["/d", "/s", "/q"]
+                    .iter()
+                    .any(|o| a.value.eq_ignore_ascii_case(o))
+            });
+            if !before_ok {
+                return None;
+            }
+            rest_line(s, &args[at + 1..])
+        }
+        "pwsh" | "powershell" => {
+            let mut i = 0;
+            while i < args.len() {
+                let v = args[i].value.to_ascii_lowercase();
+                match v.as_str() {
+                    "-noprofile" | "-noninteractive" | "-nologo" => i += 1,
+                    "-executionpolicy" => i += 2,
+                    "-command" | "-c" => return rest_line(s, args.get(i + 1..)?),
+                    _ => return None,
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Splits `s` at `sep` outside single quotes (a backslash outside quotes escapes the next character); `None` when a
+/// quote does not close.
+fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Option<Vec<&'s str>> {
+    let mut parts = Vec::new();
+    let mut from = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut i = 0;
+    let b = s.as_bytes();
+    while i < b.len() {
+        let c = b[i];
+        if escaped {
+            escaped = false;
+        } else if quoted {
+            if c == b'\'' {
+                quoted = false;
+            }
+        } else if c == b'\\' {
+            escaped = true;
+        } else if c == b'\'' {
+            quoted = true;
+        } else if s[i..].starts_with(sep) {
+            parts.push(&s[from..i]);
+            i += sep.len();
+            from = i;
+            continue;
+        }
+        i += 1;
+    }
+    if quoted {
+        return None;
+    }
+    parts.push(&s[from..]);
+    Some(parts)
+}
+
+/// A single-quoted string from just after its opening quote: its value (`'\''` is a quote) and what follows the closing
+/// quote.
+fn single_quoted(s: &str) -> Option<(String, &str)> {
+    let mut value = String::new();
+    let mut rest = s;
+    loop {
+        let end = rest.find('\'')?;
+        value.push_str(&rest[..end]);
+        let after = &rest[end + 1..];
+        match after.strip_prefix("\\''") {
+            Some(more) => {
+                value.push('\'');
+                rest = more;
+            }
+            None => return Some((value, after)),
+        }
+    }
+}
+
+/// Claude Code's wrapper of its Bash tool (design §4.7, rule 2): `source <file> && eval '<command>'`, optionally
+/// ` \< /dev/null` and `&& pwd -P >| <file>`, and nothing else; the command inside the quotes.
+fn unwrap_claude(s: &str) -> Option<String> {
+    let mut found = None;
+    for seg in split_outside_quotes(s, " && ")? {
+        if let Some(rest) = seg.strip_prefix("eval '") {
+            if found.is_some() {
+                return None;
+            }
+            let (inner, after) = single_quoted(rest)?;
+            if !(after.is_empty() || after == r" \< /dev/null") {
+                return None;
+            }
+            found = Some(inner);
+        } else {
+            let w: Vec<&str> = seg.split(' ').collect();
+            let harmless = matches!(w.as_slice(), ["source", f] if !f.is_empty())
+                || matches!(w.as_slice(), ["pwd", "-P", ">|", f] if !f.is_empty());
+            if !harmless {
+                return None;
+            }
+        }
+    }
+    found
+}
+
+/// How many wrappers may come off one line.
+const UNWRAP_MAX: usize = 4;
+
+/// The command a person reads in a root's command line (design §4.7): the shells started to run one command and Claude
+/// Code's wrapper taken off, when they match exactly. `None` when nothing came off: the line is shown as it is (also a
+/// line cut at 200 characters, or one whose quoting does not close).
+pub fn root_command(cmd: &str) -> Option<String> {
+    if cmd.ends_with('…') {
+        return None;
+    }
+    let shells = |mut s: String| {
+        for _ in 0..UNWRAP_MAX {
+            match unwrap_shell(&s) {
+                Some(inner) if !inner.trim().is_empty() => s = inner,
+                _ => break,
+            }
+        }
+        s
+    };
+    let mut s = shells(cmd.to_owned());
+    if let Some(inner) = unwrap_claude(&s).filter(|i| !i.trim().is_empty()) {
+        s = shells(inner);
+    }
+    (s != cmd).then_some(s)
+}
+
+/// Whether a command line holds `&&`, `||`, `;` or `|` outside quotes: more than one program.
+fn compound(s: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, c) {
+            (None, '\\') => escaped = true,
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, ';' | '|' | '&') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The program named in "Allowing covers this `<name>` until it ends" (design §4.8): the command's program (its file
+/// name without `.exe`), and for `git` its subcommand. `None` for an empty line or more than one program.
+pub fn program_name(command: &str) -> Option<String> {
+    if compound(command) {
+        return None;
+    }
+    let words = tokens(command)?;
+    let first = words.first()?;
+    let name = base_name(&first.value);
+    if name.is_empty() {
+        return None;
+    }
+    let original = first
+        .value
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&first.value);
+    let shown = if original.to_ascii_lowercase().ends_with(".exe") {
+        &original[..original.len() - 4]
+    } else {
+        original
+    };
+    match words.get(1) {
+        Some(sub) if name == "git" && plain_word(&sub.value) => {
+            Some(format!("{shown} {}", sub.value))
+        }
+        _ => Some(shown.to_owned()),
+    }
+}
+
+/// Where items of `widths` go in rows of width `row`, `gap` apart: the row and the x of each. An item wider than a row
+/// takes a row of its own at 0.
+pub fn flow(widths: &[f32], row: f32, gap: f32) -> Vec<(usize, f32)> {
+    let mut out = Vec::with_capacity(widths.len());
+    let (mut r, mut x) = (0usize, 0f32);
+    for &w in widths {
+        if x > 0.0 && x + w > row {
+            r += 1;
+            x = 0.0;
+        }
+        out.push((r, x));
+        x += w + gap;
+    }
+    out
+}
+
+/// The switch's pill: English then 日本語, each its text's width and `pad` on both sides, ending at `right`.
+pub fn pill(widths: [f32; 2], pad: f32, right: f32, top: f32, height: f32) -> [Rect; 2] {
+    let ja = widths[1] + 2.0 * pad;
+    let en = widths[0] + 2.0 * pad;
+    let bottom = top + height;
+    [
+        Rect {
+            left: right - ja - en,
+            top,
+            right: right - ja,
+            bottom,
+        },
+        Rect {
+            left: right - ja,
+            top,
+            right,
+            bottom,
+        },
+    ]
+}
+
+/// The language a click at (`x`, `y`) chooses: the half of the language not `shown`.
+pub fn pill_hit(rects: &[Rect; 2], shown: Lang, x: f32, y: f32) -> Option<Lang> {
+    [Lang::En, Lang::Ja]
+        .into_iter()
+        .zip(rects)
+        .find(|(lang, r)| *lang != shown && r.contains(x, y))
+        .map(|(lang, _)| lang)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_time_and_the_date() {
+        assert_eq!(
+            split_time("2026-11-15 06:05:00"),
+            ("06:05:00".to_owned(), "2026-11-15".to_owned())
+        );
+        assert_eq!(
+            split_time("12:34:56"),
+            ("12:34:56".to_owned(), String::new())
+        );
+        assert_eq!(
+            split_time("2026-11-15T06:05:00"),
+            ("2026-11-15T06:05:00".to_owned(), String::new())
+        );
+    }
+
+    #[test]
+    fn the_marks_of_the_band() {
+        let m = marked("ふつう⟦画面の中央⟧に出ます");
+        assert_eq!(m.text, "ふつう画面の中央に出ます");
+        assert_eq!(m.spans, vec![(3, 5, Tone::Accent)]);
+        let m = marked("出ないときは⟪右下のトレイ⟫の 1Password (^ の中) から");
+        assert_eq!(m.text, "出ないときは右下のトレイの 1Password (^ の中) から");
+        assert_eq!(m.spans, vec![(6, 6, Tone::Caution)]);
+        let m = marked(
+            "Usually in the ⟦middle of the screen⟧; if not, from the ⟪tray at the bottom right⟫",
+        );
+        assert_eq!(
+            m.text,
+            "Usually in the middle of the screen; if not, from the tray at the bottom right"
+        );
+        assert_eq!(
+            m.spans,
+            vec![(15, 20, Tone::Accent), (54, 24, Tone::Caution)]
+        );
+        assert_eq!(marked("plain").spans, vec![]);
+        let open = marked("a ⟦b");
+        assert_eq!(open.text, "a ⟦b", "a mark that does not close stays");
+        assert!(open.spans.is_empty());
+    }
+
+    fn words_of(cmd: &str) -> Vec<(String, Word)> {
+        let units: Vec<u16> = cmd.encode_utf16().collect();
+        color_words(cmd)
+            .into_iter()
+            .map(|(s, n, w)| {
+                (
+                    String::from_utf16_lossy(&units[s as usize..(s + n) as usize]),
+                    w,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_colors_of_a_command() {
+        use Word::*;
+        assert_eq!(
+            words_of("op inject -i app.env.tpl -o .env"),
+            vec![
+                ("op inject".to_owned(), Program),
+                ("-i".to_owned(), Plain),
+                ("app.env.tpl".to_owned(), Path),
+                ("-o".to_owned(), Plain),
+                (".env".to_owned(), Path),
+            ]
+        );
+        assert_eq!(
+            words_of("git push origin fix/login"),
+            vec![
+                ("git push".to_owned(), Program),
+                ("origin".to_owned(), Plain),
+                ("fix/login".to_owned(), Plain),
+            ]
+        );
+        assert_eq!(
+            words_of(r#"ssh.exe git@github.com "git-receive-pack 'me/r.git'""#),
+            vec![
+                ("ssh.exe".to_owned(), Program),
+                ("git@github.com".to_owned(), Path),
+                (r#""git-receive-pack 'me/r.git'""#.to_owned(), Path),
+            ]
+        );
+        assert_eq!(
+            words_of("op read op://Private/proxmox/token"),
+            vec![
+                ("op read".to_owned(), Program),
+                ("op://Private/proxmox/token".to_owned(), Path),
+            ]
+        );
+        assert_eq!(
+            words_of(r#"op inject -i "C:\Users\me\AppData\Local\Temp\app.env.tpl" -o .env"#)[2].1,
+            Path
+        );
+        assert_eq!(
+            words_of("op vault list")[0],
+            ("op vault".to_owned(), Program)
+        );
+        assert_eq!(
+            words_of(r#"a "b"#),
+            vec![(r#"a "b"#.to_owned(), Plain)],
+            "a quote that does not close: one plain range"
+        );
+        assert!(color_words("").is_empty());
+    }
+
+    #[test]
+    fn the_root_commands_of_claude_code() {
+        // tests/cases/roots.json, rule claude, as cmdline::display shows the roots
+        assert_eq!(
+            root_command(r#"bash -c -l "source /tmp/claude-shell-snapshot && eval 'git push'""#)
+                .as_deref(),
+            Some("git push")
+        );
+        assert_eq!(
+            root_command(
+                r#"cmd.exe /d /s /c "pwsh -NoProfile -NonInteractive -Command \"ssh-add -l\"""#
+            )
+            .as_deref(),
+            Some("ssh-add -l")
+        );
+        assert_eq!(
+            root_command(r#"bash.exe -c -l "ssh host""#).as_deref(),
+            Some("ssh host")
+        );
+        assert_eq!(root_command("SSH.EXE host"), None);
+        // the screenshots' call, and Claude Code's whole wrapper
+        assert_eq!(
+            root_command(r#"bash -c -l "git push origin fix/login""#).as_deref(),
+            Some("git push origin fix/login")
+        );
+        assert_eq!(
+            root_command(
+                r#"bash -c -l "source ~/.claude/shell-snapshots/s.sh && eval 'git push origin main' \< /dev/null && pwd -P >| /tmp/c-cwd""#
+            )
+            .as_deref(),
+            Some("git push origin main")
+        );
+        assert_eq!(
+            root_command(
+                r#"bash -c -l "source s.sh && eval 'git commit -m '\''fix it'\''' \< /dev/null""#
+            )
+            .as_deref(),
+            Some("git commit -m 'fix it'"),
+            "a quote inside the eval"
+        );
+    }
+
+    #[test]
+    fn a_root_command_is_never_cut_to_a_part() {
+        assert_eq!(
+            root_command(r#"bash -c "x" extra"#),
+            None,
+            "more after the command string"
+        );
+        assert_eq!(
+            root_command(r#"bash -c "source a && eval 'x' && rm y""#).as_deref(),
+            Some("source a && eval 'x' && rm y"),
+            "a wrapper with more after it: the shell's whole command string"
+        );
+        assert_eq!(
+            root_command(r#"bash -c -l "git push origin fix/lo…"#),
+            None,
+            "a cut line"
+        );
+        assert_eq!(
+            root_command(r#"bash -c "git push"#),
+            None,
+            "a quote that does not close"
+        );
+        assert_eq!(root_command("git pull --rebase"), None);
+        assert_eq!(root_command("bash"), None);
+        assert_eq!(
+            root_command(r#"cmd.exe /k "git push""#),
+            None,
+            "/k keeps the shell"
+        );
+        assert_eq!(
+            root_command(r#"pwsh -NoProfile -File x.ps1"#),
+            None,
+            "a script is not a command string"
+        );
+        assert_eq!(
+            root_command("cmd.exe /c git push origin main").as_deref(),
+            Some("git push origin main")
+        );
+    }
+
+    #[test]
+    fn the_name_in_the_line_about_how_long() {
+        assert_eq!(
+            program_name("git push origin fix/login").as_deref(),
+            Some("git push")
+        );
+        assert_eq!(program_name("ssh-add -l").as_deref(), Some("ssh-add"));
+        assert_eq!(
+            program_name(r"C:\x\ssh.exe -T host").as_deref(),
+            Some("ssh")
+        );
+        assert_eq!(
+            program_name("git -C ~/src/infra fetch").as_deref(),
+            Some("git")
+        );
+        assert_eq!(
+            program_name("ansible-playbook site.yml").as_deref(),
+            Some("ansible-playbook")
+        );
+        assert_eq!(program_name("cd a && git push"), None);
+        assert_eq!(program_name("git push; rm x"), None);
+        assert_eq!(
+            program_name("echo 'a && b'").as_deref(),
+            Some("echo"),
+            "inside quotes"
+        );
+        assert_eq!(program_name(""), None);
+    }
+
+    #[test]
+    fn chips_flow_onto_rows() {
+        assert_eq!(
+            flow(&[100.0, 120.0, 200.0], 300.0, 6.0),
+            vec![(0, 0.0), (0, 106.0), (1, 0.0)]
+        );
+        assert_eq!(
+            flow(&[50.0, 400.0, 50.0], 300.0, 6.0),
+            vec![(0, 0.0), (1, 0.0), (2, 0.0)],
+            "too wide: a row of its own"
+        );
+        assert_eq!(flow(&[400.0], 300.0, 6.0), vec![(0, 0.0)]);
+        assert!(flow(&[], 300.0, 6.0).is_empty());
+    }
+
+    #[test]
+    fn the_switch_is_a_pill_whose_other_half_is_the_target() {
+        let r = pill([40.0, 33.0], 9.0, 500.0, 100.0, 24.0);
+        assert_eq!(
+            r[1],
+            Rect {
+                left: 449.0,
+                top: 100.0,
+                right: 500.0,
+                bottom: 124.0
+            }
+        );
+        assert_eq!(r[0].right, 449.0);
+        assert_eq!(r[0].left, 391.0);
+        assert_eq!(pill_hit(&r, Lang::En, 474.0, 112.0), Some(Lang::Ja));
+        assert_eq!(
+            pill_hit(&r, Lang::Ja, 474.0, 112.0),
+            None,
+            "the language shown"
+        );
+        assert_eq!(pill_hit(&r, Lang::Ja, 420.0, 112.0), Some(Lang::En));
+        assert_eq!(pill_hit(&r, Lang::En, 474.0, 124.0), None, "below");
+        assert_eq!(
+            pill_hit(&r, Lang::En, 500.0, 112.0),
+            None,
+            "past the right edge"
+        );
+    }
+}

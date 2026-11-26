@@ -189,15 +189,16 @@ type Pair = fn(&Palette) -> (Rgb, Rgb);
 /// Every text color of the windows and the toasts on its background: each must meet 4.5:1 (WCAG AA) in both looks.
 pub const TEXT_PAIRS: &[(&str, Pair)] = &[
     ("text on the background", |p| (p.text, p.background)),
-    ("secondary on the background", |p| (p.secondary, p.background)),
+    ("secondary on the background", |p| {
+        (p.secondary, p.background)
+    }),
     ("tertiary on the background", |p| (p.tertiary, p.background)),
     ("text on the surface (chips, the toasts)", |p| {
         (p.text, p.surface)
     }),
-    (
-        "secondary on the surface (the toasts, the switch)",
-        |p| (p.secondary, p.surface),
-    ),
+    ("secondary on the surface (the toasts, the switch)", |p| {
+        (p.secondary, p.surface)
+    }),
     ("text on the switch's shown part", |p| {
         (p.text, p.switch_shown)
     }),
