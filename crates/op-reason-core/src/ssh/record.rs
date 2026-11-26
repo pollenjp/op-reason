@@ -114,7 +114,8 @@ pub struct PromptRec {
     /// Seconds from the request to 1Password's prompt (a window of 1Password, or of Windows Hello, in front or new), to
     /// a tenth; null when it never came.
     pub seen: Option<f64>,
-    /// Seconds from the request to the pointer at the tray; null when it never showed.
+    /// Seconds from the request to the guide (the window lit up, and the pointer at the tray), to a tenth; null when it
+    /// never came.
     pub hint: Option<f64>,
 }
 

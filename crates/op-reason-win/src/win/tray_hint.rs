@@ -9,6 +9,7 @@
 //! ([`Pointer::tick`]) and drops it when the prompt comes or the request ends.
 
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -38,14 +39,11 @@ use windows::Win32::Graphics::Gdi::{
     HGDIOBJ, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Shell::{
-    ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, FindWindowW, GetWindowRect,
     HTTRANSPARENT, HWND_TOPMOST, MA_NOACTIVATE, RegisterClassExW, SW_SHOWNOACTIVATE,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, SetWindowTextW, ShowWindow, ULW_ALPHA,
-    UpdateLayeredWindow, WINDOW_EX_STYLE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST,
+    UpdateLayeredWindow, WINDOW_EX_STYLE, WM_CLOSE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -67,8 +65,9 @@ const EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(
         | WS_EX_TOPMOST.0,
 );
 
-// The card (DIPs): its width, the room inside it, its corners and border; the picture at its left; the arrow.
-const CARD_W: f32 = 340.0;
+// The card (DIPs): its width, the room inside it, its corners and border; the picture at its left; the arrow. At 340
+// the Japanese title (bold 12) left its last character alone on a second line (CI's screenshot, 2026-11-26).
+const CARD_W: f32 = 372.0;
 const PAD: f32 = 14.0;
 const RADIUS: f32 = 10.0;
 const BORDER: f32 = 2.0;
@@ -117,6 +116,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         // placed for its screen's DPI when it is shown
         WM_DPICHANGED => LRESULT(0),
+        // only its owner closes it, with the request (a WM_CLOSE from elsewhere would leave it unable to draw)
+        WM_CLOSE => LRESULT(0),
         // SAFETY: the default procedure with the arguments as received.
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
@@ -152,28 +153,24 @@ fn notify_area() -> Option<RECT> {
     }
 }
 
+/// The primary taskbar's window rectangle (`Shell_TrayWnd`), when it has a size. A window rectangle is read without a
+/// message to Explorer, so that a busy Explorer cannot hold up the relay's thread.
+fn taskbar() -> Option<RECT> {
+    // SAFETY: plain queries with a constant class name and an out parameter on the stack.
+    unsafe {
+        let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).ok()?;
+        let mut r = RECT::default();
+        GetWindowRect(tray, &mut r).ok()?;
+        (r.right > r.left && r.bottom > r.top).then_some(r)
+    }
+}
+
 /// Where the pointer points: the notification area of the taskbar; else the end of the taskbar where it sits; else the
 /// bottom right of the primary screen's work area.
 fn find_tray() -> Tray {
-    let mut bar = APPBARDATA {
-        cbSize: size_of::<APPBARDATA>() as u32,
-        hWnd: HWND::default(),
-        uCallbackMessage: 0,
-        uEdge: 0,
-        rc: RECT::default(),
-        lParam: LPARAM(0),
-    };
-    // SAFETY: a valid structure with its size set.
-    let found = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut bar) } != 0;
-    if found && bar.rc.right > bar.rc.left && bar.rc.bottom > bar.rc.top {
-        let rc = bar.rc;
+    if let Some(rc) = taskbar() {
         let (bounds, dpi) = screen::bounds_of(rc).unwrap_or((rc, 96));
-        let side = match bar.uEdge {
-            ABE_LEFT => Side::Left,
-            ABE_TOP => Side::Top,
-            ABE_RIGHT => Side::Right,
-            _ => Side::Bottom,
-        };
+        let side = relay_prompt::taskbar_side(px(rc), px(bounds));
         let guess = (TRAY_GUESS * dpi as f32 / 96.0) as i32;
         let end = match side {
             Side::Bottom | Side::Top => RECT {
@@ -215,8 +212,8 @@ fn find_tray() -> Tray {
 
 /// A memory device context with a 32-bit bitmap, and a Direct2D target on the software renderer bound to it.
 struct Canvas {
-    /// Dropped before the device context it is bound to.
-    rt: ID2D1DCRenderTarget,
+    /// Released before the device context it is bound to ([`Drop`]).
+    rt: ManuallyDrop<ID2D1DCRenderTarget>,
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
@@ -225,8 +222,10 @@ struct Canvas {
 
 impl Drop for Canvas {
     fn drop(&mut self) {
-        // SAFETY: we made both; the old object goes back before the bitmap is deleted.
+        // SAFETY: the target is not used after this; we made the device context and the bitmap, and the old object
+        // goes back before the bitmap is deleted.
         unsafe {
+            ManuallyDrop::drop(&mut self.rt);
             SelectObject(self.dc, self.old);
             let _ = DeleteObject(self.bitmap.into());
             let _ = DeleteDC(self.dc);
@@ -287,7 +286,7 @@ impl Canvas {
             // ClearType needs an opaque background
             rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let canvas = Canvas {
-                rt,
+                rt: ManuallyDrop::new(rt),
                 dc,
                 bitmap,
                 old,
@@ -431,8 +430,8 @@ pub struct Pointer {
     item: IDWriteTextLayout,
     /// When the request went to 1Password (the seconds left count from it).
     sent: Instant,
-    /// The seconds drawn, and their line.
-    closes: Option<(u64, IDWriteTextLayout)>,
+    /// The seconds of the last try to draw: a draw that failed is tried again only when they change.
+    tried: u64,
 }
 
 impl Pointer {
@@ -521,8 +520,9 @@ impl Pointer {
             line_h,
             item,
             sent,
-            closes: None,
+            tried: u64::MAX,
         };
+        p.tried = p.secs();
         p.draw()?;
         // SAFETY: our window, on its own thread; nothing here activates it.
         unsafe {
@@ -540,18 +540,18 @@ impl Pointer {
         Ok(p)
     }
 
-    /// Draws it again when the seconds left changed.
+    /// Draws it again when the seconds left changed (at most once a second, also after a draw that failed).
     pub fn tick(&mut self) {
         let secs = self.secs();
-        if self.closes.as_ref().is_some_and(|(s, _)| *s == secs) {
+        if secs == self.tried {
             return;
         }
+        self.tried = secs;
         if self.draw().is_err() {
-            // rebuilt at the next tick
+            // a new bitmap and target for the next second
             if let Ok(c) = Canvas::new(&self.d2d, self.geometry.size, self.geometry.dpi) {
                 self.canvas = c;
             }
-            self.closes = None;
         }
     }
 
@@ -560,7 +560,7 @@ impl Pointer {
     }
 
     /// Draws the card into the bitmap and puts it on the screen.
-    fn draw(&mut self) -> Result<()> {
+    fn draw(&self) -> Result<()> {
         let secs = self.secs();
         let text = self.texts.closes.replace("{0}", &secs.to_string());
         let (closes, _) = self.fonts.text(&self.fonts.bold, &text, TEXT_W)?;
@@ -770,7 +770,6 @@ impl Pointer {
                 &HSTRING::from(format!("{} · {text}", self.texts.title).as_str()),
             );
         }
-        self.closes = Some((secs, closes));
         Ok(())
     }
 }

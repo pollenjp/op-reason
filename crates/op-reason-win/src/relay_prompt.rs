@@ -34,12 +34,21 @@ pub fn owner(pid: u32, image: &str, server: Option<u32>) -> Owner {
     }
 }
 
+/// Whether a window of the class `class` is never 1Password's prompt, even when 1Password's process shows it: a menu
+/// (1Password's menu in the tray is one) or a tooltip.
+pub fn never_a_prompt(class: &str) -> bool {
+    ["#32768", "tooltips_class32"]
+        .iter()
+        .any(|c| class.eq_ignore_ascii_case(c))
+}
+
 /// What one look saw, compared with the moment the request went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
-    /// The window in front is another one than then, and it is 1Password's or Windows Hello's.
+    /// The window in front is another one than then, a person can see it (visible, not minimized, not hidden by the
+    /// window manager, not a menu or a tooltip), and it is 1Password's or Windows Hello's.
     pub front: bool,
-    /// A visible top-level window of 1Password is there that was not then.
+    /// A top-level window of 1Password that a person can see is there that was not then.
     pub new_window: bool,
 }
 
@@ -102,7 +111,8 @@ impl Watch {
         self.seen_at.map(tenths)
     }
 
-    /// For the record: seconds from the request to the pointer, to a tenth.
+    /// For the record: seconds from the request to the guide (the window lit up, and the pointer to the tray), to a
+    /// tenth.
     pub fn hint_secs(&self) -> Option<f64> {
         self.hint_at.map(tenths)
     }
@@ -136,6 +146,24 @@ pub enum Side {
     Top,
     Left,
     Right,
+}
+
+/// The edge of `screen` that a taskbar with the rectangle `bar` sits on: a bar wider than tall is at the top or the
+/// bottom, one taller than wide at the left or the right, on the side of the screen's middle where the bar's middle is
+/// (a taskbar that hides itself lies mostly outside the screen, on its edge).
+pub fn taskbar_side(bar: Px, screen: Px) -> Side {
+    let (w, h) = (bar.right - bar.left, bar.bottom - bar.top);
+    if w >= h {
+        if bar.top + bar.bottom < screen.top + screen.bottom {
+            Side::Top
+        } else {
+            Side::Bottom
+        }
+    } else if bar.left + bar.right < screen.left + screen.right {
+        Side::Left
+    } else {
+        Side::Right
+    }
 }
 
 /// Where the pointer goes: its top left corner, and where its arrow's tip is along the side it points to (pixels from
@@ -217,6 +245,45 @@ mod tests {
             owner(43, "1Password-BrowserSupport.exe", Some(7)),
             Owner::Other
         );
+    }
+
+    #[test]
+    fn a_menu_or_a_tooltip_is_never_the_prompt() {
+        // 1Password's menu in the tray is a window of its process: opening it is not the prompt
+        assert!(never_a_prompt("#32768"));
+        assert!(never_a_prompt("tooltips_class32"));
+        assert!(!never_a_prompt("Chrome_WidgetWin_1"));
+        assert!(!never_a_prompt("Credential Dialog Xaml Host"));
+    }
+
+    #[test]
+    fn the_edge_a_taskbar_sits_on() {
+        let screen = Px {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let px = |left, top, right, bottom| Px {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        assert_eq!(taskbar_side(px(0, 1032, 1920, 1080), screen), Side::Bottom);
+        assert_eq!(taskbar_side(px(0, 0, 1920, 48), screen), Side::Top);
+        assert_eq!(taskbar_side(px(0, 0, 62, 1080), screen), Side::Left);
+        assert_eq!(taskbar_side(px(1858, 0, 1920, 1080), screen), Side::Right);
+        // hidden by itself: two pixels left on the screen
+        assert_eq!(taskbar_side(px(0, 1078, 1920, 1126), screen), Side::Bottom);
+        assert_eq!(taskbar_side(px(-60, 0, 2, 1080), screen), Side::Left);
+        // a screen to the left of the primary one, in negative coordinates
+        let left_screen = px(-1280, 0, 0, 1024);
+        assert_eq!(
+            taskbar_side(px(-1280, 984, 0, 1024), left_screen),
+            Side::Bottom
+        );
+        assert_eq!(taskbar_side(px(-62, 0, 0, 1024), left_screen), Side::Right);
     }
 
     #[test]

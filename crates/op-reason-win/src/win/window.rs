@@ -165,9 +165,10 @@ const WATCH_TIMER: usize = 1;
 /// The timer that redraws the countdown ([`Window::set_deadline`]).
 const COUNTDOWN_TIMER: usize = 2;
 const COUNTDOWN_MS: u32 = 250;
-/// The timer that pulses the lit border ([`Window::set_alert`]), and the border's width.
+/// The timer that pulses the lit border ([`Window::set_alert`]), and the border's width. Each tick draws the whole
+/// window with the software renderer: ten frames a second for a pulse a second.
 const ALERT_TIMER: usize = 3;
-const ALERT_MS: u32 = 50;
+const ALERT_MS: u32 = 100;
 const ALERT_W: f32 = 2.5;
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CAPTION.0 | WS_SYSMENU.0);
 const EX_STYLE: WINDOW_EX_STYLE =

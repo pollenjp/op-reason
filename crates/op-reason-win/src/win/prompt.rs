@@ -8,7 +8,8 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible,
 };
 use windows::core::BOOL;
 
@@ -41,11 +42,12 @@ impl Looker {
     }
 
     /// One look: whether a window of 1Password (or of Windows Hello) is in front that was not, and whether a window of
-    /// 1Password is there that was not.
+    /// 1Password is there that was not; only windows that a person can see count.
     pub fn look(&mut self) -> Look {
         let fg = foreground();
         let front = !fg.is_invalid()
             && fg.0 as isize != self.front
+            && in_view(fg)
             && matches!(self.owner_of(pid_of(fg)), Owner::OnePassword | Owner::Hello);
         let new_window = self
             .windows_of_1password()
@@ -64,12 +66,12 @@ impl Looker {
         })
     }
 
-    /// The visible, uncloaked top-level windows of 1Password's processes.
+    /// The top-level windows of 1Password's processes that a person can see.
     fn windows_of_1password(&mut self) -> Vec<isize> {
         let windows = visible_windows();
         windows
             .into_iter()
-            .filter(|h| self.owner_of(pid_of(*h)) == Owner::OnePassword)
+            .filter(|h| self.owner_of(pid_of(*h)) == Owner::OnePassword && in_view(*h))
             .map(|h| h.0 as isize)
             .collect()
     }
@@ -105,12 +107,28 @@ fn cloaked(h: HWND) -> bool {
     read.is_ok() && value != 0
 }
 
-/// Every visible, uncloaked top-level window.
+/// The window class's name (empty when it cannot be read).
+fn class_of(h: HWND) -> String {
+    let mut buf = [0u16; 64];
+    // SAFETY: a buffer on the stack with its length; a stale window gives nothing.
+    let n = unsafe { GetClassNameW(h, &mut buf) };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// Whether a person can see the window: visible, not minimized, not hidden by DWM, and not a menu or a tooltip
+/// (1Password's menu in the tray is a window of its process). None of these sends a message to the window's thread.
+fn in_view(h: HWND) -> bool {
+    // SAFETY: plain queries; a stale window is neither visible nor minimized.
+    let shown = unsafe { IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() };
+    shown && !cloaked(h) && !relay_prompt::never_a_prompt(&class_of(h))
+}
+
+/// Every visible top-level window (whether a person can see it is [`in_view`], asked of 1Password's windows only).
 fn visible_windows() -> Vec<HWND> {
     unsafe extern "system" fn add(h: HWND, lp: LPARAM) -> BOOL {
         // SAFETY: `lp` is the vector of `visible_windows`, alive for the whole enumeration on this thread.
         unsafe {
-            if IsWindowVisible(h).as_bool() && !cloaked(h) {
+            if IsWindowVisible(h).as_bool() {
                 (*(lp.0 as *mut Vec<HWND>)).push(h);
             }
         }

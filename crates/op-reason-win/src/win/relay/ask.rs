@@ -271,6 +271,11 @@ impl<'a> Shown<'a> {
         let Some(p) = self.prompt.as_mut() else {
             return;
         };
+        let open = self.window.is_open();
+        if !open {
+            // closed with its close button while 1Password asks: no pointer without the window
+            p.pointer = None;
+        }
         if let Some(pointer) = p.pointer.as_mut() {
             pointer.tick();
         }
@@ -301,11 +306,15 @@ impl<'a> Shown<'a> {
                 self.window
                     .set_texts(&relay_ui::both(&self.facts, self.phase));
                 self.window.set_alert(true);
-                let pointer = tray_hint::Pointer::show(
-                    relay_ui::pointer_texts(self.lang),
-                    theme::current(),
-                    sent,
-                );
+                let pointer = open
+                    .then(|| {
+                        tray_hint::Pointer::show(
+                            relay_ui::pointer_texts(self.lang),
+                            theme::current(),
+                            sent,
+                        )
+                    })
+                    .flatten();
                 if let Some(p) = self.prompt.as_mut() {
                     p.pointer = pointer;
                 }
