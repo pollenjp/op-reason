@@ -29,6 +29,7 @@ use op_reason_core::time;
 
 use super::ask::{self, Outcome, Shown, Ticket};
 use super::{Shared, peer, pipe};
+use crate::look;
 use crate::relay_opts::Mode;
 use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Root, Unknown};
 use crate::win::{procs, toast, window};
@@ -871,6 +872,13 @@ fn identify(pid: Option<u32>) -> Who {
         Rule::Claude => chain.get(found.root + 1).map(|l| l.pid),
         _ => None,
     };
+    // The launcher of Claude Code's PowerShell tool holds no command (design 2026-11-26-modern-window-design.md §4.7,
+    // rule 3): told from the root's own arguments, not the record's masked line, for a root under Claude Code whose
+    // image is System32's cmd.exe
+    let claude_powershell = found.rule == Rule::Claude
+        && look::claude_powershell(&nodes[found.root].args)
+        && procs::image_path(root.pid)
+            .is_some_and(|p| p.to_ascii_lowercase().ends_with("\\system32\\cmd.exe"));
     let (kind, caller) = match found.rule {
         Rule::Claude => ("claude", Caller::Claude { pid: claude_pid }),
         Rule::Shell => (
@@ -923,6 +931,7 @@ fn identify(pid: Option<u32>) -> Who {
             name: root.name.clone(),
             pid: root.pid,
             cmd: cmdline::shown(&nodes[found.root].args, call::CMD_MAX),
+            claude_powershell,
         }),
         root_rec: proc_rec(found.root),
         shell_rec: found.shell.and_then(proc_rec),
@@ -981,6 +990,8 @@ fn from_wsl(base: Who, c: call::WslCall) -> Who {
             name: c.root.name.clone(),
             pid: c.root.pid,
             cmd: args::clip(&c.root.cmd, call::CMD_MAX, "…"),
+            // a WSL call's root is on Linux
+            claude_powershell: false,
         }),
         root_rec: Some(rec_of(&c.root)),
         shell_rec: c.shell.as_ref().map(rec_of),

@@ -80,6 +80,9 @@ pub struct Root {
     pub name: String,
     pub pid: u32,
     pub cmd: String,
+    /// The launcher of Claude Code's PowerShell tool, which holds no command (design §4.7, rule 3): the relay tells it
+    /// from the root's own arguments (`look::claude_powershell`), for a root under Claude Code only.
+    pub claude_powershell: bool,
 }
 
 /// How much of a root's command line the window shows when it shows the line itself.
@@ -174,6 +177,8 @@ struct Table {
     subtitle_per_call: &'static str,
     subtitle_show_only: &'static str,
     root_command: &'static str,
+    /// What the root of a call of Claude Code's PowerShell tool is (its launcher, which carries no command).
+    claude_powershell: &'static str,
     /// The seconds left to answer (`{0}`).
     countdown: &'static str,
     /// How long an answer lasts (design `2026-11-26-modern-window-design.md` §4.8): the root command's program
@@ -239,6 +244,7 @@ const EN: Table = Table {
     subtitle_per_call: "op-reason's relay · per-call mode",
     subtitle_show_only: "op-reason's relay · show-only mode",
     root_command: "Root command",
+    claude_powershell: "Claude Code's PowerShell tool",
     countdown: "{0} s left to answer",
     covers_name: "Allowing covers this {0} until it ends (at most {1} minutes)",
     covers_call: "Allowing covers this call until it ends (at most {1} minutes)",
@@ -296,6 +302,7 @@ const JA: Table = Table {
     subtitle_per_call: "op-reason の中継 · 呼び出しごとに決めるモード",
     subtitle_show_only: "op-reason の中継 · 表示だけのモード",
     root_command: "起点のコマンド",
+    claude_powershell: "Claude Code の PowerShell",
     countdown: "答えを待つ残り {0} 秒",
     covers_name: "許可は、この {0} が終わるまで効きます (長くても {1} 分)",
     covers_call: "許可は、この呼び出しが終わるまで効きます (長くても {1} 分)",
@@ -396,8 +403,17 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
     let t = table(lang);
     let (time, date) = look::split_time(&f.time);
     let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
-    // the root command in the box, and under it the root process and the rest of its line: the two show all of it
+    // the launcher of Claude Code's PowerShell tool carries no command (its script comes through the environment)
+    let powershell = matches!(f.caller, Caller::Claude { .. })
+        && f.root.as_ref().is_some_and(|r| r.claude_powershell);
+    // the root command in the box, and under it the root process and the rest of its line: the two show all of it;
+    // for the PowerShell tool, the ssh command, and under it the root process and what it is
     let (code_label, code, code_note) = match &f.root {
+        Some(root) if powershell => (
+            t.command,
+            f.command.clone(),
+            Some(format!("{} · {}", root.process(), t.claude_powershell)),
+        ),
         Some(root) => match look::root_command(&root.cmd) {
             Some(u) => (
                 t.root_command,
@@ -425,7 +441,7 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
             text: detail.join(" · "),
         });
     }
-    if f.root.is_some() {
+    if f.root.is_some() && !powershell {
         facts.push(Fact {
             kind: FactKind::Mono,
             text: format!("{}: {}", t.command, f.command),
@@ -442,7 +458,9 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
             let covers = if alone {
                 t.covers_alone.to_owned()
             } else {
-                match f.root.as_ref().and_then(|_| look::program_name(&code)) {
+                // the PowerShell tool's script is not seen: its call may run more than the ssh command
+                let named = f.root.is_some() && !powershell;
+                match named.then(|| look::program_name(&code)).flatten() {
                     Some(name) => t.covers_name.replace("{0}", &name).replace("{1}", &limit),
                     None => t.covers_call.replace("{1}", &limit),
                 }
@@ -831,6 +849,7 @@ mod tests {
                 name: "bash".into(),
                 pid: 31337,
                 cmd: r#"bash -c -l "git push origin fix/login""#.into(),
+                claude_powershell: false,
             }),
             herdr: None,
             distro: None,
@@ -996,6 +1015,7 @@ mod tests {
             name: "git".into(),
             pid: 2718,
             cmd: "git pull --rebase".into(),
+            claude_powershell: false,
         });
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(v.code, "git pull --rebase");
@@ -1026,6 +1046,7 @@ mod tests {
             name: "bash".into(),
             pid: 7,
             cmd: cmd.clone(),
+            claude_powershell: false,
         });
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(
@@ -1044,6 +1065,7 @@ mod tests {
             name: "someprog".into(),
             pid: 8,
             cmd: long,
+            claude_powershell: false,
         });
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(v.code.chars().count(), 201);
@@ -1058,6 +1080,7 @@ mod tests {
             name: "bash".into(),
             pid: 9,
             cmd: r#"bash -c "cd a && git push""#.into(),
+            claude_powershell: false,
         });
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(v.code, "cd a && git push");
@@ -1075,6 +1098,89 @@ mod tests {
                 .status
                 .contains("(at most 15 minutes)")
         );
+    }
+
+    /// The root of a call of Claude Code's PowerShell tool: its launcher, with the line the record keeps of it (look.rs
+    /// has how it comes about), told by the relay from its arguments.
+    fn powershell_root() -> Root {
+        Root {
+            name: "cmd.exe".into(),
+            pid: 2024,
+            cmd: r#"cmd.exe /d /s /c "C:\WINDOWS\System32\chcp.com 65001 >nul & C:\Users\me\AppData\Local\Microsoft\WindowsApps\pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $__claudeCodeScript" =*** "$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT;" "$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT" =*** "$null;" Invoke-Expression -Command "$__claudeCodeScript > C:\Users\me\AppData\Local\Temp\claude\shell-out-1.txt 2>&1""#.into(),
+            claude_powershell: true,
+        }
+    }
+
+    #[test]
+    fn a_call_of_claude_codes_powershell_tool_shows_its_ssh_command() {
+        let mut f = facts();
+        f.root = Some(powershell_root());
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(v.code_label, "Command");
+        assert_eq!(
+            v.code, r#"ssh.exe git@github.com "git-receive-pack 'me/r.git'""#,
+            "the script is not on the launcher's line: the box shows the ssh command"
+        );
+        assert_eq!(
+            v.code_note.as_deref(),
+            Some("cmd.exe (pid 2024) · Claude Code's PowerShell tool")
+        );
+        assert_eq!(
+            v.facts,
+            vec![
+                fact(FactKind::Purpose, "logging in as git"),
+                fact(
+                    FactKind::Detail,
+                    "Destination git@github.com · host key SHA256:h · Key GitHub · SHA256:k"
+                ),
+            ],
+            "no second line of the ssh command"
+        );
+        assert_eq!(
+            v.status, "Allowing covers this call until it ends (at most 60 minutes)",
+            "the answer covers the tool's call, whose script is not seen"
+        );
+        let ja = view(&f, Phase::Ask, Lang::Ja);
+        assert_eq!(ja.code_label, "コマンド");
+        assert_eq!(
+            ja.code_note.as_deref(),
+            Some("cmd.exe (pid 2024) · Claude Code の PowerShell")
+        );
+        assert_eq!(
+            ja.status,
+            "許可は、この呼び出しが終わるまで効きます (長くても 60 分)"
+        );
+        let asking = view(&f, Phase::Asking, Lang::En);
+        assert_eq!(
+            (asking.code_label.as_str(), asking.code.as_str()),
+            ("Command", v.code.as_str()),
+            "after Allow, the same box"
+        );
+    }
+
+    #[test]
+    fn only_claude_codes_call_is_its_powershell_tool() {
+        // a person or a program whose root has the launcher's line is shown as any root: never as Claude Code's tool
+        for caller in [
+            Caller::Person {
+                shell: "pwsh.exe".into(),
+            },
+            Caller::Program {
+                name: "cmd.exe".into(),
+            },
+        ] {
+            let mut f = facts();
+            f.caller = caller.clone();
+            f.root = Some(powershell_root());
+            let v = view(&f, Phase::Ask, Lang::En);
+            assert_eq!(v.code_label, "Root command", "{caller:?}");
+            assert_eq!(
+                v.code_note
+                    .as_deref()
+                    .map(|n| n.contains("PowerShell tool")),
+                Some(false)
+            );
+        }
     }
 
     #[test]

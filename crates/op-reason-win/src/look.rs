@@ -1,9 +1,10 @@
 //! What `op-reason.exe`'s windows draw, and the portable decisions behind it (design
 //! `2026-11-26-modern-window-design.md` §4): the parts of a window ([`View`], built by [`crate::ui`] and
 //! [`crate::relay_ui`], drawn by the Windows side), the colors of a command's words ([`color_words`]), the command a
-//! person reads in a root's command line ([`root_command`]), the name in the relay's line about how long an answer lasts
-//! ([`program_name`]), the marked words of the band ([`marked`]), the rows of chips ([`flow`]) and the language switch's
-//! pill ([`pill`], [`pill_hit`]).
+//! person reads in a root's command line ([`root_command`]) and the launcher of Claude Code's PowerShell tool, which
+//! holds none ([`claude_powershell`]), the name in the relay's line about how long an answer lasts ([`program_name`]),
+//! the marked words of the band ([`marked`]), the rows of chips ([`flow`]) and the language switch's pill ([`pill`],
+//! [`pill_hit`]).
 
 use op_reason_core::lang::Lang;
 
@@ -436,6 +437,60 @@ pub fn root_command(cmd: &str) -> Option<Unwrapped> {
     }
 }
 
+/// The fixed part of Claude Code's launcher of its PowerShell tool after the PowerShell program and its options: the
+/// code that runs the script from an environment variable, and the output's redirection up to the output file.
+const LAUNCHER_COMMAND: &str = "-Command $__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \
+                                $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; \
+                                Invoke-Expression -Command $__claudeCodeScript > ";
+
+/// Whether a root's own arguments (its command line as Windows splits it, before masking: the record's masked line
+/// shows any word after `=` as `=***`) are Claude Code's launcher of its PowerShell tool (design §4.7, rule 3), word
+/// for word: `<…\System32\cmd.exe> /d /s /c` running `<…\System32\chcp.com> 65001 >nul & <PowerShell> -NoProfile
+/// -NonInteractive [-ExecutionPolicy Bypass] -Command <the code that runs the script from
+/// CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT> > <file> 2>&1`. The script is not on the line. The line's quotes are made for
+/// cmd.exe and split its arguments elsewhere, so the arguments after `/c` are joined with spaces, which gives the line
+/// cmd.exe runs without its quotes; the paths must be paths as Claude Code checks them (`launcher_path`), PowerShell
+/// `pwsh.exe` or `powershell.exe`.
+pub fn claude_powershell(args: &[String]) -> bool {
+    launcher_args(args).is_some()
+}
+
+fn launcher_args(args: &[String]) -> Option<()> {
+    let [program, d, s, c, rest @ ..] = args else {
+        return None;
+    };
+    let program_ok =
+        launcher_path(program) && program.to_ascii_lowercase().ends_with(r"\system32\cmd.exe");
+    (program_ok && d == "/d" && s == "/s" && c == "/c").then_some(())?;
+    let line = rest.join(" ");
+    let (chcp, after) = line.split_once(" 65001 >nul & ")?;
+    let chcp_ok = launcher_path(chcp) && chcp.to_ascii_lowercase().ends_with(r"\system32\chcp.com");
+    chcp_ok.then_some(())?;
+    let (shell, after) = after.split_once(" -NoProfile -NonInteractive ")?;
+    let shell_name = shell.to_ascii_lowercase();
+    let shell_ok = launcher_path(shell)
+        && (shell_name.ends_with(r"\pwsh.exe") || shell_name.ends_with(r"\powershell.exe"));
+    shell_ok.then_some(())?;
+    let after = after
+        .strip_prefix("-ExecutionPolicy Bypass ")
+        .unwrap_or(after);
+    let out = after
+        .strip_prefix(LAUNCHER_COMMAND)?
+        .strip_suffix(" 2>&1")?;
+    launcher_path(out).then_some(())
+}
+
+/// A path as Claude Code accepts one for the launcher of its PowerShell tool: a drive, `:\`, then no quotes, `%`, `!`,
+/// `^`, `&`, `|`, `<`, `>`, line breaks or NULs (nothing that cmd.exe would read as more than a path).
+fn launcher_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() > 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && b[2] == b'\\'
+        && !p.contains(['"', '%', '!', '^', '&', '|', '<', '>', '\r', '\n', '\0'])
+}
+
 /// The command after `cmd.exe /c` or `pwsh -Command`: the rest of the line, shown as it is.
 fn rest_unwrapped(cmd: &str, rest: &[Token]) -> Option<Unwrapped> {
     let first = rest.first()?;
@@ -740,6 +795,8 @@ pub fn pill_hit(rects: &[Rect; 2], shown: Lang, x: f32, y: f32) -> Option<Lang> 
 
 #[cfg(test)]
 mod tests {
+    use op_reason_core::ssh::cmdline;
+
     use super::*;
 
     #[test]
@@ -992,6 +1049,155 @@ mod tests {
         );
     }
 
+    /// Claude Code's launcher of its PowerShell tool, the command line of its `cmd.exe` as Claude Code 2.1.332 builds
+    /// it (`windowsVerbatimArguments`): `chcp.com 65001`, then PowerShell (`pwsh`) with `-NoProfile -NonInteractive`
+    /// (`-ExecutionPolicy Bypass` with `policy`) and a `-Command` that runs the script from an environment variable,
+    /// its output to `out`.
+    fn launcher(pwsh: &str, policy: bool, out: &str) -> String {
+        let options = if policy {
+            "-NoProfile -NonInteractive -ExecutionPolicy Bypass"
+        } else {
+            "-NoProfile -NonInteractive"
+        };
+        let script = "$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \
+                      $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; Invoke-Expression -Command $__claudeCodeScript";
+        format!(
+            r#"C:\WINDOWS\System32\cmd.exe /d /s /c ""C:\WINDOWS\System32\chcp.com" 65001 >nul & "{pwsh}" {options} -Command "{script}" > "{out}" 2>&1""#
+        )
+    }
+
+    /// A root's command line as op-reason records it on Windows: split as Windows splits it, masked, displayed.
+    fn recorded(line: &str) -> String {
+        cmdline::shown(&cmdline::split_windows(line), 1000)
+    }
+
+    /// A root's arguments as the relay reads them: its command line split as Windows splits it.
+    fn split(line: &str) -> Vec<String> {
+        cmdline::split_windows(line)
+    }
+
+    const WINDOWS_APPS: &str = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\pwsh.exe";
+    const OUT: &str = r"C:\Users\me\AppData\Local\Temp\claude\shell-out-1.txt";
+
+    #[test]
+    fn the_launcher_of_claude_codes_powershell_tool() {
+        // what the record keeps of it, which the window showed before (worked out by hand): the quotes made for cmd.exe
+        // split its arguments in odd places, and the `=` of the PowerShell code are masked
+        let kept = r#"cmd.exe /d /s /c "C:\WINDOWS\System32\chcp.com 65001 >nul & C:\Users\me\AppData\Local\Microsoft\WindowsApps\pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $__claudeCodeScript" =*** "$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT;" "$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT" =*** "$null;" Invoke-Expression -Command "$__claudeCodeScript > C:\Users\me\AppData\Local\Temp\claude\shell-out-1.txt 2>&1""#;
+        assert_eq!(recorded(&launcher(WINDOWS_APPS, true, OUT)), kept);
+        assert!(claude_powershell(&split(&launcher(
+            WINDOWS_APPS,
+            true,
+            OUT
+        ))));
+        // PowerShell 7 where its installer puts it: the space splits the arguments elsewhere
+        assert!(claude_powershell(&split(&launcher(
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            true,
+            OUT
+        ))));
+        // Windows PowerShell, with the execution policy respected (CLAUDE_CODE_POWERSHELL_RESPECT_EXECUTION_POLICY)
+        assert!(claude_powershell(&split(&launcher(
+            r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe",
+            false,
+            OUT
+        ))));
+        // a user name with a space in both paths
+        assert!(claude_powershell(&split(&launcher(
+            r"C:\Users\my name\AppData\Local\Microsoft\WindowsApps\pwsh.exe",
+            true,
+            r"C:\Users\my name\AppData\Local\Temp\claude\shell-out-1.txt"
+        ))));
+        // cmd.exe in quotes, as Rust starts a program (the relay's test)
+        let quoted = launcher(WINDOWS_APPS, true, OUT).replacen(
+            r"C:\WINDOWS\System32\cmd.exe",
+            r#""C:\WINDOWS\System32\cmd.exe""#,
+            1,
+        );
+        assert!(claude_powershell(&split(&quoted)));
+    }
+
+    #[test]
+    fn a_launcher_that_differs_in_anything_is_not_claude_codes() {
+        let line = launcher(WINDOWS_APPS, true, OUT);
+        // a word after `=` that cmd.exe runs: the record masks it as it masks the launcher's own `=`, so only the
+        // root's own arguments tell the two apart
+        let sneaky = line.replace(
+            "$__claudeCodeScript = $env",
+            r#"$__claudeCodeScript ="&calc&" $env"#,
+        );
+        assert_eq!(recorded(&sneaky), recorded(&line), "the record cannot tell");
+        assert!(!claude_powershell(&split(&sneaky)));
+        for (what, other) in [
+            (
+                "a command after the redirection",
+                line.replace(r#"2>&1""#, r#"2>&1 & calc.exe""#),
+            ),
+            (
+                "a command before PowerShell",
+                line.replace(">nul & ", ">nul & calc.exe & "),
+            ),
+            (
+                "more PowerShell code",
+                line.replace(
+                    r#"-Command $__claudeCodeScript""#,
+                    r#"-Command $__claudeCodeScript; calc.exe""#,
+                ),
+            ),
+            (
+                "the script from another variable",
+                line.replace("$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT;", "$env:OTHER;"),
+            ),
+            (
+                "a cmd.exe outside System32",
+                line.replacen(r"C:\WINDOWS\System32\cmd.exe", r"C:\tools\cmd.exe", 1),
+            ),
+            (
+                "a chcp.com outside System32",
+                line.replace(r"C:\WINDOWS\System32\chcp.com", r"C:\tools\chcp.com"),
+            ),
+            ("another code page", line.replace("65001", "932")),
+            (
+                "another program than PowerShell",
+                line.replace(WINDOWS_APPS, r"C:\tools\evil.exe"),
+            ),
+            (
+                "a program whose name only ends as PowerShell's",
+                line.replace(WINDOWS_APPS, r"C:\tools\notpwsh.exe"),
+            ),
+            (
+                "an output path with &",
+                line.replace(OUT, r"C:\a&b\out.txt"),
+            ),
+            (
+                "an output path with %",
+                line.replace(OUT, r"C:\%TEMP%\out.txt"),
+            ),
+            ("a relative output path", line.replace(OUT, "out.txt")),
+            (
+                "cmd.exe's options in another order",
+                line.replace("/d /s /c", "/s /d /c"),
+            ),
+            ("cmd.exe that stays", line.replace("/d /s /c", "/d /s /k")),
+            (
+                "another option of PowerShell",
+                line.replace("-NonInteractive", "-NonInteractive -NoExit"),
+            ),
+            (
+                "another execution policy",
+                line.replace("Bypass", "Unrestricted"),
+            ),
+        ] {
+            assert_ne!(other, line, "{what}: the case changes the line");
+            assert!(!claude_powershell(&split(&other)), "{what}: {other}");
+        }
+        assert!(!claude_powershell(&split(r#"cmd.exe /d /s /c "x"#)));
+        assert!(!claude_powershell(&[]));
+        assert!(!claude_powershell(&split(
+            r#"pwsh.exe -NoProfile -NonInteractive -Command "ssh -T git@github.com""#
+        )));
+    }
+
     #[test]
     fn a_root_command_shown_as_it_is() {
         assert_eq!(
@@ -1018,6 +1224,11 @@ mod tests {
             r#"cmd.exe /d /s /c "pwsh -NoProfile -Command \"ssh-add -l\"""#.to_owned(),
             "op inject -i \"C:\\Users\\me\\app.env.tpl\" -o .env".to_owned(),
             "ssh.exe 太郎@例え.jp \"echo '🙂'\"".to_owned(),
+            recorded(&launcher(
+                r"C:\Users\太郎\AppData\Local\Microsoft\WindowsApps\pwsh.exe",
+                true,
+                r"C:\Users\太郎\AppData\Local\Temp\claude\shell-out-1.txt",
+            )),
         ];
         for line in &lines {
             let ends: Vec<usize> = line
@@ -1030,6 +1241,7 @@ mod tests {
                 cut.push('…');
                 for s in [&line[..end], cut.as_str()] {
                     let _ = root_command(s);
+                    let _ = claude_powershell(&cmdline::split_windows(s));
                     let _ = color_words(s);
                     let _ = program_name(s);
                     let _ = marked(s);

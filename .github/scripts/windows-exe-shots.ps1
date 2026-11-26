@@ -111,10 +111,12 @@ $work = Join-Path ([IO.Path]::GetTempPath()) ("op-reason-shots-" + [guid]::NewGu
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 # Starts one process. LOCALAPPDATA points at a scratch directory so that records stay out of the runner profile.
-function Start-Proc([string] $File, [string[]] $Arguments, [hashtable] $Env) {
+# -OwnConsole: a console of its own without a window (what it starts may change its console's code page).
+function Start-Proc([string] $File, [string[]] $Arguments, [hashtable] $Env, [switch] $OwnConsole) {
   $psi = [Diagnostics.ProcessStartInfo]::new($File)
   foreach ($a in $Arguments) { $psi.ArgumentList.Add($a) }
   $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = [bool]$OwnConsole
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
@@ -549,6 +551,50 @@ if ($FakeSsh) {
   Show-AfterAllow '20-relay-hint-ja-light' 'ja' $askJa $askingJa $claudeCall
   Set-AppTheme dark
   Show-AfterAllow '21-relay-prompt-seen-ja' 'ja' $askJa $askingJa $claudeCall -Prompt
+
+  # One call of Claude Code's PowerShell tool on Windows: claude.exe (the fake, copied) starts the tool's launcher as
+  # Claude Code 2.1.332 does (cmd.exe with chcp 65001, then PowerShell running the script from an environment
+  # variable, its output to a file), and the script runs ssh.exe (the fake, copied): the box shows the ssh command.
+  function Show-PowerShellCall([string] $Name, [string] $Lang, [string] $Title) {
+    $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
+      @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    do {
+      Start-Sleep -Milliseconds 100
+      & $Exe --ssh-agent --status --pipe $pipe *> $null
+    } while ($LASTEXITCODE -ne 0 -and $sw.ElapsedMilliseconds -lt 10000)
+    $claudeDir = Join-Path $work 'claude'
+    New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
+    Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $claudeDir 'claude.exe') -Force
+    Copy-Item -LiteralPath $FakeSsh -Destination (Join-Path $claudeDir 'ssh.exe') -Force
+    $system = Join-Path $env:SystemRoot 'System32'
+    $shell = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+    if (-not $shell) { $shell = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe' }
+    $code = '$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; ' +
+      'Invoke-Expression -Command $__claudeCodeScript'
+    $shellOut = Join-Path $claudeDir 'shell-out.txt'
+    $line = '/d /s /c ""' + (Join-Path $system 'chcp.com') + '" 65001 >nul & "' + $shell + '" -NoProfile -NonInteractive ' +
+      '-ExecutionPolicy Bypass -Command "' + $code + '" > "' + $shellOut + '" 2>&1"'
+    $client = Start-Proc (Join-Path $claudeDir 'claude.exe') @('spawn-raw', (Join-Path $system 'cmd.exe'), $line) @{
+      CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = "& '" + (Join-Path $claudeDir 'ssh.exe') + "' -T git@github.com"
+      FAKE_SSH_PIPE = $pipe
+      FAKE_SSH_STEPS = 'list bind sign'
+      OPREASON_SSH_REASON = (& $u 'GitHub \u3078\u306e\u63a5\u7d9a\u3092\u78ba\u304b\u3081\u308b')
+    } -OwnConsole
+    $h = Wait-Window $Title
+    if ($h -eq [IntPtr]::Zero) {
+      Write-Warning "no window for scene $Name (the launcher wrote: $(Get-Content -Raw -ErrorAction SilentlyContinue $shellOut))"
+    } else {
+      [Threading.Thread]::Sleep(800)
+      Save-Window $h (Join-Path $Out "$Name.png")
+    }
+    # the relay first: the script's ssh then fails, and the launcher's processes end
+    if (-not $relay.HasExited) { $relay.Kill() }
+    $relay.WaitForExit()
+    if (-not $client.WaitForExit(15000)) { $client.Kill() }
+    Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($claudeDir) } | Stop-Process -Force -ErrorAction SilentlyContinue
+  }
+  Show-PowerShellCall '22-relay-claude-powershell-ja' 'ja' $askJa
 
   # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
   # (ForEach-Object runs in this scope: its variables must not take a name of the script's, such as $repo)

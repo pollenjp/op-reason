@@ -1225,6 +1225,129 @@ fn an_ssh_exe_connection_without_session_bind_asks_for_every_signature() {
     assert_ne!(rules[1], "unbound", "with session-bind, the call's rule");
 }
 
+/// PowerShell for the launcher of Claude Code's PowerShell tool: `pwsh.exe` on `PATH` (PowerShell 7), else Windows
+/// PowerShell.
+fn powershell(system: &Path) -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|d| d.join("pwsh.exe"))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or_else(|| system.join(r"WindowsPowerShell\v1.0\powershell.exe"))
+}
+
+/// A child whose processes are all killed when the test ends (`taskkill /t`), also when it fails: what the child
+/// started may outlive it. While this handle is open, the child's PID is not reused.
+struct Tree(Child);
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = Command::new("taskkill")
+            .args(["/pid", &self.0.id().to_string(), "/t", "/f"])
+            .output();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
+    use std::os::windows::process::CommandExt;
+
+    use op_reason_core::ssh::cmdline;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let _g = serial();
+    let sb = Sandbox::new("powershell");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    // Claude Code (claude.exe) starts the launcher of its PowerShell tool as Claude Code 2.1.332 does: cmd.exe with a
+    // line that no quoting of arguments gives, the script in an environment variable; here the script runs ssh
+    let dir = sb.root.join("claude");
+    fs::create_dir_all(&dir).unwrap();
+    fs::copy(fake_ssh(), dir.join("claude.exe")).unwrap();
+    fs::copy(fake_ssh(), dir.join("ssh.exe")).unwrap();
+    let system =
+        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32");
+    let out = sb.root.join("shell-out.txt");
+    let code = "$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \
+                $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; Invoke-Expression -Command $__claudeCodeScript";
+    let line = format!(
+        r#"/d /s /c ""{}" 65001 >nul & "{}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "{code}" > "{}" 2>&1""#,
+        system.join("chcp.com").display(),
+        powershell(&system).display(),
+        out.display()
+    );
+    let mut claude = Tree(
+        Command::new(dir.join("claude.exe"))
+            .arg("spawn-raw")
+            .arg(system.join("cmd.exe"))
+            .arg(&line)
+            .env(
+                "CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT",
+                format!("& '{}' -T git@github.com", dir.join("ssh.exe").display()),
+            )
+            .env("FAKE_SSH_PIPE", sb.pipe())
+            .env("FAKE_SSH_STEPS", "list bind sign")
+            .env("OPREASON_SSH_REASON", "powershell check")
+            .env_remove("OPREASON_SSH_CALL")
+            .stdin(Stdio::null())
+            // a console of its own without a window: chcp changes the code page of the console it runs in
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || screen::titled(ASK).is_some()),
+        "the window asks (now: {:?}; the launcher wrote: {:?})",
+        screen::window().map(|w| w.1),
+        fs::read_to_string(&out).unwrap_or_default()
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let h = screen::titled(ASK).expect("the window");
+    // SAFETY: a message to a window of this desktop.
+    unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
+    let t0 = Instant::now();
+    let ended = loop {
+        if let Ok(Some(st)) = claude.0.try_wait() {
+            break Some(st);
+        }
+        if t0.elapsed() > Duration::from_secs(20) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let printed = fs::read_to_string(&out).unwrap_or_default();
+    assert!(ended.is_some(), "the launcher ended: {printed:?}");
+    assert_eq!(
+        printed.lines().last(),
+        Some("sign 5"),
+        "the script's ssh got the failure of the closed window: {printed:?}"
+    );
+    let signs = sb.signs();
+    let s = signs
+        .first()
+        .unwrap_or_else(|| panic!("a record: {:?}", sb.records()));
+    assert_eq!(s["result"], "dismissed", "{s}");
+    assert_eq!(s["caller"]["type"], "claude", "{s}");
+    assert_eq!(s["call"]["rule"], "claude", "{s}");
+    assert_eq!(s["call"]["root"]["name"], "cmd.exe", "{s}");
+    // the relay read the launcher's very command line (Rust puts the program in quotes), whose own arguments are the
+    // launcher's: the relay tells it from them (the record's masked line cannot)
+    let started = format!("\"{}\" {line}", system.join("cmd.exe").display());
+    assert_eq!(
+        s["call"]["root"]["cmd"],
+        cmdline::shown(&cmdline::split_windows(&started), 1000),
+        "{s}"
+    );
+    assert!(op_reason_win::look::claude_powershell(
+        &cmdline::split_windows(&started)
+    ));
+    assert_eq!(s["client"]["cmd"], "ssh.exe -T git@github.com", "{s}");
+}
+
 #[test]
 fn closing_the_window_fails_the_requests_that_wait_with_it() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
