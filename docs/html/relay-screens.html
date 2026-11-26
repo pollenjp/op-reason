@@ -69,6 +69,7 @@
   --op-pic-taskbar: #2d4b63;
   --op-pic-stand: #4a6b85;
   --op-switch-shown: #454545;
+  --op-tree: #5d5d5d;
   --op-border: #454545;
   --op-close: #c8c8c8;
   /* A Windows 11 notification, light */
@@ -128,12 +129,12 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .player { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 14px; min-width: 0; }
 .fit { position: relative; width: 100%; overflow: hidden; border-radius: 10px; background: var(--scr-wall); }
 .stage {
-  position: absolute; top: 0; left: 0; width: 960px; height: 700px; transform-origin: 0 0;
+  position: absolute; top: 0; left: 0; width: 960px; height: 770px; transform-origin: 0 0;
   background: linear-gradient(160deg, var(--scr-wall), var(--scr-wall-2));
   font-family: var(--font-win); overflow: hidden;
 }
 .app {
-  position: absolute; left: 70px; top: 38px; width: 600px; height: 580px;
+  position: absolute; left: 70px; top: 38px; width: 600px; height: 650px;
   background: var(--scr-win); border: 1px solid var(--scr-line); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
@@ -151,13 +152,13 @@ html[lang="ja"] body { word-break: auto-phrase; }
 
 /* Where Windows shows its notifications: a quiet outline while none is there. */
 .ntf-area {
-  position: absolute; right: 12px; top: 556px; width: 300px; height: 92px;
+  position: absolute; right: 12px; bottom: 52px; width: 300px; height: 92px;
   border: 1px dashed var(--area-edge); border-radius: 8px; color: var(--area-ink);
   font-size: 12px; line-height: 1.45; display: grid; place-content: center; text-align: center; padding: 0 18px;
 }
 /* The Windows notification of the window (Windows 11, light): app, title, two lines. */
 .ntf {
-  position: absolute; right: 12px; top: 556px; width: 300px; height: 92px; z-index: 3;
+  position: absolute; right: 12px; bottom: 52px; width: 300px; height: 92px; z-index: 3;
   padding: 10px 14px 0; border-radius: 8px; background: var(--ntf-bg); color: var(--ntf-ink);
   border: 1px solid rgba(0, 0, 0, 0.12); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   font-size: 12px; opacity: 0; will-change: transform, opacity;
@@ -169,10 +170,11 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .ntf-l { font-size: 12px; line-height: 16px; color: #303030; }
 
 /* op-reason's window that asks (window.rs), in the dark look: one surface with round corners whose caption shows its close
-   button only; the header (a tile, the title, the time), the reason, the caller's chip, the command's box, what the
-   signature is for, the countdown with the language switch, the band with its picture of the screen, the buttons. */
+   button only; the header (a tile, the title, the time), the reason, the caller's chip, the process tree with the
+   command's box under the root's row, what the signature is for, the countdown with the language switch, the band with
+   its picture of the screen, the buttons. */
 .opr {
-  position: absolute; top: 12px; right: 12px; width: 372px; z-index: 4;
+  position: absolute; top: 12px; right: 12px; width: 388px; z-index: 4;
   background: var(--op-background); color: var(--op-text); border: 1px solid var(--op-border); border-radius: 8px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); font-size: 12px; line-height: 16px; opacity: 0; will-change: transform, opacity;
 }
@@ -204,9 +206,32 @@ html[lang="ja"] body { word-break: auto-phrase; }
 .opr-for svg { flex: none; }
 .opr-for g { stroke: var(--op-secondary); }
 .opr-detail { margin: 3px 0 0 18px; font-size: 10px; line-height: 13px; color: var(--op-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.opr-detail.mono { margin-top: 2px; font-family: var(--font-win-mono); line-height: 12px; }
-/* under the box, small: the root process and the rest of its line (the box's command as …) */
+/* under the box, small: the rest of the root's line (the box's command as …) */
 .opr-note { margin-top: 4px; font-family: var(--font-win-mono); font-size: 10px; line-height: 12px; color: var(--op-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The process tree (window.rs: Builder::tree): a row per process from the caller down to the client, each child 16 px
+   further in, with an elbow in the tree color from 6 px below its parent's middle down to its own, then right to 4 px
+   before its text; the box under the root's row, the client's ssh command small under its row; the frame of what Allow
+   this call covers, from the root's row down, with its name at its top right. */
+.opr-tree { margin-top: 6px; }
+.tr-node { position: relative; margin-left: 16px; }
+.tr-row { position: relative; display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; padding: 2px 0 2px 14px; line-height: 16px; }
+.tr-d { font-size: 11px; color: var(--op-tertiary); }
+.tr-dot { position: absolute; left: 0; top: calc(50% - 5px); width: 10px; height: 10px; border-radius: 50%; background: var(--op-claude); }
+/* the root's mark: outlined in the caution color, its text bold */
+.tr-mark { height: 18px; padding: 0 5px; border-radius: 9px; border: 1px solid var(--op-caution); color: var(--op-caution); font-size: 11px; font-weight: 700; line-height: 16px; }
+.tr-node > .tr-row::before, .tr-trunk::before, .tr-call::after { content: ""; position: absolute; box-sizing: border-box; pointer-events: none; }
+.tr-node > .tr-row::before { left: -11.75px; top: -4px; width: 21.75px; height: calc(50% + 4.75px); border: solid var(--op-tree); border-width: 0 0 1.5px 1.5px; }
+/* the elbow to a child goes on down beside what lies under its parent's row */
+.tr-trunk::before { left: -9.75px; top: -5px; bottom: 0; border-left: 1.5px solid var(--op-tree); }
+.tr-under { position: relative; margin: 0 14px; padding-bottom: 4px; }
+.tr-trunk { padding-top: 2px; }
+.tr-under .opr-code { margin-top: 0; }
+.tr-under .opr-note { margin-top: 3px; }
+.tr-small { font-family: var(--font-win-mono); font-size: 10px; line-height: 12px; color: var(--op-tertiary); overflow-wrap: anywhere; }
+/* the frame (solid: the filled button's; no fill), from 5 px left of the root's row; the row leaves room for its name */
+.tr-call::after { left: -5.75px; top: -1.75px; right: -0.75px; bottom: -1.75px; border: 1.5px solid var(--op-accent); border-radius: 6.75px; }
+.tr-call > .tr-row { padding-right: 90px; }
+.tr-frame { position: absolute; top: 3px; right: 6px; font-size: 10px; line-height: 13px; font-weight: 700; color: var(--op-accent); }
 .opr-bar { margin-top: 14px; height: 4px; border-radius: 2px; background: var(--op-line); overflow: hidden; }
 .opr-bar i { display: block; height: 100%; border-radius: 2px; background: var(--op-caution); transform-origin: 0 50%; }
 .opr-row { display: flex; align-items: flex-start; gap: 12px; margin-top: 7px; }
@@ -375,7 +400,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
           <div class="app-bar"><span data-l="en">deploy.yml — Editor</span><span data-l="ja">deploy.yml — エディター</span></div>
           <div class="app-menu" data-l="en"><span>File</span><span>Edit</span><span>View</span><span>Terminal</span></div>
           <div class="app-menu" data-l="ja"><span>ファイル</span><span>編集</span><span>表示</span><span>ターミナル</span></div>
-          <div class="app-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="app-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="ntf-area" id="area"><span data-l="en">Windows' notifications appear here</span><span data-l="ja">Windows の通知はここに出ます</span></div>
         <div class="ntf" id="ntf">
@@ -398,12 +423,24 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
             <p class="opr-k"><span data-l="en">Reason</span><span data-l="ja">理由</span></p>
             <p class="opr-reason"><span data-l="en">check that the service runs</span><span data-l="ja">サービスが動いているかを見る</span></p>
             <span class="opr-chip"><i></i>Claude Code (pid 4242)</span>
-            <p class="opr-k"><span data-l="en">Root command</span><span data-l="ja">起点のコマンド</span></p>
-            <p class="opr-code"><b>ssh</b> deploy@web-02 "systemctl status app"</p>
-            <p class="opr-note">bash (pid 5150) · bash -c -l "…"</p>
+            <p class="opr-k"><span data-l="en">Process tree</span><span data-l="ja">プロセスの木</span></p>
+            <div class="opr-tree">
+              <p class="tr-row"><i class="tr-dot"></i><b>Claude Code</b><span class="tr-d">claude.exe · pid 4242</span></p>
+              <div class="tr-node tr-call">
+                <p class="tr-row"><b>bash.exe</b><span class="tr-d">pid 5150</span><span class="tr-mark"><span data-l="en">Root</span><span data-l="ja">起点</span></span></p>
+                <div class="tr-under tr-trunk">
+                  <p class="opr-code"><b>ssh</b> deploy@web-02 "systemctl status app"</p>
+                  <p class="opr-note">bash -c -l "…"</p>
+                </div>
+                <div class="tr-node">
+                  <p class="tr-row"><b>ssh.exe</b><span class="tr-d">pid 5236</span></p>
+                  <p class="tr-under tr-small">ssh.exe deploy@web-02 "systemctl status app"</p>
+                </div>
+                <span class="tr-frame"><span data-l="en">this call</span><span data-l="ja">この呼び出し</span></span>
+              </div>
+            </div>
             <p class="opr-for"><svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><g fill="none"><circle cx="7" cy="8" r="6" stroke-width="1.5"/><path d="M4 8h6M8 6l2 2-2 2" stroke-width="1.2"/></g></svg><span data-l="en">logging in as deploy</span><span data-l="ja">deploy としてログイン</span></p>
             <p class="opr-detail"><span data-l="en">Destination deploy@web-02 · host key SHA256:x5QvN2… · Key SHA256:Jq7c0R…</span><span data-l="ja">接続先 deploy@web-02 · ホストの鍵 SHA256:x5QvN2… · 鍵 SHA256:Jq7c0R…</span></p>
-            <p class="opr-detail mono"><span data-l="en">Command</span><span data-l="ja">コマンド</span>: ssh.exe deploy@web-02 "systemctl status app"</p>
             <div class="opr-bar"><i id="bar"></i></div>
             <div class="opr-row">
               <p class="opr-left" id="left"></p>
@@ -529,7 +566,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 </main>
 
 <script>
-// The motion of the relay's toasts, window and notification on one 960 x 700 desktop, played as a 33-second loop.
+// The motion of the relay's toasts, window and notification on one 960 x 770 desktop, played as a 33-second loop.
 // The cards follow crates/op-reason-win/src/pass_toast.rs (its tests show the rules). ?t=<ms> seeks to that moment and
 // pauses (for screenshots and checks); #ja shows the page in Japanese and #en in English.
 (() => {
@@ -540,7 +577,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   const OPACITY = 0.9, MORE_GAP = 4, MORE_H = 16, MORE_PAD = 6;
   // A card's size, how far above its place a new card starts, how long a card pushed out stays once transparent.
   const CARD_W = 300, CARD_H = 70, DROP = 12, LINGER = 40;
-  const SW = 960, SH = 700, TOTAL = 33000;
+  const SW = 960, SH = 770, TOTAL = 33000;
   // The window's countdown (window.rs redraws it every 250 ms): the seconds left of the relay's default answer wait,
   // then how long an answer lasts (relay_ui.rs: until the program of the root command ends), and the bar.
   const ANSWER_WAIT = 60, LIMIT = 60, COUNTDOWN_MS = 250, PROGRAM = 'ssh';
@@ -831,7 +868,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
     ntf.x = anim(val(ntf.x), 330, 300, easeIn);
     at(now + 300, () => { area.op = anim(val(area.op), 1, 200, lin); });
   }
-  const CURSOR_FROM = { x: 470, y: 580 };
+  const CURSOR_FROM = { x: 470, y: 650 };
   function moveCursor() { cur.op = anim(val(cur.op), 1, 150, lin); cur.t = anim(0, 1, 700, easeInOut); }
   function hideCursor() { cur.op = anim(val(cur.op), 0, 200, lin); }
   // Where the window, its Allow button and the notification are on the stage (read again after a language change).
@@ -891,8 +928,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   }
 
   // ---- the timeline (ms) ----
-  // The callouts of scene 6 stay narrow: those next to the cards clear the window (its left edge is at 576).
-  const NARROW = 232;
+  // The callouts of scene 6 stay narrow: those next to the cards clear the window (its left edge is at 560).
+  const NARROW = 216;
   function script() {
     // 1: an ssh typed in a terminal allowed for 60 minutes
     at(300, () => sig('pwsh', 'pwsh'));

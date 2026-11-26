@@ -9,15 +9,16 @@
   (scene 1: op-reason's window and the approval prompt), so that nothing is lost without the motion. Viewers
   that run no CSS animations show the same frame.
 - op-reason's window is laid out as crates/op-reason-win/src/win/window.rs draws it (the header, the reason, the chips,
-  the command's box, the band with its picture of the screen, the footer and the language switch's pill), with the texts
+  the command's box or the relay's process tree with the box under its row, the band with its picture of the screen,
+  the footer and the language switch's pill), with the texts
   of crates/op-reason-win/src/ui.rs, in the dark look of crates/op-reason-win/src/theme.rs (the windows follow Windows'
   app mode; the animations show the dark one). The refusal and the log table are op-reason's output
   (the texts of crates/op-reason-core/src/messages.rs and logview.rs), the saved choice of a language is the file of
   crates/op-reason-core/src/settings/file.rs. The 1Password approval prompt is a plain box: it copies neither the look
   nor the words of 1Password's screen.
-- The SSH relay's scene: its window that asks with the texts of crates/op-reason-win/src/relay_ui.rs (its countdown
-  ticking), the toasts of signatures that passed without a window as crates/op-reason-win/src/win/pass_window.rs draws
-  them in the same dark look, moving by the rules and
+- The SSH relay's scene: its window that asks with the texts of crates/op-reason-win/src/relay_ui.rs (the call's
+  process tree, its countdown ticking), the toasts of signatures that passed without a window as
+  crates/op-reason-win/src/win/pass_window.rs draws them in the same dark look, moving by the rules and
   times of crates/op-reason-win/src/pass_toast.rs (simulated here), and a Windows notification. The HTML page
   docs/html/relay-screens.html plays the same; --check also looks for the copied texts and times in it.
 - Names are examples only (repository, directory, process ids).
@@ -99,6 +100,10 @@ SKETCH = (64.0, 46.0)  # the band's picture of the screen
 PILL_H, PILL_PAD, PILL_GAP = 24.0, 9.0, 12.0  # the language switch
 BAR_H = 4.0  # the bar of the seconds left to answer
 BUTTON_H, BUTTON_TOP_GAP, BUTTON_GAP, BUTTON_PAD_X, BUTTON_MIN_W, BUTTON_RADIUS = 30.0, 14.0, 8.0, 14.0, 96.0, 6.0
+# The relay's process tree (design 2026-11-27-relay-process-tree-design.md §3.5): how far each level indents, the height
+# of a row's line (2 more above and below it), where a row's text starts after its dot or elbow, the height of its
+# pills, how far the boxes under the rows end before the right edge (inside the frames), the gap between a row's parts
+TREE_INDENT, TREE_LINE, TREE_TEXT, TREE_PILL_H, TREE_INSET, TREE_GAP = 16.0, 16.0, 14.0, 18.0, 14.0, 6.0
 COUNTDOWN_MS = 250  # the window redraws its countdown this often
 SEGOE_ASCENT = 2210 / 2048  # Segoe UI: DirectWrite puts the baseline this far (em) below the top of a line,
 SEGOE_LINE = (2210 + 514) / 2048  # and a line is this tall
@@ -136,6 +141,7 @@ DARK = {
     "pic_stand": "#4a6b85",
     "pic_window": "#3c3c3c",
     "switch_shown": "#454545",
+    "tree": "#5d5d5d",
 }
 D = DARK
 
@@ -245,8 +251,10 @@ RELAY = {
         "subtitle": "op-reason's relay · per-call mode",
         "reason": "Reason",
         "claude_pid": "Claude Code (pid {0})",
-        "root_command": "Root command",
-        "command": "Command",
+        "claude": "Claude Code",
+        "tree_label": "Process tree",
+        "root_mark": "Root",
+        "frame_call": "this call",
         "userauth": "logging in as {0}",
         "destination": "Destination",
         "host_key": "host key {0}",
@@ -267,8 +275,10 @@ RELAY = {
         "subtitle": "op-reason の中継 · 呼び出しごとに決めるモード",
         "reason": "理由",
         "claude_pid": "Claude Code (pid {0})",
-        "root_command": "起点のコマンド",
-        "command": "コマンド",
+        "claude": "Claude Code",
+        "tree_label": "プロセスの木",
+        "root_mark": "起点",
+        "frame_call": "この呼び出し",
         "userauth": "{0} としてログイン",
         "destination": "接続先",
         "host_key": "ホストの鍵 {0}",
@@ -311,7 +321,8 @@ RELAY_HTML = "docs/html/relay-screens.html"
 
 
 def sources() -> dict:
-    """What --check expects to find in each Rust file: the copied texts, formats and sizes."""
+    """What --check expects to find in each Rust file: the copied texts, formats and sizes (white space aside: see
+    squeeze)."""
     ui = ['"Claude Code (pid {pid})"', '"{repo} · {branch}"']
     for t in WINDOW.values():
         ui += [f'"{v}"' for v in t.values()]
@@ -371,6 +382,12 @@ def sources() -> dict:
         "BUTTON_PAD_X": BUTTON_PAD_X,
         "BUTTON_MIN_W": BUTTON_MIN_W,
         "BUTTON_RADIUS": BUTTON_RADIUS,
+        "TREE_INDENT": TREE_INDENT,
+        "TREE_LINE": TREE_LINE,
+        "TREE_TEXT": TREE_TEXT,
+        "TREE_PILL_H": TREE_PILL_H,
+        "TREE_INSET": TREE_INSET,
+        "TREE_GAP": TREE_GAP,
     }
     window = [f"const {k}: f32 = {v:.1f};" for k, v in sizes.items()] + [
         f"const SKETCH: (f32, f32) = ({SKETCH[0]:.1f}, {SKETCH[1]:.1f});",
@@ -385,6 +402,51 @@ def sources() -> dict:
         "ChipKind::Claude | ChipKind::Person | ChipKind::Other | ChipKind::Repo => CHIP_MARK,",
         "let chip_w = (2.0 * CHIP_PAD + mark + w).min(width);",
         "y = yy - CHIP_GAP + SECTION_GAP;",
+        # the relay's process tree under its label (Builder::tree): the rows, the elbows, the box and the small lines
+        # under their rows, the frames
+        "let (_, _, h) = b.label(&fonts.f10, &v.code_label, (x0, y), width, Ink::Secondary)?;",
+        "if let Some(tree) = tree { y += h + 6.0; (y, code_h) = b.tree(tree, v, y, fit)?;",
+        "let name_fmt = |solid: bool| if solid { &fonts.f10b } else { &fonts.f10 };",
+        "name_w.push(fonts.text(name_fmt(f.solid), &f.label, NO_WRAP)?.1);",
+        "let rx = x0 + TREE_INDENT * row.depth as f32; let tx = rx + TREE_TEXT;",
+        ".map(|(_, w)| w + 12.0)",
+        "let avail = (right - TREE_INSET - room - tx).max(60.0);",
+        "RowTone::Strong => (&fonts.f12b, Ink::Text), RowTone::Plain => (&fonts.f12, Ink::Secondary),"
+        " RowTone::Faint => (&fonts.f12, Ink::Tertiary),",
+        "let (l, w, h) = fonts.text(name_f, &row.name, avail)?;",
+        "let (l, w, h) = fonts.text(&fonts.f11, &row.detail, avail)?;"
+        " pieces.push(Piece::Text(l, w, h, Ink::Tertiary));",
+        "let (l, w, h) = fonts.text(&fonts.f11b, m, avail - 12.0)?;",
+        "Piece::Pill(_, w, _, mark) => w + if *mark { 12.0 } else { 14.0 },",
+        "Piece::Pill(_, _, h, _) => h.max(TREE_PILL_H),",
+        "let at = look::flow(&widths, avail, TREE_GAP);",
+        "let mut line_h = vec![TREE_LINE; lines];",
+        "line_h[*r] = line_h[*r].max(heights[k]);",
+        "let mut yy = top + 2.0;",
+        "let mid = top + 2.0 + line_h[0] / 2.0;",
+        "(0..i).rev().find(|&k| tree.rows[k].depth + 1 == row.depth)",
+        "let px = x0 + TREE_INDENT * tree.rows[p].depth as f32 + 5.0;",
+        "self.line((px, mids[p] + 6.0), (px, mid), Ink::Tree, 1.5);",
+        "self.line((px, mid), (tx - 4.0, mid), Ink::Tree, 1.5);",
+        "Ink::Tree => p.tree,",
+        "ChipKind::Claude => Ink::Claude, ChipKind::Person => Ink::Success, _ => Ink::Secondary,",
+        "cx: rx + 5.0, cy: mid, r: 5.0,",
+        "y: ly + (lh - h) / 2.0,",
+        "let (pad, fill, stroke, ink) = if mark { (6.0, None, Some((Ink::Caution, 1.0)), Ink::Caution) } else {",
+        "let py = ly + (lh - ph) / 2.0;",
+        "self.rect(rect(x, py, widths[k], ph), ph / 2.0, fill, stroke);",
+        "x: x + pad, y: py + (ph - h) / 2.0,",
+        "y = yy + 2.0; let inner = right - TREE_INSET - tx; if i == tree.boxed { y += 2.0;"
+        " let (box_h, h) = self.code_box(&v.code, (tx, y), inner, fit)?;",
+        "if let Some(note) = &v.code_note { y += 3.0;"
+        " let (_, _, h) = self.label(&fonts.m10, note, (tx, y), inner, Ink::Tertiary)?; y += h; } y += 4.0; }",
+        "let (_, _, h) = self.label(&fonts.m10, line, (tx, y), inner, Ink::Tertiary)?; y += h + 4.0;",
+        "let left = x0 + TREE_INDENT * first.depth as f32 - 5.0;",
+        "let fr = right - 8.0 * k as f32;",
+        "r: Rect { left, top: top - 1.0, right: fr, bottom: end + 1.0 + 3.0 * (n - 1 - k) as f32, }, radius: 6.0,"
+        " fill: None, stroke: Some((Ink::Accent, if f.solid { 1.5 } else { 1.0 })), dashed: !f.solid,",
+        "(0.0, top + 3.0),",
+        "self.labels[i].x = fr - 6.0 - w;",
         "let box_h = code_h + 2.0 * CODE_PAD_Y;",
         "let (_, _, h) = b.label(&fonts.m10, note, (x0, y), width, Ink::Tertiary)?;",
         "let (_, _, h) = b.label(&fonts.m10, &fact.text, at, w, Ink::Tertiary)?;",
@@ -409,13 +471,14 @@ def sources() -> dict:
         "rect(x + 1.0, y + 34.0, 62.0, 5.0),",
         "rect(x + 28.0, y + 40.0, 8.0, 4.0),",
         "rect(x + 22.0, y + 44.0, 20.0, 2.0),",
-        # the switch's shown half, and the buttons' colors
+        # the switch's shown half, and the buttons' colors by their place: the first (unless it is Deny) filled, its
+        # label bold; Deny outlined in the critical color; any other outlined in the accent color
         "ink: if l == lang { Ink::Text } else { Ink::Secondary },",
         "&rounded(inset(pill.rects[shown], 2.0), PILL_H / 2.0 - 2.0),",
-        "Button::Allow => (Ink::Accent, None),",
-        "Button::Deny => (Ink::Surface, Some(Ink::Critical)),",
-        "Button::Allow => Ink::OnAccent,",
-        "Button::Deny => Ink::Critical,",
+        "let filled = n == 0 && *button != Button::Deny; let fmt = if filled { &fonts.f12b } else { &fonts.f12 };",
+        "let (fill, border) = if b.filled { (Ink::Accent, None) } else if b.button == Button::Deny {"
+        " (Ink::Surface, Some(Ink::Critical)) } else { (Ink::Surface, Some(Ink::Accent)) };",
+        "let ink = if filled { Ink::OnAccent } else if *button == Button::Deny { Ink::Critical } else { Ink::Accent };",
     ]
     settings = [
         SETTINGS[0],
@@ -432,11 +495,25 @@ def sources() -> dict:
         '(Some(d), Some(k)) => Some(format!("{d} · {}", fill(t.host_key, k))),',
         'format!("{} {k}", t.key)',
         'text: detail.join(" · "),',
-        # a call with a root: the command it runs in the box, the root process and the rest of its line under it, the
-        # client's command line small, and the program in the line about how long an answer lasts
-        'Some(format!("{} · {}", root.process(), u.frame)),',
-        'format!("{} (pid {})", self.name, self.pid)',
-        'text: format!("{}: {}", t.command, f.command),',
+        # a call with a root and its processes: the tree (tree_view) from Claude Code (its dot, its image and PID) to
+        # the root (its mark) and the client; the command the root runs in the box under the root's row and the rest of
+        # its line under the box; the client's command line small under its row (no longer among the facts); the frame
+        # of what Allow this call covers, from the root down, while the window asks; and the program in the line about
+        # how long an answer lasts
+        "Some(root) if with_tree.is_some() => match look::root_command(&root.cmd) {"
+        " Some(u) => (t.tree_label, u.command, Some(u.frame)),",
+        "if f.root.is_some() && f.tree.is_none() && !powershell {",
+        "let frames = phase == Phase::Ask && !alone;",
+        'let pid_of = |p: Option<u32>| p.map(|n| format!("pid {n}")).unwrap_or_default();',
+        "Caller::Claude { .. } => ChipKind::Claude,",
+        "Caller::Claude { .. } => t.claude,",
+        "let detail = [h.name.clone(), pid_of(h.pid)]",
+        '.join(" · ");',
+        "dot: Some(dot), ..plain(0, name, detail, RowTone::Strong)",
+        "mark: Some(t.root_mark.to_owned()), ..plain(root_at, &root.name, pid_of(Some(root.pid)), RowTone::Strong)",
+        "rows.push(plain(rows.len(), &c.name, pid_of(c.pid), RowTone::Strong));",
+        ".map(|i| (i, f.command.clone()));",
+        "out.push(frame(root_at, t.frame_call, true));",
         "let named = f.root.is_some() && !powershell;",
         "match named.then(|| look::program_name(&code)).flatten() {",
         'Some(name) => t.covers_name.replace("{0}", &name).replace("{1}", &limit),',
@@ -644,9 +721,11 @@ TEXTS = {
             "host and lights up at each. Three other calls each put a card on top and push the others down; a fourth "
             "and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, "
             "+2) until four seconds after their last signature; four seconds after its last signature each card "
-            "fades. Then a new call asks in op-reason's window at the top right, where the seconds left to answer "
-            "count down, with its Windows notification at the bottom right, while another toast comes at the top "
-            "left; a click on Allow this call closes the "
+            "fades. Then a new call asks in op-reason's window at the top right. Its process tree goes from Claude Code "
+            "to bash.exe, marked Root, with the command it runs in a box under it, then to ssh.exe with its command "
+            "line; a frame named this call surrounds the root and below: what Allow this call covers. The seconds left "
+            "to answer count down, with the window's Windows notification at the bottom right, while another toast "
+            "comes at the top left; a click on Allow this call closes the "
             "window and its notification together, and the call's later signatures come as one toast at the top "
             "left (×3)."
         ),
@@ -749,7 +828,9 @@ TEXTS = {
             "ホストを出し、署名のたびに光る。ほかの 3 つの呼び出しはそれぞれ一番上にカードを入れてほかを下へずらし、"
             "4 枚目と 5 枚目は一番古いものをすぐ消す。消したカードは、その最後の署名から 4 秒まで 3 枚目の下の +N が"
             "数える (+1、+2)。どのカードも最後の署名から 4 秒で薄れて消える。最後に、新しい呼び出しが右上の op-reason "
-            "の窓で聞き (答えを待つ残り秒が減っていく)、右下に Windows "
+            "の窓で聞く。窓のプロセスの木は Claude Code から、起点の印の付いた bash.exe (動かすコマンドをその下の箱に"
+            "出す) を経て ssh.exe (その下にコマンドを出す) まで続き、起点から下を「この呼び出し」の枠が囲む (この呼び"
+            "出しを許可 が効く範囲)。答えを待つ残り秒が減っていき、右下に Windows "
             "の通知が出て、その間に左上には別のトーストが出る。この呼び出しを許可 を押すと窓と通知が一緒に消え、"
             "その呼び出しの続きの署名は左上の 1 枚のトースト (×3) に出る。"
         ),
@@ -932,8 +1013,9 @@ def para(x: float, top: float, s: str, size: float, fill: str, width: float, bol
 
 
 def mono_para(x: float, top: float, s: str, size: float, fill: str, width: float) -> tuple:
-    """A small text of op-reason's window in the monospace font (the root process under the command's box, the ssh
-    command among the facts), wrapped at `width`: the lines and the height."""
+    """A small text of op-reason's window in the monospace font (the root's line under the command's box, the ssh
+    command among the facts or under the client's row of the process tree), wrapped at `width`: the lines and the
+    height."""
     n = int(width // (size * ADVANCE))
     spans = wrap_at(s, lambda t: cols(t) <= n)
     line = size * MONO_LINE
@@ -1421,10 +1503,103 @@ class Laid:
         return "".join(self.shapes + self.texts) + countdown + "".join(self.top)
 
 
+def lay_out_tree(w: Laid, v: dict, y: float) -> float:
+    """The relay's process tree from `y`, as window.rs's Builder::tree lays it out (design
+    2026-11-27-relay-process-tree-design.md §3): a row per process, each child indented under its parent with an elbow
+    in the tree color; a row's parts flow after its dot (the caller's), from its text's start: the name, the detail in
+    the tertiary color, the mark outlined in the caution color (the root's); the box (the view's code, its code_note
+    small under it) under its row, and the small line (the client's command line) under its row; then the frames in the
+    gaps, each with its name at its top right. Returns where the tree ends."""
+    tree = v["tree"]
+    rows, frames = tree["rows"], tree["frames"]
+    x0, right = PAD_LEFT, PAD_LEFT + TEXT_W
+    tones = {"strong": (True, D["text"]), "plain": (False, D["secondary"]), "faint": (False, D["tertiary"])}
+    name_w = [est_width(f["label"], 10, f["solid"]) for f in frames]
+    tops, mids, ends = [], [], []
+    for i, row in enumerate(rows):
+        rx = x0 + TREE_INDENT * row["depth"]
+        tx = rx + TREE_TEXT
+        # the parts flow onto more lines rather than run under the end, or under a frame's name on its first row
+        room = max((nw + 12 for f, nw in zip(frames, name_w, strict=True) if f["first"] == i), default=0.0)
+        avail = max(right - TREE_INSET - room - tx, 60.0)
+        bold, ink = tones[row["tone"]]
+        parts = [(row["name"], 12, bold, ink, False)]  # (text, size, bold, ink, in a pill: the mark)
+        if row["detail"]:
+            parts.append((row["detail"], 11, False, D["tertiary"], False))
+        if row.get("mark"):
+            parts.append((row["mark"], 11, True, D["caution"], True))
+        sized = []  # each part's width, height and its text's height
+        for s, size, b, _, pill in parts:
+            _, h, tw = para(0, 0, s, size, "", avail - 12 if pill else avail, b)
+            sized.append((tw + 12, max(h, TREE_PILL_H), h) if pill else (tw, h, h))
+        at = flow([p[0] for p in sized], avail, TREE_GAP)
+        line_h = [TREE_LINE] * (at[-1][0] + 1)
+        for (r, _), (_, ph, _) in zip(at, sized, strict=True):
+            line_h[r] = max(line_h[r], ph)
+        top = y
+        line_y, yy = [], top + 2
+        for h in line_h:
+            line_y.append(yy)
+            yy += h
+        mid = top + 2 + line_h[0] / 2
+        # the elbow from the parent: down from below its dot or name, then right to this row (two lines, flat ends)
+        parent = next((k for k in range(i - 1, -1, -1) if rows[k]["depth"] + 1 == row["depth"]), None)
+        if row["depth"] > 0 and parent is not None:
+            px = x0 + TREE_INDENT * rows[parent]["depth"] + 5
+            w.shapes.append(
+                f'<path d="M{num(px)},{num(mids[parent] + 6)}V{num(mid)}M{num(px)},{num(mid)}H{num(tx - 4)}" '
+                f'fill="none" stroke="{D["tree"]}" stroke-width="1.5"/>'
+            )
+        if row.get("dot"):
+            dot_ink = {"claude": D["claude"], "person": D["success"]}.get(row["dot"], D["secondary"])
+            w.shapes.append(dot(rx + 5, mid, 5, dot_ink))
+        for (s, size, b, ink, pill), (pw, ph, h), (r, px) in zip(parts, sized, at, strict=True):
+            x, ly, line = tx + px, line_y[r], line_h[r]
+            if pill:
+                py = ly + (line - ph) / 2
+                w.shapes.append(box(x, py, pw, ph, ph / 2, "none", D["caution"]))
+                w.texts.append(para(x + 6, py + (ph - h) / 2, s, size, ink, avail - 12, b)[0])
+            else:
+                w.texts.append(para(x, ly + (line - h) / 2, s, size, ink, avail, b)[0])
+        y = yy + 2
+        inner = right - TREE_INSET - tx
+        if i == tree["boxed"]:  # the box, and under it the rest of the root's line
+            y += 2
+            code, code_h = code_text(tx + CODE_PAD_X, y + CODE_PAD_Y, v["code"], inner - 2 * CODE_PAD_X)
+            box_h = code_h + 2 * CODE_PAD_Y
+            w.shapes.append(box(tx, y, inner, box_h, CODE_RADIUS, D["code_bg"], D["code_border"]))
+            w.texts.append(code)
+            y += box_h
+            if v["code_note"]:
+                y += 3
+                note, h = mono_para(tx, y, v["code_note"], 10, D["tertiary"], inner)
+                w.texts.append(note)
+                y += h
+            y += 4
+        if tree["small"] and tree["small"][0] == i:
+            small, h = mono_para(tx, y, tree["small"][1], 10, D["tertiary"], inner)
+            w.texts.append(small)
+            y += h + 4
+        tops.append(top)
+        mids.append(mid)
+        ends.append(y)
+    # the frames, the outer one first: each inner one ends 8 DIPs inside the one around it; solid for the filled
+    # button's (its name bold), dashed for the outlined one's
+    for k, (f, nw) in enumerate(zip(frames, name_w, strict=True)):
+        top, fr = tops[f["first"]], right - 8 * k
+        left = x0 + TREE_INDENT * rows[f["first"]]["depth"] - 5
+        bottom = ends[f["last"]] + 1 + 3 * (len(frames) - 1 - k)
+        sw, dashed = (1.5, "") if f["solid"] else (1, ' stroke-dasharray="2 2"')
+        w.shapes.append(box(left, top - 1, fr - left, bottom - top + 1, 6, "none", D["accent"], sw, dashed))
+        w.texts.append(wline(fr - 6 - nw, top + 3, f["label"], 10, D["accent"], f["solid"]))
+    return y
+
+
 def lay_out(v: dict, lang: str) -> Laid:
     """Lays a window's view out top to bottom as window.rs's build does (design §4.2, §4.3): the header, the reason,
-    the chips, the command, what the signature is for (the relay), the countdown with the switch (the relay's window
-    that asks), the band, the footer with the switch (a call of op), the buttons (the relay)."""
+    the chips, the command (the relay's process tree with the box under its row), what the signature is for (the relay),
+    the countdown with the switch (the relay's window that asks), the band, the footer with the switch (a call of op),
+    the buttons (the relay)."""
     w = Laid()
     x0, width = PAD_LEFT, TEXT_W
     right = x0 + width
@@ -1483,20 +1658,23 @@ def lay_out(v: dict, lang: str) -> Laid:
                 w.at["caller"] = (cx, cy, cw, ch)
         y = yy - CHIP_GAP + SECTION_GAP
 
-    # the command, in its box with colored words
+    # the relay's process tree with the box under its row, or the command in its box with colored words
     label, h, _ = para(x0, y, v["code_label"], 10, D["secondary"], width)
     w.texts.append(label)
-    y += h + 4
-    code, code_h = code_text(x0 + CODE_PAD_X, y + CODE_PAD_Y, v["code"], width - 2 * CODE_PAD_X)
-    box_h = code_h + 2 * CODE_PAD_Y
-    w.shapes.append(box(x0, y, width, box_h, CODE_RADIUS, D["code_bg"], D["code_border"]))
-    w.texts.append(code)
-    y += box_h
-    if v.get("code_note"):  # the root process and the rest of its line, small
-        y += 4
-        note, h = mono_para(x0, y, v["code_note"], 10, D["tertiary"], width)
-        w.texts.append(note)
-        y += h
+    if v["tree"]:
+        y = lay_out_tree(w, v, y + h + 6)
+    else:
+        y += h + 4
+        code, code_h = code_text(x0 + CODE_PAD_X, y + CODE_PAD_Y, v["code"], width - 2 * CODE_PAD_X)
+        box_h = code_h + 2 * CODE_PAD_Y
+        w.shapes.append(box(x0, y, width, box_h, CODE_RADIUS, D["code_bg"], D["code_border"]))
+        w.texts.append(code)
+        y += box_h
+        if v.get("code_note"):  # the root process and the rest of its line, small
+            y += 4
+            note, h = mono_para(x0, y, v["code_note"], 10, D["tertiary"], width)
+            w.texts.append(note)
+            y += h
 
     # the relay: what the signature is for, the destination and the key, the ssh command
     if v["facts"]:
@@ -1572,23 +1750,25 @@ def lay_out(v: dict, lang: str) -> Laid:
             w.at["ja"] = ((halves[1][0] + right) / 2, top + PILL_H / 2)
         y += row
 
-    # the buttons (the relay's window that asks): Allow this call filled with the accent color, Deny at the right end
+    # the buttons (the relay's window that asks), styled by their place: the first (unless it is Deny) filled with the
+    # accent color, its label bold; Deny outlined in the critical color, at the right end; any other outlined in the
+    # accent color
     if v["buttons"]:
         y += BUTTON_TOP_GAP
         x = x0
-        for kind, label in v["buttons"]:
-            bold = kind == "allow"
-            tw = est_width(label, 12, bold)
+        for n, (kind, label) in enumerate(v["buttons"]):
+            filled = n == 0 and kind != "deny"
+            tw = est_width(label, 12, filled)
             bw = max(tw + 2 * BUTTON_PAD_X, BUTTON_MIN_W)
             left = max(right - bw, x) if kind == "deny" else x
-            if kind == "allow":
+            if filled:
                 w.top.append(box(left, y, bw, BUTTON_H, BUTTON_RADIUS, D["accent"]))
                 ink = D["on_accent"]
             else:
+                ink = D["critical"] if kind == "deny" else D["accent"]
                 w.top.append(box(left, y, bw, BUTTON_H, BUTTON_RADIUS, D["surface"]))
-                w.top.append(box(left + 0.5, y + 0.5, bw - 1, BUTTON_H - 1, BUTTON_RADIUS, "none", D["critical"]))
-                ink = D["critical"]
-            w.top.append(wline(left + (bw - tw) / 2, y + (BUTTON_H - lh(12)) / 2, label, 12, ink, bold))
+                w.top.append(box(left + 0.5, y + 0.5, bw - 1, BUTTON_H - 1, BUTTON_RADIUS, "none", ink))
+            w.top.append(wline(left + (bw - tw) / 2, y + (BUTTON_H - lh(12)) / 2, label, 12, ink, filled))
             w.at[kind] = (left, y, bw, BUTTON_H, ink)
             x = left + bw + BUTTON_GAP
         y += BUTTON_H
@@ -1649,6 +1829,7 @@ def op_view(lang: str, call: dict) -> dict:
         "code_label": t["command"],
         "code": call["command"],
         "code_note": None,
+        "tree": None,
         "facts": [],
         "countdown": None,
         "band": (t["band_title"], t["band_line"], "op"),
@@ -2586,13 +2767,22 @@ KEY_FINGERPRINT = "SHA256:Jq7c0R…"  # the key of the example's signature (made
 
 
 def relay_view(lang: str, call: dict) -> dict:
-    """relay_ui.rs: view — the window that asks (per-call) of a call of Claude Code, which has a root: the reason first,
-    the caller's chip, the root command in the box with the root process and the rest of its line under it, what the
-    signature is for, the destination with its host key and the key, the client's ssh command, the countdown and how
-    long an answer lasts (until that program ends), the band, then Allow this call and Deny."""
+    """relay_ui.rs: view — the window that asks (per-call) of a call of Claude Code's Bash tool on Windows, which has a
+    root and its processes: the reason first, the caller's chip, the process tree (tree_view: Claude Code with its image
+    and PID, the root with its mark and, under its row, the root command in the box and the rest of its line, the
+    client with its ssh command small under its row, and the frame of what Allow this call covers, from the root
+    down), what the signature is for, the destination with its host key and the key, the countdown and how long an
+    answer lasts (until the root command's program ends), the band, then Allow this call and Deny."""
     t = RELAY[lang]
     time, date = split_time(call["time"])
     name, pid, frame, command = call["root"]
+    client, client_pid = call["client"]
+    rows = [  # the caller (its dot, its image and PID), the root (its mark) and the client, each in bold
+        {"depth": 0, "dot": "claude", "name": t["claude"], "detail": f"claude.exe · pid {call['pid']}"},
+        {"depth": 1, "name": name, "detail": f"pid {pid}", "mark": t["root_mark"]},
+        {"depth": 2, "name": client, "detail": f"pid {client_pid}"},
+    ]
+    rows = [{**row, "tone": "strong"} for row in rows]
     detail = " · ".join(
         [
             f"{t['destination']} {call['dest']} · {t['host_key'].replace('{0}', HOST_KEY)}",
@@ -2608,13 +2798,18 @@ def relay_view(lang: str, call: dict) -> dict:
         "reason_label": t["reason"],
         "reason": call["reason"],
         "chips": [("claude", t["claude_pid"].replace("{0}", call["pid"]))],
-        "code_label": t["root_command"],
+        "code_label": t["tree_label"],
         "code": command,
-        "code_note": f"{name} (pid {pid}) · {frame}",
+        "code_note": frame,
+        "tree": {
+            "rows": rows,
+            "boxed": 1,
+            "small": (2, call["command"]),
+            "frames": [{"first": 1, "last": 2, "label": t["frame_call"], "solid": True}],
+        },
         "facts": [
             ("purpose", t["userauth"].replace("{0}", call["user"])),
             ("detail", detail),
-            ("mono", f"{t['command']}: {call['command']}"),
         ],
         "countdown": (
             t["countdown"],
@@ -2692,14 +2887,17 @@ NOTE_W, NOTE_H = 320, 96  # a Windows notification
 
 
 def relay_call(lang: str) -> dict:
-    """The call that asks in the relay's scene: Claude Code checks the service on web-02. Its Bash tool ran ssh in a
-    bash, the call's root: the root's name, PID, its line with the command it runs as … (look.rs: root_command's
-    frame) and that command; the client's (ssh.exe's) command line is the toasts' too."""
+    """The call that asks in the relay's scene: Claude Code on Windows (claude.exe, its PID in its chip and at the head
+    of the tree) checks the service on web-02. Its Bash tool ran ssh in a bash (bash.exe), the call's root: the root's
+    image, PID, its line with the command it runs as … (look.rs: root_command's frame) and that command; then the client
+    that bash started (ssh.exe) and its PID: the chain ssh.exe → bash.exe → claude.exe of conn.rs's identify, with no
+    process between. The client's command line is the toasts' too."""
     return {
         "time": f"{DAY} 10:42:07",
         "pid": "4242",
         "reason": RELAY_REASONS[lang]["service"],
-        "root": ("bash", "5150", 'bash -c -l "…"', 'ssh deploy@web-02 "systemctl status app"'),
+        "root": ("bash.exe", "5150", 'bash -c -l "…"', 'ssh deploy@web-02 "systemctl status app"'),
+        "client": ("ssh.exe", "5236"),
         "command": RELAY_CALLS["deploy"][1],
         "dest": RELAY_CALLS["deploy"][2],
         "user": "deploy",
@@ -2801,8 +2999,8 @@ def relay_html_needles() -> list:
     # every role but those its window does not show (no path in its command, the picture's window is this one)
     unused = ("code_path", "pic_window")
     colors = [f"--op-{role.replace('_', '-')}: {rgb};" for role, rgb in DARK.items() if role not in unused]
-    keys = ("title", "subtitle", "reason", "root_command", "command", "countdown", "covers_name", "band_title")
-    keys += ("allow", "deny")
+    keys = ("title", "subtitle", "reason", "tree_label", "root_mark", "frame_call", "countdown", "covers_name")
+    keys += ("band_title", "allow", "deny")
     keys += ("pass_word", "pass_call", "pass_terminal", "no_reason")
     texts = [RELAY[lang][k] for lang in LANGS for k in keys]
     for lang in LANGS:
@@ -2825,11 +3023,16 @@ def build() -> dict:
     return {HERE / f"{name}.{lang}.svg": make(lang) for name, make in SCENES for lang in LANGS}
 
 
+def squeeze(s: str) -> str:
+    """`s` with each run of white space as one space: a needle may span the lines rustfmt breaks a statement into."""
+    return " ".join(s.split())
+
+
 def check_sources() -> list:
     problems = []
     for rel, needles in sources().items():
-        body = (ROOT / rel).read_text(encoding="utf-8")
-        problems += [f"{rel} no longer has {n!r}" for n in needles if n not in body]
+        body = squeeze((ROOT / rel).read_text(encoding="utf-8"))
+        problems += [f"{rel} no longer has {n!r}" for n in needles if squeeze(n) not in body]
     # the colors: in the DARK palette, not merely somewhere in the file
     theme = (ROOT / THEME).read_text(encoding="utf-8")
     start = theme.find("pub const DARK: Palette = Palette {")
