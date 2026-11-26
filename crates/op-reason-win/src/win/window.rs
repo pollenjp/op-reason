@@ -1181,8 +1181,8 @@ fn build(
         y += (h + 5.0).max(PILL_H);
     }
 
-    // the band: where 1Password's prompt usually comes, and the tray
-    if !fit.no_band() {
+    // the band: where 1Password's prompt usually comes, and the tray (kept on a small screen while 1Password asks)
+    if !fit.no_band() || v.band.keep {
         y += SECTION_GAP;
         let bx = x0 + BAND_PAD_X + SKETCH.0 + 12.0;
         let bw = right - BAND_PAD_X - bx;

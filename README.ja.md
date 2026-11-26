@@ -337,7 +337,7 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 
 窓は一番上に理由を出し (無ければ同じ所に「理由なし」)、誰が呼んだかをチップで (Claude Code・人・プログラム。WSL からなら
 あわせてディストリビューションと herdr の workspace と pane。repository・branch・ディレクトリ)、起点のコマンドを等幅の枠で
-(`git push origin fix/login`。shell と Claude Code の Bash の包みは、形がきっちり合うときだけ外し、起点の行の全体を下に添える)、
+(`git push origin fix/login`。shell と Claude Code の Bash の包みは、形がきっちり合うときだけ外し、起点の process と残りの行を下に小さく添える)、
 署名の用途 (どのユーザーとしてのログインか、`git` のような SSHSIG の namespace か)・行き先とそのホストの鍵・1Password での
 鍵の名前・ssh のコマンドを小さく出します。帯で答えを待つ残り秒を、その横に許可がいつまで効くか (「許可は、この git push が
 終わるまで効きます (長くても 60 分)」) を出し、許可すると 1Password の画面が出ること (ふつうは画面の中央、出ないときは

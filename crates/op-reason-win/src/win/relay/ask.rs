@@ -105,6 +105,8 @@ pub(super) struct Shown<'a> {
     toast: Option<toast::Pending>,
     /// Leave the notification when the window closes (it timed out unanswered).
     keep_notification: bool,
+    /// The end of the answer wait (the window that asks).
+    deadline: Option<Instant>,
 }
 
 impl Drop for Shown<'_> {
@@ -122,30 +124,32 @@ impl Drop for Shown<'_> {
 }
 
 impl<'a> Shown<'a> {
-    /// Shows the window of `facts` (and its toast); with `held`, writes the holder file. `answer_by`: the end of the
-    /// answer wait and its length, for the window's countdown (the window that asks).
+    /// Shows the window of `facts` (and its toast); with `held`, writes the holder file. `answer_wait`: how long the
+    /// window that asks waits for a click, counted from when it is up (its countdown shows it).
     fn open(
         shared: &'a Shared,
         ticket: Ticket<'a>,
         held: Option<mutex::Held>,
         facts: Facts,
         phase: Phase,
-        answer_by: Option<(Instant, Duration)>,
+        answer_wait: Option<Duration>,
     ) -> Result<Shown<'a>, String> {
         let lang = shared.lang();
         let texts = relay_ui::both(&facts, phase);
         let w = window::Window::create(&texts, lang, false, Box::new(app::remember))
             .map_err(|e| e.message())?;
         w.draw_without_gpu();
-        if let Some((end, total)) = answer_by {
-            w.set_deadline(end, total);
-        }
         w.show();
         let t0 = Instant::now();
         while !w.painted() && t0.elapsed() < Duration::from_millis(500) {
             window::pump();
             std::thread::sleep(Duration::from_millis(2));
         }
+        let deadline = answer_wait.map(|wait| {
+            let end = Instant::now() + wait;
+            w.set_deadline(end, wait);
+            end
+        });
         let holder_dir = held.as_ref().and(shared.state_dir.clone());
         // the steps that may wait on Windows, for the watchdog of the windows (design
         // `2026-11-22-front-after-allow-design.md` §12)
@@ -173,6 +177,7 @@ impl<'a> Shown<'a> {
             last_look: Instant::now(),
             toast,
             keep_notification: false,
+            deadline,
         })
     }
 
@@ -373,18 +378,11 @@ fn ask<'a>(
     }
     facts.waiting = waiting;
     let wait = Duration::from_secs(shared.opts.answer_secs);
-    let deadline = Instant::now() + wait;
-    let mut shown = match Shown::open(
-        shared,
-        ticket,
-        held,
-        facts,
-        Phase::Ask,
-        Some((deadline, wait)),
-    ) {
+    let mut shown = match Shown::open(shared, ticket, held, facts, Phase::Ask, Some(wait)) {
         Ok(s) => s,
         Err(_) => return Outcome::NoWindow,
     };
+    let deadline = shown.deadline.unwrap_or_else(|| Instant::now() + wait);
     loop {
         shown.pump(Duration::from_millis(50));
         if let Some(b) = shown.window.answer() {

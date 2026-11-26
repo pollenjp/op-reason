@@ -10,8 +10,8 @@
   button but no title. A window taller than its screen draws its reason smaller, then leaves the band out, then cuts the
   command's box, so that its buttons stay on the screen. The launcher's window keeps its look.
 - **The SSH relay's window** shows the root command first (`git push origin fix/login`: the wrappers of a shell and of
-  Claude Code's Bash tool are taken off when they match exactly, and the whole root line stays under the box), the ssh
-  command in small type, and a bar of the seconds left to answer. Its line about how long an answer lasts names the
+  Claude Code's Bash tool are taken off when they match exactly, and the root process with the rest of its line stays
+  under the box), the ssh command in small type, and a bar of the seconds left to answer. Its line about how long an answer lasts names the
   root command: "Allowing covers this git push until it ends (at most 60 minutes)" (it said "an answer covers this call
   for 60 minutes", which read like a permission for 60 minutes). **Allow this terminal for 60 minutes** is unchanged.
 - The relay's toasts take the windows' colors, and show the command and its destination in a monospace font.

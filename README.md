@@ -346,7 +346,7 @@ tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with 
 The window puts the reason first (or "no reason given" in its place), then who asks as chips (Claude Code, a person, a
 program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
 directory), the root command in a monospace box (`git push origin fix/login`: the wrappers of a shell and of Claude
-Code's Bash tool taken off when they match exactly, with the whole root line under it), what the signature is for
+Code's Bash tool taken off when they match exactly; the root process and the rest of its line in small type under it), what the signature is for
 (logging in as which user, or an SSHSIG namespace such as `git`), the destination with its host key and the key's name
 in 1Password, and the ssh command in small type. A bar shows the seconds left to answer, next to how long an answer lasts
 ("Allowing covers this git push until it ends (at most 60 minutes)"), and a band says that 1Password's prompt comes after

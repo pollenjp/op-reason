@@ -186,27 +186,34 @@ The command, as the window shows it today (masked, at most 300 characters), spli
 ### 4.7 The relay's root command
 
 The root's command line as the record keeps it (masked, at most 1000 characters: the command that Claude Code's
-wrapper runs comes after some 300 characters of it), with the wrappers that hide the command a person reads taken off,
-only when they match exactly:
+wrapper runs comes after some 300 characters of it). Only the root's own arguments are read as arguments: what a shell
+runs is code, and code is never read as arguments (a word that starts with `-` inside it is not an option). A wrapper
+comes off only when it matches exactly:
 
-1. A shell started to run one command: `bash`, `sh`, `zsh`, `dash`, `fish` (also with `.exe`) whose arguments are
-   options, `-c` (alone or in a group such as `-lc`) and one command string; `cmd.exe` with `/c` (after `/d`, `/s`, `/q`
-   only) and the rest; `pwsh` or `powershell` (also with `.exe`) with `-Command` (or `-c`) after options
-   (`-NoProfile`, `-NonInteractive`, `-NoLogo`, `-ExecutionPolicy <value>`) and one command string. The command string
-   is what remains; this repeats (cmd.exe's `pwsh -Command "…"` in Claude Code on Windows).
-2. Claude Code's wrapper of its Bash tool: parts joined by ` && ` (outside quotes, as a POSIX shell reads them), all of
-   them parts that only prepare the shell, and exactly one `eval '<command>'` (optionally followed by ` \< /dev/null`):
-   the command inside the quotes (`'\''` and `'"'"'` are quotes). The parts that prepare the shell, word for word:
-   `source <file>` (optionally followed by `2>/dev/null || true`); `shopt -u extglob 2>/dev/null || true` (also after
-   `\builtin`); `{ \builtin unalias -- '<name>'; \builtin unset -f -- '<name>'; } >/dev/null 2>&1 || true`; and after
-   the eval, `pwd -P >| <file>`. Seen on 2026-11-26 (the form of `tests/cases/roots.json`, `source … && eval '…'`, is an
-   older one and matches too).
+1. **A shell started to run one command**, read from the root's own arguments: `bash`, `sh`, `zsh`, `dash`, `fish` (also
+   with `.exe`) with options first (a shell reads options until the first other word), only options that run nothing
+   by themselves (groups of `-c`, `-l`, `-i`, `-e`, `-x`, `-u`; `--login`, `--noprofile`, `--norc`), `-c` among them,
+   then the command string and nothing after it; `cmd.exe` with `/c` (after `/d`, `/s`, `/q` only); `pwsh` or
+   `powershell` (also with `.exe`) with `-Command` (or `-c`) after `-NoProfile`, `-NonInteractive`, `-NoLogo` and
+   `-ExecutionPolicy <policy>` (one of PowerShell's seven policies). What comes off is the shell and its options; what
+   it runs is shown as it is, whatever it holds (no second shell inside it comes off).
+2. **Claude Code's wrapper of its Bash tool**, inside a POSIX shell's command string: parts joined by ` && ` (outside
+   quotes, as a POSIX shell reads them), every one of them a part that only prepares the shell, and exactly one
+   `eval '<command>'` (optionally followed by ` \< /dev/null`): the command inside the quotes (`'\''` and `'"'"'` are
+   quotes). The parts that prepare the shell, word for word: `source <snapshot>` (optionally followed by
+   `2>/dev/null || true`), where the snapshot is a plain path (no spaces, quotes, `$`, redirections, globs or groups)
+   ending in `.sh` under `/.claude/shell-snapshots/snapshot-`, or `/tmp/claude-shell-snapshot`; `shopt -u extglob
+   2>/dev/null || true` (also after `\builtin`); `{ \builtin unalias -- '<name>'; \builtin unset -f -- '<name>'; }
+   >/dev/null 2>&1 || true` (one name twice); and `pwd -P >| <plain path ending in -cwd>`. Seen on 2026-11-26 (the form
+   of `tests/cases/roots.json`, `source … && eval '…'`, is an older one and matches too).
 
-Anything else stays (a part of another kind keeps the shell's whole command string). The record's line cut inside the
-eval's quotes gives the command up to the cut and `…`; a line cut anywhere else, or whose quoting does not close, is
-shown as the window shows it today (its first 200 characters). When the box shows less than that line, the root process
-line follows under it, small, as the window shows it today (`<name> (pid <n>) · <first 200 characters>`): what the box
-leaves out is the parts that matched rule 1 or 2, nothing else.
+A part of any other kind keeps the shell's whole command string in the box. The record's line cut inside the eval's
+quotes gives the command up to the cut and `…`; a line cut anywhere else, or whose quoting does not close, is shown as
+the window showed it before (its first 200 characters).
+
+Under the box, small: the root process (`<name> (pid <n>)`), and, when something came off, the root's line with the
+box's command replaced by `…` (all of it, up to the record's 1000 characters). The box and that line show the whole
+root line between them: a part of a wrapper that matched (a snapshot of an unexpected name, say) is still there to read.
 
 ### 4.8 How long an answer lasts
 
@@ -263,7 +270,8 @@ monospace font; line 3 in the secondary color. `+N` is on a small tag of the sur
 The window is laid out for the work area of its screen. When it would be taller than the work area (less the margins):
 
 1. the reason is drawn at 14 DIPs instead of 17;
-2. then the band is left out (it says where the prompt comes, not what is asked);
+2. then the band is left out (it says where the prompt comes, not what is asked), except while 1Password asks (its
+   band holds what the window said before: the mode's words and where a prompt that was not shown waits);
 3. then the command's box keeps as many lines as fit (at least two) and ends with `…`.
 
 The buttons, the footer and the switch always stay inside the work area.
@@ -368,7 +376,7 @@ Within the chosen approach:
 | How does the countdown move? | A timer of the window redraws it every 250 ms from the deadline the relay set | The bar and the seconds stay right without the relay's thread doing more |
 | The README animations: which theme? | Dark, the drafts' | One look in the README; the text says that the window follows Windows' setting |
 | Claude Code's wrapper today has more parts (`2>/dev/null \|\| true`, `shopt`, `unalias`), quotes with `'"'"'`, and puts the eval after some 300 characters, past the window's 200: does rule 2 still find the command? | Rule 2 lists those parts word for word (§4.7), and reads the record's line of 1000 characters | The command a person reads is the reason for the box; with the old rule no call of Claude Code would show it |
-| Then what does the small line under the box show? | The root line as today (its first 200 characters) | It is today's item; the parts the box leaves out between are those rule 1 and 2 matched, nothing else |
+| Then what does the small line under the box show? | The root process, and the root's line with the box's command as `…`, all of it (decided after the review below) | The box and that line show the whole line between them |
 | What when the window is taller than the work area? | The steps of §4.13 | Today's window could grow out of the screen too; the new one is taller, and its buttons must stay reachable |
 | The drafts are not in the repository: what is the source? | This document (§1, §4); the drafts' commands are written out in §4.6 and §4.7 and in the tests | The drafts carried example values; the repository keeps its own examples |
 | A pressed button with an overlay drops the label below 4.5:1 | A border 2 DIPs wide instead (§4.11) | The contrast rule of §2 holds in every state |
@@ -377,3 +385,16 @@ Within the chosen approach:
 
 The exact paddings and gaps around the parts (the points of §3 must hold), the marks (lock, key, repository, shield,
 "!"), the tests' helpers.
+
+## 12. The review before the pull request
+
+A fresh reviewer read the code against this document. What it found, and what changed:
+
+| Finding | Change |
+| --- | --- |
+| The command strings that a shell runs were read as arguments: a word like `-x;evil` inside one was taken for an option, and a second `bash -c` inside the eval came off, so that the box could show `git push origin fix/login` while what followed it ran unseen | Only the root's own arguments are read as arguments; what a shell runs is shown as it is; a shell's options must come first and be ones that run nothing (§4.7) |
+| A part of the wrapper such as `source <(curl …)` or `source ./evil.sh` counted as preparing the shell, and the small line (the first 200 characters) could not show it | `source` takes only a plain path of Claude Code's snapshots; the small line shows the whole rest of the root's line, so a matching part that is unexpected is still there to read (§4.7) |
+| Splitting at ` && ` compared at a byte inside a character that is not ASCII (a home folder in Japanese, the `…` of a cut line) and panicked, which failed the request | The split compares bytes; a test cuts lines with such characters at every character and calls every function of the look |
+| The answer wait started before the window was up | It starts when the window has been drawn |
+| On a small screen, the band was left out while 1Password asks too, and with it the window's old last line | That band stays (§4.13) |
+| When nothing came off, the root's name and PID were gone | The small line shows the root process always |

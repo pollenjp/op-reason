@@ -82,14 +82,14 @@ pub struct Root {
 const ROOT_SHOWN: usize = 200;
 
 impl Root {
-    /// The command line as the window shows it: at most 200 characters.
+    /// The command line as the window shows it when nothing comes off it: at most 200 characters.
     pub fn shown(&self) -> String {
         args::clip(&self.cmd, ROOT_SHOWN, "…")
     }
 
-    /// `<name> (pid <n>) · <command line>`: the root process line.
-    pub fn line(&self) -> String {
-        format!("{} (pid {}) · {}", self.name, self.pid, self.shown())
+    /// `<name> (pid <n>)`.
+    pub fn process(&self) -> String {
+        format!("{} (pid {})", self.name, self.pid)
     }
 }
 
@@ -358,12 +358,16 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
     let t = table(lang);
     let (time, date) = look::split_time(&f.time);
     let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
+    // the root command in the box, and under it the root process and the rest of its line: the two show all of it
     let (code_label, code, code_note) = match &f.root {
-        Some(root) => {
-            let inner = look::root_command(&root.cmd);
-            let note = inner.is_some().then(|| root.line());
-            (t.root_command, inner.unwrap_or_else(|| root.shown()), note)
-        }
+        Some(root) => match look::root_command(&root.cmd) {
+            Some(u) => (
+                t.root_command,
+                u.command,
+                Some(format!("{} · {}", root.process(), u.frame)),
+            ),
+            None => (t.root_command, root.shown(), Some(root.process())),
+        },
         None => (t.command, f.command.clone(), None),
     };
     let mut facts = vec![Fact {
@@ -412,6 +416,7 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
                     title: t.band_ask_title.to_owned(),
                     line: t.band_ask_line.to_owned(),
                     sketch: Sketch::Ask,
+                    keep: false,
                 },
                 String::new(),
             )
@@ -431,6 +436,7 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
                     title: now.to_owned(),
                     line: format!("{}: {}", t.tray, t.tray_how),
                     sketch: Sketch::Asking,
+                    keep: true,
                 },
                 format!("{}{waiting}", t.footer_asking),
             )
@@ -819,7 +825,8 @@ mod tests {
         assert_eq!(v.code, "git push origin fix/login");
         assert_eq!(
             v.code_note.as_deref(),
-            Some(r#"bash (pid 31337) · bash -c -l "git push origin fix/login""#)
+            Some(r#"bash (pid 31337) · bash -c -l "…""#),
+            "the root process, and its line with the box's command as …"
         );
         assert_eq!(
             v.facts,
@@ -841,6 +848,7 @@ mod tests {
             "Allowing covers this git push until it ends (at most 60 minutes)"
         );
         assert_eq!(v.band.sketch, Sketch::Ask);
+        assert!(!v.band.keep);
         assert_eq!(v.band.title, "Allowing brings up 1Password's prompt");
         assert_eq!(
             look::marked(&v.band.line).text,
@@ -889,7 +897,11 @@ mod tests {
         });
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(v.code, "git pull --rebase");
-        assert_eq!(v.code_note, None, "the box shows the whole line");
+        assert_eq!(
+            v.code_note.as_deref(),
+            Some("git (pid 2718)"),
+            "the box shows the whole line; its process under it"
+        );
         assert_eq!(
             v.status,
             "Allowing covers this git pull until it ends (at most 60 minutes)"
@@ -919,12 +931,12 @@ mod tests {
             "taken from the record's line, past 200 characters"
         );
         let note = v.code_note.unwrap();
-        assert!(note.starts_with("bash (pid 7) · bash -c "), "{note}");
-        assert!(
-            note.ends_with('…'),
-            "the root line is cut at 200 characters: {note}"
+        assert_eq!(
+            note,
+            format!("bash (pid 7) · {}", cmd.replace(eval, "…")),
+            "the whole rest of the line, not cut at 200 characters"
         );
-        // a line that cannot be unwrapped is shown cut at 200 characters, as before
+        // a line that nothing comes off is shown cut at 200 characters, as before
         let long = format!("someprog {}", "x".repeat(400));
         f.root = Some(Root {
             name: "someprog".into(),
@@ -934,7 +946,7 @@ mod tests {
         let v = view(&f, Phase::Ask, Lang::En);
         assert_eq!(v.code.chars().count(), 201);
         assert!(v.code.ends_with('…'));
-        assert_eq!(v.code_note, None);
+        assert_eq!(v.code_note.as_deref(), Some("someprog (pid 8)"));
     }
 
     #[test]
@@ -1015,6 +1027,10 @@ mod tests {
                 "If 1Password's prompt does not come: the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting"
             );
             assert_eq!(en.band.sketch, Sketch::Asking);
+            assert!(
+                en.band.keep,
+                "today's last line and the mode's words stay on a small screen"
+            );
             assert_eq!(
                 en.footer,
                 "Deny any 1Password prompt that comes without this window"

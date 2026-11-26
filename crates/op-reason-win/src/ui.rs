@@ -460,6 +460,7 @@ fn view(f: &Facts, lang: Lang) -> View {
             title: w.band_title.to_owned(),
             line: w.band_line.to_owned(),
             sketch: Sketch::Op,
+            keep: false,
         },
         footer: t.footer.to_owned(),
     }
