@@ -240,6 +240,35 @@ Unregister-ScheduledTask -TaskName op-reason-ssh-check -Confirm:$false
 if ((& $exe --ssh-agent --status) -match 'pid (\d+)') { Stop-Process -Id $Matches[1] }
 ```
 
+### 許可の後の案内 (S32〜S36)
+
+**許可** を押した後、op-reason の窓は 1Password の画面が出るかを見張ります
+([2026-11-26-prompt-guide-design.md](superpowers/specs/2026-11-26-prompt-guide-design.md))。1Password の窓が出たら
+「1Password の画面で承認してください」と出し、2 秒たっても出なければ、窓が光って約 60 秒を数え、通知領域の横の小窓が
+1Password のアイコン (SSHリクエストを待機中) を指します。きっかけ: 1Password を起こし直した直後でロックしていたときに、
+op-reason の窓を押したのに、1Password は確認の画面をアイコンの後ろに伏せました。S25 と同じく、スケジュールされたタスクが
+起こした per-call の中継が要ります。S29 の中継を止め (Ctrl+C)、S25〜S31 のタスクを消したあとで、もう一度登録して起こします:
+
+```powershell
+$a = New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent'
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
+Register-ScheduledTask -TaskName op-reason-ssh-check -Action $a -Settings $s | Out-Null
+Start-ScheduledTask -TaskName op-reason-ssh-check
+& $exe --ssh-agent --status
+```
+
+署名の最後の記録: `Get-Content "$env:LOCALAPPDATA\op-reason\ssh-log.jsonl" | Select-Object -Last 1`。
+
+| # | すること | 期待 |
+| --- | --- | --- |
+| S32 | 1Password を終了し (アイコンのメニュー → 終了)、起こし直してロックのままにする。2 つ目の PowerShell で `$env:OPREASON_SSH_REASON = 'check S32: locked'; ssh -T git@github.com`。**この呼び出しを許可** を押し、5 秒は何もしない | 何が出たかを控える: 前面に 1Password のロック解除か確認の画面 (そのとき op-reason の窓は「1Password の画面で承認してください」と、ダイアログの略図を出す)、または押してから 2 秒以内に、光った op-reason の窓 (黄色い枠、「1Password の画面が前に出ていません」、残り秒) と、通知領域の横の、矢印でそこを指す小窓。そのあと小窓のとおりに 1Password のアイコン (隠れていれば ^ の中) から画面を開き、ロックを解いて承認する: `Hi <user>!` が出て、小窓は窓と一緒に消える。記録の `prompt` (`front`・`seen`・`hint`) を控える |
+| S33 | 1Password をロックして解く (中継をもう一度聞く)。S32 のコマンドを `check S33: unlocked` で。許可を押し、承認する前に op-reason の窓と、1Password の画面が出た場所を見る | 1Password の画面がすぐ出る。op-reason の窓は「1Password の画面で承認してください」と略図を出し、枠も小窓も出ない。画面が、帯の言うとおり画面の中央に出たかを控える。記録は `"seen"` が 2 未満、`"hint":null` |
+| S34 | 1Password を終了して起こし直し、ロックのままにする。S32 のコマンドを `check S34: left alone` で。許可を押し、70 秒何も開かない | 小窓と光った窓が約 58 から数え、1Password が依頼を閉じると (押してから約 60 秒)、窓と小窓が消え、ssh は失敗し、「SSH の鍵: 1Password が答えませんでした」のトーストが出る。記録は `no-answer`、`"seen":null`、`"hint"` あり |
+| S35 | S33 をもう一度。ただし許可を押した直後にほかの窓 (デスクトップ) を押し、1Password の画面が後ろに出るかもしれないようにする | 画面がそれでも前面に出れば S33 のとおり。出なければ 2 秒以内に小窓。1Password が何を出したか (アイコンの点、タスクバーの窓) を控える |
+| S36 (任意) | Windows が許せば、タスクバーを上 (か横) に移し、S34 を 10 秒だけ流す | 小窓はそこの通知領域の横に、矢印でそこを指して、画面の中に出る |
+
+終わったら S31 の後と同じく元に戻します (上のブロック): タスクを消し、まだ動いていれば中継を止め、1Password を 1 回ロックします。
+
 ### 2026-11-18 の結果
 
 この PR の op-reason 0.3.0 (Windows は PR の Windows exe の workflow の zip、WSL は branch の release の build)、1Password CLI

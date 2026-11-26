@@ -26,6 +26,10 @@
 # (docs/superpowers/specs/2026-11-18-pass-toasts-design.md). Then the relay's icon in the notification area with its
 # menu open (the notification area's context-menu message posted to the icon's window).
 #
+# After a click on Allow (docs/superpowers/specs/2026-11-26-prompt-guide-design.md): with nothing from 1Password for two
+# seconds, the window lights up and a pointer points at the tray (the window, the pointer and the whole screen; dark and
+# light); with a window of the fake agent in front, which stands for 1Password's prompt, the window says to approve there.
+#
 # Every scene runs in Windows' dark app mode (AppsUseLightTheme 0, which op-reason's windows and toasts follow); the
 # window of an op call with references, the relay's windows and its toasts again in the light mode, named `<scene>-light`
 # (docs/superpowers/specs/2026-11-26-modern-window-design.md). The value is put back at the end.
@@ -501,6 +505,50 @@ if ($FakeSsh) {
     if (-not $relay.HasExited) { $relay.Kill() }
     $relay.WaitForExit()
   }
+
+  # After Allow: the fake agent answers after nine seconds, with a window of its own in front (-Prompt) or nothing
+  $askingJa = & $u 'SSH \u306e\u9375: 1Password \u304c\u78ba\u8a8d\u3057\u3066\u3044\u307e\u3059'
+  function Show-AfterAllow([string] $Name, [string] $Lang, [string] $Title, [string] $Asking, $Call, [switch] $Prompt) {
+    $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
+      @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    do {
+      Start-Sleep -Milliseconds 100
+      & $Exe --ssh-agent --status --pipe $pipe *> $null
+    } while ($LASTEXITCODE -ne 0 -and $sw.ElapsedMilliseconds -lt 10000)
+    Set-Content -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -Value '9000' -NoNewline
+    if ($Prompt) { Set-Content -LiteralPath (Join-Path $agentDir 'prompt-window') -Value '' -NoNewline }
+    $json = $Call | ConvertTo-Json -Compress -Depth 6 -EscapeHandling EscapeNonAscii
+    $client = Start-Proc (Join-Path $wslDir 'wsl.exe') @('spawn', $FakeSsh, 'client', $pipe, 'list', 'bind', 'sign') `
+      @{ OPREASON_SSH_CALL = $json }
+    $h = Wait-Window $Title
+    if ($h -eq [IntPtr]::Zero) { Write-Warning "no window for scene $Name" } else {
+      [Threading.Thread]::Sleep(700)
+      Invoke-AllowClick $h
+      # past the two seconds of the watch, and the pointer's first frame
+      [Threading.Thread]::Sleep(3200)
+      $asking = Wait-Window $Asking 2000
+      if ($asking -eq [IntPtr]::Zero) { Write-Warning "no window after Allow for scene $Name" } else {
+        Save-Window $asking (Join-Path $Out "$Name.png")
+      }
+      if (-not $Prompt) {
+        $pointer = Wait-ClassWindow 'op-reason-tray-pointer' 3000
+        if ($pointer -eq [IntPtr]::Zero) { Write-Warning "no pointer for scene $Name" } else {
+          Save-Window $pointer (Join-Path $Out "$Name-pointer.png") -Layered
+        }
+      }
+      Save-Screen (Join-Path $Out "$Name-screen.png") -Layered
+    }
+    foreach ($q in @($client, $relay)) { if (-not $q.HasExited) { $q.Kill() }; $q.WaitForExit() }
+    Remove-Item -LiteralPath (Join-Path $agentDir 'prompt-window') -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $agentDir 'sign-delay-ms') -ErrorAction SilentlyContinue
+  }
+  $askJa = & $u 'SSH \u306e\u9375: \u3053\u306e\u547c\u3073\u51fa\u3057\u3092\u8a31\u53ef\u3057\u307e\u3059\u304b'
+  Show-AfterAllow '20-relay-hint-ja' 'ja' $askJa $askingJa $claudeCall
+  Set-AppTheme light
+  Show-AfterAllow '20-relay-hint-ja-light' 'ja' $askJa $askingJa $claudeCall
+  Set-AppTheme dark
+  Show-AfterAllow '21-relay-prompt-seen-ja' 'ja' $askJa $askingJa $claudeCall -Prompt
 
   # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
   # (ForEach-Object runs in this scope: its variables must not take a name of the script's, such as $repo)

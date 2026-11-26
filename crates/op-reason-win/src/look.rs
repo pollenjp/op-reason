@@ -75,16 +75,22 @@ pub enum Sketch {
     Ask,
     /// 1Password asks: the prompt dashed, the tray's dot larger.
     Asking,
+    /// 1Password's prompt came: a sketch of its question (a dialog with a key and two buttons) instead of the screen.
+    Prompt,
+    /// 1Password's prompt did not come: the screen without it, the tray ringed and an arrow to it.
+    Tray,
 }
 
 /// The band: two lines (the first bold) with marked words ([`marked`]), and its picture. `keep`: the band says what the
-/// window said before it had a band (while 1Password asks), so a window too tall for its screen keeps it.
+/// window said before it had a band (while 1Password asks), so a window too tall for its screen keeps it. `alert`: drawn
+/// in the alert colors (1Password's prompt did not come).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Band {
     pub title: String,
     pub line: String,
     pub sketch: Sketch,
     pub keep: bool,
+    pub alert: bool,
 }
 
 /// Everything a window shows, top to bottom (design §4.2, §4.3). The buttons, the references, the orange line and the

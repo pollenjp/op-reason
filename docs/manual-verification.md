@@ -244,6 +244,37 @@ Unregister-ScheduledTask -TaskName op-reason-ssh-check -Confirm:$false
 if ((& $exe --ssh-agent --status) -match 'pid (\d+)') { Stop-Process -Id $Matches[1] }
 ```
 
+### The guide after Allow (S32–S36)
+
+After **Allow**, op-reason's window watches for 1Password's prompt
+([2026-11-26-prompt-guide-design.md](superpowers/specs/2026-11-26-prompt-guide-design.md)): when a window of 1Password
+comes, it says "Approve in 1Password's window"; when none comes within two seconds, it lights up, counts down about 60
+seconds, and a small window next to the notification area points at the 1Password icon (SSH request waiting). The case
+that led to it: 1Password had just been started again and was locked, and it kept the prompt behind its icon although
+op-reason's window had been clicked. These checks need a per-call relay started from a scheduled task, as in S25.
+With the relay of S29 stopped (Ctrl+C) and the task of S25–S31 removed, register and start it again:
+
+```powershell
+$a = New-ScheduledTaskAction -Execute $exe -Argument '--ssh-agent'
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
+Register-ScheduledTask -TaskName op-reason-ssh-check -Action $a -Settings $s | Out-Null
+Start-ScheduledTask -TaskName op-reason-ssh-check
+& $exe --ssh-agent --status
+```
+
+The last record of a signature: `Get-Content "$env:LOCALAPPDATA\op-reason\ssh-log.jsonl" | Select-Object -Last 1`.
+
+| # | Do | Expect |
+| --- | --- | --- |
+| S32 | Quit 1Password (its icon's menu → Quit) and start it again; leave it locked. In the second PowerShell: `$env:OPREASON_SSH_REASON = 'check S32: locked'; ssh -T git@github.com`; click **Allow this call**, and do nothing else for five seconds | Note what comes: 1Password's unlock or its prompt in front (then op-reason's window says "Approve in 1Password's window" with a sketch of a dialog), or, within two seconds of the click, op-reason's window lit up (a yellow border, "1Password's prompt did not come to the front", the seconds left) and the pointer next to the notification area, its arrow at it. Then open the prompt from the 1Password icon as the pointer says (under ^ when hidden), unlock and approve: `Hi <user>!`, and the pointer goes with the window. Note the record's `prompt` (`front`, `seen`, `hint`) |
+| S33 | Lock 1Password and unlock it (it asks again for the relay). S32's command with `check S33: unlocked`; Allow; before approving, look at op-reason's window and where 1Password's prompt opened | 1Password's prompt comes at once; op-reason's window says "Approve in 1Password's window" with the sketch, without a border or a pointer. Note whether the prompt opened in the middle of the screen, as the bands say. The record: `"seen"` under 2, `"hint":null` |
+| S34 | Quit and start 1Password again, locked. S32's command with `check S34: left alone`; Allow; open nothing for 70 seconds | The pointer and the lit window count down from about 58; when 1Password closes the request (about 60 seconds after the click), the window and the pointer go, ssh fails, and the toast "SSH key: 1Password did not answer" comes. The record: `no-answer`, `"seen":null`, a `"hint"` |
+| S35 | S33 again, but click another window (the desktop) right after Allow, so that 1Password's prompt may open behind it | If the prompt still comes to the front: as S33. If not: the pointer within two seconds; note what 1Password showed (a dot on its icon, a window in the taskbar) |
+| S36 (optional) | Move the taskbar to the top (or a side) where Windows allows it, and repeat S34 for ten seconds | The pointer sits next to the notification area there, its arrow at it, inside the screen |
+
+Put everything back as after S31 (the block above): remove the task, stop the relay if it still runs, and lock
+1Password once.
+
 ### Results of 2026-11-18
 
 op-reason 0.3.0 from this pull request (Windows: the zip of its Windows exe workflow; WSL: a release build of the

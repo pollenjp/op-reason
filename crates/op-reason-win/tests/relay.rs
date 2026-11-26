@@ -1415,6 +1415,125 @@ fn the_window_stays_behind_while_the_program_that_started_the_relay_is_in_front(
     assert_eq!(sb.signs()[0]["result"], "allowed");
 }
 
+mod pointer {
+    //! The pointer to the tray (design `docs/superpowers/specs/2026-11-26-prompt-guide-design.md` §6), found by its
+    //! class.
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GWL_EXSTYLE, GetWindowLongPtrW, GetWindowTextW, IsWindowVisible,
+    };
+    use windows::core::{PCWSTR, w};
+
+    /// The visible pointer and its text (its title and the seconds left).
+    pub fn window() -> Option<(HWND, String)> {
+        // SAFETY: plain Win32 queries with valid arguments.
+        unsafe {
+            let h = FindWindowW(w!("op-reason-tray-pointer"), PCWSTR::null()).ok()?;
+            if !IsWindowVisible(h).as_bool() {
+                return None;
+            }
+            let mut buf = [0u16; 512];
+            let n = GetWindowTextW(h, &mut buf);
+            Some((h, String::from_utf16_lossy(&buf[..n.max(0) as usize])))
+        }
+    }
+
+    pub fn ex_style(h: HWND) -> u32 {
+        // SAFETY: a window of this desktop.
+        unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 }
+    }
+}
+
+#[test]
+fn when_1password_s_prompt_does_not_come_the_window_points_at_the_tray() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("hint");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    // 1Password (the fake agent) shows nothing and answers after 4.5 seconds
+    fs::write(sb.agent_dir().join("sign-delay-ms"), "4500").unwrap();
+    let a = sb.client(Some("no prompt"), &["sign"]).spawn().unwrap();
+    answer(true);
+    let t0 = Instant::now();
+    assert!(
+        wait_until(Duration::from_secs(5), || pointer::window().is_some()),
+        "the pointer to the tray appears"
+    );
+    assert!(
+        t0.elapsed() >= Duration::from_millis(1500),
+        "not before the prompt had its two seconds ({:?})",
+        t0.elapsed()
+    );
+    let (h, title) = pointer::window().unwrap();
+    assert!(
+        title.starts_with("1Password's prompt is waiting in the tray · closes in about "),
+        "{title}"
+    );
+    // WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+    let want = 0x0008_0000 | 0x0000_0020 | 0x0800_0000 | 0x0000_0080 | 0x0000_0008;
+    assert_eq!(
+        pointer::ex_style(h) & want,
+        want,
+        "click-through, never active, topmost"
+    );
+    assert!(
+        screen::titled(ASKING).is_some(),
+        "the window keeps its title (now: {:?})",
+        screen::window().map(|w| w.1)
+    );
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 14\n");
+    assert!(
+        wait_until(Duration::from_secs(3), || pointer::window().is_none()),
+        "the pointer goes with the request"
+    );
+    let s = &sb.signs()[0];
+    assert_eq!(s["result"], "allowed");
+    assert!(s["prompt"]["seen"].is_null(), "{s}");
+    assert!(
+        s["prompt"]["hint"]
+            .as_f64()
+            .is_some_and(|h| (1.9..3.5).contains(&h)),
+        "{s}"
+    );
+}
+
+#[test]
+fn when_1password_s_prompt_comes_no_pointer() {
+    if !on_ci() {
+        eprintln!("skipped: it clicks with the real mouse (set CI=1 to run it)");
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("seen");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    // the fake agent shows a window that comes to the front, and answers after 3 seconds: it stands for 1Password's
+    // prompt
+    fs::write(sb.agent_dir().join("prompt-window"), "").unwrap();
+    fs::write(sb.agent_dir().join("sign-delay-ms"), "3000").unwrap();
+    let a = sb.client(Some("a prompt"), &["sign"]).spawn().unwrap();
+    answer(true);
+    let t0 = Instant::now();
+    let mut pointed = false;
+    while t0.elapsed() < Duration::from_millis(2800) {
+        pointed |= pointer::window().is_some();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!pointed, "no pointer while the prompt is there");
+    assert_eq!(text(&a.wait_with_output().unwrap()), "sign 14\n");
+    let s = &sb.signs()[0];
+    assert_eq!(s["result"], "allowed");
+    assert!(
+        s["prompt"]["seen"].as_f64().is_some_and(|t| t < 2.0),
+        "the prompt was seen at once: {s}"
+    );
+    assert!(s["prompt"]["hint"].is_null(), "{s}");
+}
+
 mod toasts {
     //! The relay's toast window, found by its class (design `docs/superpowers/specs/2026-11-18-pass-toasts-design.md`
     //! §4), and the screen it should be on.

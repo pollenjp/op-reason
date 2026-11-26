@@ -8,6 +8,10 @@
 //! - [`Phase::Asking`]: the same facts without buttons while 1Password's prompt may be open (show-only, after a click on
 //!   Allow, or a request that 1Password is slow to answer), with a band that says where 1Password keeps a prompt it did
 //!   not show (design `2026-11-22-front-after-allow-design.md` §6).
+//! - After a click that allows, the relay watches for 1Password's prompt (design `2026-11-26-prompt-guide-design.md`):
+//!   [`Phase::Seen`] when it came ("Approve in 1Password's window", with a sketch of its question), [`Phase::Hidden`]
+//!   when it has not come within two seconds (the band in the alert colors, the seconds until 1Password closes the
+//!   request), with the pointer to the tray ([`pointer_texts`]).
 //!
 //! And the toast of a signature that an earlier answer let through without a window ([`pass_texts`]; design
 //! `2026-11-18-pass-toasts-design.md` §4.3).
@@ -133,6 +137,10 @@ pub enum Phase {
     Ask,
     /// 1Password asks (or may): no buttons.
     Asking,
+    /// After a click that allows: 1Password's prompt came.
+    Seen,
+    /// After a click that allows: 1Password's prompt has not come to the front.
+    Hidden,
 }
 
 /// The words of the window and the toasts.
@@ -184,6 +192,18 @@ struct Table {
     /// The band's last line while 1Password asks: where it keeps a prompt that it did not show (its label and value).
     tray: &'static str,
     tray_how: &'static str,
+    /// The band when 1Password's prompt came (`{0}`: the key) and when it did not; the seconds until 1Password closes the
+    /// request (`{0}`).
+    seen_title: &'static str,
+    seen_line: &'static str,
+    hidden_title: &'static str,
+    hidden_line: &'static str,
+    closes: &'static str,
+    /// The pointer to the tray: its title, its line, its seconds (`{0}`) and the item of 1Password's menu in its picture.
+    pointer_title: &'static str,
+    pointer_line: &'static str,
+    pointer_closes: &'static str,
+    pointer_item: &'static str,
     pass_word: &'static str,
     pass_call: &'static str,
     pass_terminal: &'static str,
@@ -232,6 +252,15 @@ const EN: Table = Table {
     footer_asking: "Deny any 1Password prompt that comes without this window",
     tray: "If 1Password's prompt does not come",
     tray_how: "the ⟪1Password icon at the right of the taskbar⟫ (under ^ when hidden) → SSH request waiting",
+    seen_title: "Approve in 1Password's window",
+    seen_line: "It asks whether the SSH key ⟦{0}⟧ may be used. If it went behind other windows: the ⟪tray at the bottom right⟫",
+    hidden_title: "1Password's prompt did not come to the front",
+    hidden_line: "Open it from the ⟪1Password icon at the right of the taskbar⟫ (under ^ when hidden) → SSH request waiting",
+    closes: "1Password closes the request in about {0} s",
+    pointer_title: "1Password's prompt is waiting in the tray",
+    pointer_line: "1Password icon (under ^ when hidden) → SSH request waiting",
+    pointer_closes: "closes in about {0} s",
+    pointer_item: "SSH request waiting",
     pass_word: "Passed",
     pass_call: "allowed for this call",
     pass_terminal: "allowed for this terminal",
@@ -280,6 +309,15 @@ const JA: Table = Table {
     footer_asking: "この窓が出ていない 1Password の確認は拒否してください",
     tray: "1Password の画面が出ないとき",
     tray_how: "⟪タスクバーの右の 1Password のアイコン⟫ (隠れていれば ^ の中) →「SSHリクエストを待機中」",
+    seen_title: "1Password の画面で承認してください",
+    seen_line: "SSH の鍵 ⟦{0}⟧ を使ってよいかを聞いています。ほかの窓の後ろに隠れたら⟪右下のトレイ⟫から",
+    hidden_title: "1Password の画面が前に出ていません",
+    hidden_line: "⟪タスクバーの右の 1Password のアイコン⟫ (隠れていれば ^ の中) →「SSHリクエストを待機中」から開いてください",
+    closes: "1Password が依頼を閉じるまで 約 {0} 秒",
+    pointer_title: "1Password の画面はトレイで待っています",
+    pointer_line: "1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」",
+    pointer_closes: "約 {0} 秒で閉じます",
+    pointer_item: "SSHリクエストを待機中",
     pass_word: "通過",
     pass_call: "この呼び出しの許可",
     pass_terminal: "ターミナルの許可",
@@ -303,7 +341,7 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     let t = table(lang);
     let title = match phase {
         Phase::Ask => t.title_ask,
-        Phase::Asking => t.title_asking,
+        Phase::Asking | Phase::Seen | Phase::Hidden => t.title_asking,
     };
     let reason = if f.reason.is_empty() {
         t.no_reason.to_owned()
@@ -313,10 +351,10 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     let view = view(f, phase, lang);
     let footer = match phase {
         Phase::Ask => view.status.clone(),
-        Phase::Asking => view.footer.clone(),
+        Phase::Asking | Phase::Seen | Phase::Hidden => view.footer.clone(),
     };
     let buttons = match phase {
-        Phase::Asking => Vec::new(),
+        Phase::Asking | Phase::Seen | Phase::Hidden => Vec::new(),
         Phase::Ask => {
             let mut b = vec![(Button::Allow, t.allow.to_owned())];
             if f.terminal {
@@ -417,6 +455,7 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
                     line: t.band_ask_line.to_owned(),
                     sketch: Sketch::Ask,
                     keep: false,
+                    alert: false,
                 },
                 String::new(),
             )
@@ -437,10 +476,36 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
                     line: format!("{}: {}", t.tray, t.tray_how),
                     sketch: Sketch::Asking,
                     keep: true,
+                    alert: false,
                 },
                 format!("{}{waiting}", t.footer_asking),
             )
         }
+        // after a click that allows (design `2026-11-26-prompt-guide-design.md` §6)
+        Phase::Seen => (
+            None,
+            String::new(),
+            Band {
+                title: t.seen_title.to_owned(),
+                line: t.seen_line.replace("{0}", &key_name(&f.request)),
+                sketch: Sketch::Prompt,
+                keep: true,
+                alert: false,
+            },
+            format!("{}{waiting}", t.footer_asking),
+        ),
+        Phase::Hidden => (
+            Some(t.closes.to_owned()),
+            String::new(),
+            Band {
+                title: t.hidden_title.to_owned(),
+                line: t.hidden_line.to_owned(),
+                sketch: Sketch::Tray,
+                keep: true,
+                alert: true,
+            },
+            format!("{}{waiting}", t.footer_asking),
+        ),
     };
     View {
         icon: Icon::Key,
@@ -523,6 +588,43 @@ fn purpose_line(t: &Table, r: &Request) -> String {
         },
         Request::List => t.list.to_owned(),
         Request::Other(n) => fill(t.other_request, &n.to_string()),
+    }
+}
+
+/// The key's name in the band of a prompt that came: its comment in 1Password, else its fingerprint.
+fn key_name(r: &Request) -> String {
+    match r {
+        Request::Sign {
+            comment,
+            fingerprint,
+            ..
+        } => comment
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .unwrap_or(fingerprint)
+            .to_owned(),
+        _ => "?".to_owned(),
+    }
+}
+
+/// The texts of the pointer to the tray (design `2026-11-26-prompt-guide-design.md` §6): `closes` has `{0}` for the
+/// seconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerTexts {
+    pub title: String,
+    pub line: String,
+    pub closes: String,
+    /// The item of 1Password's menu in the pointer's picture.
+    pub item: String,
+}
+
+pub fn pointer_texts(lang: Lang) -> PointerTexts {
+    let t = table(lang);
+    PointerTexts {
+        title: t.pointer_title.to_owned(),
+        line: t.pointer_line.to_owned(),
+        closes: t.pointer_closes.to_owned(),
+        item: t.pointer_item.to_owned(),
     }
 }
 
@@ -1049,6 +1151,104 @@ mod tests {
             );
             assert_eq!(build(&f, Phase::Asking, Lang::Ja).footer, ja.footer);
         }
+    }
+
+    #[test]
+    fn after_a_click_that_allows() {
+        let seen = build(&facts(), Phase::Seen, Lang::En);
+        assert_eq!(
+            seen.title, "SSH key: 1Password is asking",
+            "the window keeps its title"
+        );
+        assert!(seen.buttons.is_empty());
+        let v = &seen.view;
+        assert_eq!(v.band.title, "Approve in 1Password's window");
+        assert_eq!(
+            look::marked(&v.band.line).text,
+            "It asks whether the SSH key GitHub may be used. If it went behind other windows: the tray at the bottom right"
+        );
+        assert_eq!(
+            (v.band.sketch, v.band.keep, v.band.alert),
+            (Sketch::Prompt, true, false)
+        );
+        assert_eq!(v.countdown, None);
+        assert_eq!(
+            v.footer,
+            "Deny any 1Password prompt that comes without this window"
+        );
+        let ja = view(&facts(), Phase::Seen, Lang::Ja);
+        assert_eq!(ja.band.title, "1Password の画面で承認してください");
+        assert_eq!(
+            look::marked(&ja.band.line).text,
+            "SSH の鍵 GitHub を使ってよいかを聞いています。ほかの窓の後ろに隠れたら右下のトレイから"
+        );
+        let mut nameless = facts();
+        nameless.request = Request::Sign {
+            purpose: Purpose::UserAuth { user: "git".into() },
+            comment: None,
+            fingerprint: "SHA256:k".into(),
+        };
+        assert!(
+            view(&nameless, Phase::Seen, Lang::En)
+                .band
+                .line
+                .contains("⟦SHA256:k⟧")
+        );
+
+        let hidden = view(&facts(), Phase::Hidden, Lang::En);
+        assert_eq!(
+            hidden.band.title,
+            "1Password's prompt did not come to the front"
+        );
+        assert_eq!(
+            look::marked(&hidden.band.line).text,
+            "Open it from the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting"
+        );
+        assert_eq!(
+            (hidden.band.sketch, hidden.band.keep, hidden.band.alert),
+            (Sketch::Tray, true, true)
+        );
+        assert_eq!(
+            hidden.countdown.as_deref(),
+            Some("1Password closes the request in about {0} s")
+        );
+        assert_eq!(hidden.status, "");
+        let ja = view(&facts(), Phase::Hidden, Lang::Ja);
+        assert_eq!(ja.band.title, "1Password の画面が前に出ていません");
+        assert_eq!(
+            ja.countdown.as_deref(),
+            Some("1Password が依頼を閉じるまで 約 {0} 秒")
+        );
+        let mut waiting = facts();
+        waiting.waiting = 1;
+        assert!(
+            view(&waiting, Phase::Hidden, Lang::En)
+                .footer
+                .ends_with(" · 1 more waiting")
+        );
+    }
+
+    #[test]
+    fn the_pointer_to_the_tray() {
+        let en = pointer_texts(Lang::En);
+        assert_eq!(en.title, "1Password's prompt is waiting in the tray");
+        assert_eq!(
+            en.line,
+            "1Password icon (under ^ when hidden) → SSH request waiting"
+        );
+        assert_eq!(en.closes, "closes in about {0} s");
+        assert_eq!(en.item, "SSH request waiting");
+        let ja = pointer_texts(Lang::Ja);
+        assert_eq!(ja.title, "1Password の画面はトレイで待っています");
+        assert_eq!(
+            ja.line,
+            "1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」"
+        );
+        assert_eq!(ja.closes, "約 {0} 秒で閉じます");
+        assert_eq!(
+            ja.item, "SSHリクエストを待機中",
+            "the words of 1Password's menu"
+        );
     }
 
     #[test]

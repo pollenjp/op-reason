@@ -461,6 +461,7 @@ fn view(f: &Facts, lang: Lang) -> View {
             line: w.band_line.to_owned(),
             sketch: Sketch::Op,
             keep: false,
+            alert: false,
         },
         footer: t.footer.to_owned(),
     }

@@ -359,19 +359,30 @@ stays behind when the window in front belongs to the program the relay was start
 1Password sees in front already), and **Deny** never takes the front. No answer within 60 seconds fails that signature
 without remembering anything.
 
+After the click the window watches for 1Password's prompt
+([design](docs/superpowers/specs/2026-11-26-prompt-guide-design.md)). When a window of 1Password comes (to the front,
+or new), it says "Approve in 1Password's window", with a sketch of the question. When none has come within two seconds
+(1Password keeps a prompt behind its icon when it takes the request for a background one: seen once while it was
+locked), the window lights up, counts down the seconds until 1Password closes the request (about 60), and a small
+window next to the notification area points at the tray: the 1Password icon (under ^ when hidden) → **SSH request
+waiting**. The pointer lets clicks through and never takes the focus; it goes when the prompt comes or the request
+ends. The record of the signature says what the relay saw (`prompt`: whether the window came to the front, and when
+the prompt or the guide came).
+
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
 > tell calls apart and asking it for every signature is not usable. show-only keeps the old rule.
 
 ### Windows, toasts and notifications
 
-op-reason shows three things on the screen, each in its own place
+op-reason shows four things on the screen, each in its own place
 ([design](docs/superpowers/specs/2026-11-18-pass-toasts-design.md)):
 
 | What | Where | Gone |
 | --- | --- | --- |
 | op-reason's window: it asks (per-call), or shows who and why while 1Password asks | the top right of the screen of the foreground window | when the request is answered |
 | A toast: a signature that passed without a window (per-call) | the top left of that screen | four seconds after the call's last signature |
+| The pointer to the tray: 1Password's prompt did not come within two seconds of Allow | next to the notification area of the taskbar | when the prompt comes or the request ends |
 | The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
 
 - **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a

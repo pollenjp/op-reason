@@ -105,6 +105,10 @@ pub struct Palette {
     pub pic_window: Rgb,
     /// The part of the switch of the language shown.
     pub switch_shown: Rgb,
+    /// The band when 1Password's prompt did not come, and the pointer to the tray (design
+    /// `2026-11-26-prompt-guide-design.md` §6): its background; its title is in the caution color, its line in the text
+    /// color.
+    pub alert_bg: Rgb,
 }
 
 /// The dark look: the approved drafts, close to Windows 11's dark colors.
@@ -139,6 +143,7 @@ pub const DARK: Palette = Palette {
     pic_stand: Rgb::hex(0x4a6b85),
     pic_window: Rgb::hex(0x3c3c3c),
     switch_shown: Rgb::hex(0x454545),
+    alert_bg: Rgb::hex(0x332b00),
 };
 
 /// The light look: the same roles in Windows 11's light colors.
@@ -173,6 +178,7 @@ pub const LIGHT: Palette = Palette {
     pic_stand: Rgb::hex(0x8fb3d1),
     pic_window: Rgb::hex(0xd0d0d0),
     switch_shown: Rgb::hex(0xe6e6e6),
+    alert_bg: Rgb::hex(0xfff4ce),
 };
 
 /// The palette of a look.
@@ -226,6 +232,10 @@ pub const TEXT_PAIRS: &[(&str, Pair)] = &[
     ("the tray in the band", |p| (p.caution, p.band_bg)),
     ("Passed on a toast", |p| (p.success, p.surface)),
     ("the ×N tag", |p| (p.success, p.success_tint)),
+    ("the alert band's title", |p| (p.caution, p.alert_bg)),
+    ("the alert band's line", |p| (p.text, p.alert_bg)),
+    ("the pointer's line", |p| (p.secondary, p.surface)),
+    ("the pointer's seconds", |p| (p.caution, p.surface)),
 ];
 
 #[cfg(test)]
