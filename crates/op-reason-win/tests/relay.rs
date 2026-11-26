@@ -23,6 +23,9 @@ fn serial() -> MutexGuard<'static, ()> {
 }
 
 const ASK: &str = "SSH key: allow this call?";
+/// The title of a window that asks for one ssh of a call of Claude Code's PowerShell tool (design
+/// `docs/superpowers/specs/2026-11-27-relay-process-tree-design.md` §4.4).
+const ASK_SSH: &str = "SSH key: allow this ssh?";
 const ASKING: &str = "SSH key: 1Password is asking";
 /// The fingerprint of the fake agent's key.
 const KEY_FP: &str = "SHA256:ylAg/YojegDgH4I6h4lafZQUAs401hI3a3JtvWR6U+s";
@@ -315,6 +318,29 @@ mod screen {
             let inset = (20.0 * k).round() as i32;
             let mut pt = POINT {
                 x: if left { inset } else { rc.right - inset },
+                y: rc.bottom - (26.0 * k).round() as i32,
+            };
+            let _ = ClientToScreen(h, &mut pt);
+            let _ = SetCursorPos(pt.x, pt.y);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            mouse_event(0x0002, 0, 0, 0, 0);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            mouse_event(0x0004, 0, 0, 0, 0);
+        }
+    }
+
+    /// Clicks the second button: 180 DIPs inside the client area's left edge, 26 above its bottom. The first button
+    /// starts 14 DIPs in and is 96 to 158 DIPs wide (its label is at most 130 wide), the second follows it 8 DIPs later
+    /// and is at least 96 wide, so 180 falls on the second (see `src/win/window.rs`).
+    pub fn click_second_button(h: HWND) {
+        // SAFETY: Win32 calls with valid arguments; the window belongs to another process of this desktop.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(h, &mut rc);
+            let k = GetDpiForWindow(h).max(96) as f32 / 96.0;
+            let mut pt = POINT {
+                x: (180.0 * k).round() as i32,
                 y: rc.bottom - (26.0 * k).round() as i32,
             };
             let _ = ClientToScreen(h, &mut pt);
@@ -1251,20 +1277,43 @@ impl Drop for Tree {
     }
 }
 
-#[test]
-fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
+/// A call of Claude Code's PowerShell tool: what the launcher was started with and where it writes.
+struct ToolCall {
+    claude: Tree,
+    /// `System32\cmd.exe` and the rest of its line, as Claude Code 2.1.332 builds it.
+    cmd: PathBuf,
+    line: String,
+    /// The launcher's output (the script's ssh print their steps).
+    out: PathBuf,
+}
+
+impl ToolCall {
+    /// Waits for the launcher to end (at most 30 seconds); what it wrote.
+    fn finish(&mut self) -> Option<String> {
+        let t0 = Instant::now();
+        loop {
+            if let Ok(Some(_)) = self.claude.0.try_wait() {
+                return Some(fs::read_to_string(&self.out).unwrap_or_default());
+            }
+            if t0.elapsed() > Duration::from_secs(30) {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn printed(&self) -> String {
+        fs::read_to_string(&self.out).unwrap_or_default()
+    }
+}
+
+/// Claude Code (`claude.exe`) starts the launcher of its PowerShell tool as Claude Code 2.1.332 does: `cmd.exe` with a
+/// line that no quoting of arguments gives, the script in an environment variable. The script runs the fake `ssh.exe`
+/// (`-T git@github.com`) `runs` times, one after the other, each with `steps`.
+fn powershell_tool(sb: &Sandbox, runs: usize, steps: &str) -> ToolCall {
     use std::os::windows::process::CommandExt;
 
-    use op_reason_core::ssh::cmdline;
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-    let _g = serial();
-    let sb = Sandbox::new("powershell");
-    let _agent = sb.agent();
-    let _relay = sb.relay(&[], &[]);
-    // Claude Code (claude.exe) starts the launcher of its PowerShell tool as Claude Code 2.1.332 does: cmd.exe with a
-    // line that no quoting of arguments gives, the script in an environment variable; here the script runs ssh
     let dir = sb.root.join("claude");
     fs::create_dir_all(&dir).unwrap();
     fs::copy(fake_ssh(), dir.join("claude.exe")).unwrap();
@@ -1280,17 +1329,16 @@ fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
         powershell(&system).display(),
         out.display()
     );
-    let mut claude = Tree(
+    let one = format!("& '{}' -T git@github.com", dir.join("ssh.exe").display());
+    let script = vec![one; runs].join("; ");
+    let claude = Tree(
         Command::new(dir.join("claude.exe"))
             .arg("spawn-raw")
             .arg(system.join("cmd.exe"))
             .arg(&line)
-            .env(
-                "CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT",
-                format!("& '{}' -T git@github.com", dir.join("ssh.exe").display()),
-            )
+            .env("CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT", script)
             .env("FAKE_SSH_PIPE", sb.pipe())
-            .env("FAKE_SSH_STEPS", "list bind sign")
+            .env("FAKE_SSH_STEPS", steps)
             .env("OPREASON_SSH_REASON", "powershell check")
             .env_remove("OPREASON_SSH_CALL")
             .stdin(Stdio::null())
@@ -1299,27 +1347,43 @@ fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
             .spawn()
             .unwrap(),
     );
+    ToolCall {
+        claude,
+        cmd: system.join("cmd.exe"),
+        line,
+        out,
+    }
+}
+
+/// Waits for a window that asks for one ssh; it, after half a second.
+fn window_for_ssh(call: &ToolCall) -> windows::Win32::Foundation::HWND {
     assert!(
-        wait_until(Duration::from_secs(30), || screen::titled(ASK).is_some()),
-        "the window asks (now: {:?}; the launcher wrote: {:?})",
+        wait_until(Duration::from_secs(30), || screen::titled(ASK_SSH)
+            .is_some()),
+        "a window asks for the ssh (now: {:?}; the launcher wrote: {:?})",
         screen::window().map(|w| w.1),
-        fs::read_to_string(&out).unwrap_or_default()
+        call.printed()
     );
     std::thread::sleep(Duration::from_millis(500));
-    let h = screen::titled(ASK).expect("the window");
+    screen::titled(ASK_SSH).expect("the window")
+}
+
+#[test]
+fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
+    use op_reason_core::ssh::cmdline;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let _g = serial();
+    let sb = Sandbox::new("powershell");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let mut call = powershell_tool(&sb, 1, "list bind sign");
+    let (system_cmd, line) = (call.cmd.clone(), call.line.clone());
+    let h = window_for_ssh(&call);
     // SAFETY: a message to a window of this desktop.
     unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
-    let t0 = Instant::now();
-    let ended = loop {
-        if let Ok(Some(st)) = claude.0.try_wait() {
-            break Some(st);
-        }
-        if t0.elapsed() > Duration::from_secs(20) {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let printed = fs::read_to_string(&out).unwrap_or_default();
+    let ended = call.finish();
+    let printed = call.printed();
     assert!(ended.is_some(), "the launcher ended: {printed:?}");
     assert_eq!(
         printed.lines().last(),
@@ -1336,7 +1400,7 @@ fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
     assert_eq!(s["call"]["root"]["name"], "cmd.exe", "{s}");
     // the relay read the launcher's very command line (Rust puts the program in quotes), whose own arguments are the
     // launcher's: the relay tells it from them (the record's masked line cannot)
-    let started = format!("\"{}\" {line}", system.join("cmd.exe").display());
+    let started = format!("\"{}\" {line}", system_cmd.display());
     assert_eq!(
         s["call"]["root"]["cmd"],
         cmdline::shown(&cmdline::split_windows(&started), 1000),
@@ -1346,6 +1410,91 @@ fn a_call_of_claude_codes_powershell_tool_is_told_by_its_launcher() {
         &cmdline::split_windows(&started)
     ));
     assert_eq!(s["client"]["cmd"], "ssh.exe -T git@github.com", "{s}");
+}
+
+#[test]
+fn each_ssh_of_a_powershell_tool_call_asks_and_this_ssh_covers_its_own_requests() {
+    if !on_ci() {
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("powershell-ssh");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    // two ssh one after the other, each signing twice on its connection
+    let mut call = powershell_tool(&sb, 2, "list bind sign sign");
+    screen::click_button(window_for_ssh(&call), true);
+    assert!(
+        wait_until(Duration::from_secs(30), || sb.signs().len() >= 2),
+        "the first ssh signed twice: {:?}",
+        sb.signs()
+    );
+    screen::click_button(window_for_ssh(&call), true);
+    let printed = call.finish().expect("the launcher ended");
+    assert_eq!(
+        printed.matches("sign 14").count(),
+        4,
+        "both ssh signed twice: {printed:?}"
+    );
+    let signs = sb.signs();
+    let got: Vec<(String, String)> = signs
+        .iter()
+        .map(|s| {
+            let word = |k: &str| s[k].as_str().unwrap_or("").to_owned();
+            (word("result"), format!("{}{}", word("answer"), word("by")))
+        })
+        .collect();
+    let want = |r: &str, a: &str| (r.to_owned(), a.to_owned());
+    assert_eq!(
+        got,
+        vec![
+            want("allowed", "allow-ssh"),
+            want("passed", "allow-ssh"),
+            want("allowed", "allow-ssh"),
+            want("passed", "allow-ssh"),
+        ],
+        "a window for each ssh; each answer covered its own ssh only: {signs:?}"
+    );
+    assert_eq!(signs[1]["decision"], signs[0]["id"], "{signs:?}");
+    assert_eq!(signs[3]["decision"], signs[2]["id"], "{signs:?}");
+    assert_eq!(signs[0]["client"]["pid"], signs[1]["client"]["pid"]);
+    assert_ne!(
+        signs[0]["client"]["pid"], signs[2]["client"]["pid"],
+        "two ssh processes: {signs:?}"
+    );
+    assert_eq!(signs[0]["call"]["root"]["name"], "cmd.exe", "{signs:?}");
+}
+
+#[test]
+fn allow_this_call_covers_every_ssh_of_the_powershell_tool_call() {
+    if !on_ci() {
+        return;
+    }
+    let _g = serial();
+    let sb = Sandbox::new("powershell-call");
+    let _agent = sb.agent();
+    let _relay = sb.relay(&[], &[]);
+    let mut call = powershell_tool(&sb, 2, "list bind sign");
+    screen::click_second_button(window_for_ssh(&call));
+    let printed = call.finish().expect("the launcher ended");
+    assert_eq!(
+        printed.matches("sign 14").count(),
+        2,
+        "both ssh signed: {printed:?}"
+    );
+    let signs = sb.signs();
+    assert_eq!(signs.len(), 2, "{signs:?}");
+    assert_eq!(
+        (&signs[0]["result"], &signs[0]["answer"]),
+        (&Value::from("allowed"), &Value::from("allow")),
+        "{signs:?}"
+    );
+    assert_eq!(
+        signs[1]["result"], "passed",
+        "the second ssh asked nothing: {signs:?}"
+    );
+    assert_eq!(signs[1]["by"], "allow", "{signs:?}");
+    assert_eq!(signs[1]["decision"], signs[0]["id"], "{signs:?}");
 }
 
 #[test]

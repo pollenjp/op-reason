@@ -30,6 +30,11 @@
 # seconds, the window lights up and a pointer points at the tray (the window, the pointer and the whole screen; dark and
 # light); with a window of the fake agent in front, which stands for 1Password's prompt, the window says to approve there.
 #
+# A call of Claude Code's PowerShell tool (claude.exe and ssh.exe copies of fake-ssh, the launcher's very line): the
+# window asks for this ssh, with the process tree from Claude Code down to ssh.exe, the box on ssh.exe's row, the frames
+# of this ssh and of this call, and three buttons (docs/superpowers/specs/2026-11-27-relay-process-tree-design.md), in
+# Japanese and, in the light mode, in English.
+#
 # Every scene runs in Windows' dark app mode (AppsUseLightTheme 0, which op-reason's windows and toasts follow); the
 # window of an op call with references, the relay's windows and its toasts again in the light mode, named `<scene>-light`
 # (docs/superpowers/specs/2026-11-26-modern-window-design.md). The value is put back at the end.
@@ -554,7 +559,8 @@ if ($FakeSsh) {
 
   # One call of Claude Code's PowerShell tool on Windows: claude.exe (the fake, copied) starts the tool's launcher as
   # Claude Code 2.1.332 does (cmd.exe with chcp 65001, then PowerShell running the script from an environment
-  # variable, its output to a file), and the script runs ssh.exe (the fake, copied): the box shows the ssh command.
+  # variable, its output to a file), and the script runs ssh.exe (the fake, copied): the window asks for this ssh, its
+  # tree runs from Claude Code down to ssh.exe, and the box with the ssh command is on ssh.exe's row.
   function Show-PowerShellCall([string] $Name, [string] $Lang, [string] $Title) {
     $relay = Start-Proc $Exe @('--ssh-agent', '--mode', 'per-call', '--pipe', $pipe, '--upstream', $up, '--answer-wait', '30s') `
       @{ LOCALAPPDATA = $relayLad; OPREASON_LANG = $Lang }
@@ -594,7 +600,11 @@ if ($FakeSsh) {
     if (-not $client.WaitForExit(15000)) { $client.Kill() }
     Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($claudeDir) } | Stop-Process -Force -ErrorAction SilentlyContinue
   }
-  Show-PowerShellCall '22-relay-claude-powershell-ja' 'ja' $askJa
+  $askSshJa = & $u 'SSH \u306e\u9375: \u3053\u306e ssh \u3092\u8a31\u53ef\u3057\u307e\u3059\u304b'
+  Show-PowerShellCall '22-relay-claude-powershell-ja' 'ja' $askSshJa
+  Set-AppTheme light
+  Show-PowerShellCall '22-relay-claude-powershell-en-light' 'en' 'SSH key: allow this ssh?'
+  Set-AppTheme dark
 
   # three fetches of other repositories first: the two later calls push two of them out (+2 under the third card)
   # (ForEach-Object runs in this scope: its variables must not take a name of the script's, such as $repo)
