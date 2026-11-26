@@ -437,7 +437,8 @@ def sources() -> dict:
         'Some(format!("{} · {}", root.process(), u.frame)),',
         'format!("{} (pid {})", self.name, self.pid)',
         'text: format!("{}: {}", t.command, f.command),',
-        "match f.root.as_ref().and_then(|_| look::program_name(&code)) {",
+        "let named = f.root.is_some() && !powershell;",
+        "match named.then(|| look::program_name(&code)).flatten() {",
         'Some(name) => t.covers_name.replace("{0}", &name).replace("{1}", &limit),',
         'format!("{covers}{waiting}"),',
     ]

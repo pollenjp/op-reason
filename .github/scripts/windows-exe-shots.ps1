@@ -572,9 +572,9 @@ if ($FakeSsh) {
     if (-not $shell) { $shell = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe' }
     $code = '$__claudeCodeScript = $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; ' +
       'Invoke-Expression -Command $__claudeCodeScript'
-    $out = Join-Path $claudeDir 'shell-out.txt'
+    $shellOut = Join-Path $claudeDir 'shell-out.txt'
     $line = '/d /s /c ""' + (Join-Path $system 'chcp.com') + '" 65001 >nul & "' + $shell + '" -NoProfile -NonInteractive ' +
-      '-ExecutionPolicy Bypass -Command "' + $code + '" > "' + $out + '" 2>&1"'
+      '-ExecutionPolicy Bypass -Command "' + $code + '" > "' + $shellOut + '" 2>&1"'
     $client = Start-Proc (Join-Path $claudeDir 'claude.exe') @('spawn-raw', (Join-Path $system 'cmd.exe'), $line) @{
       CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = "& '" + (Join-Path $claudeDir 'ssh.exe') + "' -T git@github.com"
       FAKE_SSH_PIPE = $pipe
@@ -583,7 +583,7 @@ if ($FakeSsh) {
     } -OwnConsole
     $h = Wait-Window $Title
     if ($h -eq [IntPtr]::Zero) {
-      Write-Warning "no window for scene $Name (the launcher wrote: $(Get-Content -Raw -ErrorAction SilentlyContinue $out))"
+      Write-Warning "no window for scene $Name (the launcher wrote: $(Get-Content -Raw -ErrorAction SilentlyContinue $shellOut))"
     } else {
       [Threading.Thread]::Sleep(800)
       Save-Window $h (Join-Path $Out "$Name.png")
