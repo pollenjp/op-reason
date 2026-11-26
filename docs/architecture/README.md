@@ -210,27 +210,27 @@ no GPU, no swap chain, no wait for the display's refresh); the windows of `op` c
    gets a toast at the top left of the screen of the foreground window: a layered, click-through window that never takes
    the focus, one card per call (×N, the last destination) at 90% opacity, three at most and `+N` under them for the
    cards pushed out, each gone four seconds after its call's last signature (`crates/op-reason-win/src/pass_toast.rs`
-   decides the cards, `src/win/pass_window.rs` draws them, each card in a Direct2D layer at its opacity).
-   Otherwise the request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
-   `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons, the bar of the
-   seconds left to answer and the toast, and keeps the count of waiting calls current. The window's box shows the root's
-   command, with the wrappers of a shell and of Claude Code's Bash tool taken off when they match exactly (from the
-   record's line of up to 1000 characters; `look::root_command`), and says how long an answer lasts with its name. The toast (the Windows notification) is removed when the
-   window closes, except after a time-out (`timeout`), which leaves it. A click (press and release on a button) is
-   remembered for the call (Allow this terminal: also for the shell and the key); after Allow the window drops its
-   buttons ("1Password is asking", with a band that says where 1Password keeps a prompt it did not show) until 1Password
-   answers, then closes, and the lock and the turn pass on. Right after a click that allows, the window comes to the
-   front (`SetForegroundWindow`: the click was the last input, so Windows lets the relay set the foreground window),
-   unless the window in front belongs to one of the relay's ancestors other than `explorer.exe` (the terminal program a
-   relay started in one runs under, which 1Password takes for the application); then the relay lets the process that
-   serves 1Password's pipe (`GetNamedPipeServerProcessId`) set the foreground window (`AllowSetForegroundWindow`), and
-   sends the request. When the window closes, it gives the front back to the window that had it, if it still has the
-   front or no window has it
+   decides the cards, `src/win/pass_window.rs` draws them, each card in a Direct2D layer at its opacity). Otherwise the
+   request joins the queue, first come first asked. On its turn the thread takes `Local\op-reason` (up to
+   `OPREASON_LOCK_WAIT` seconds; `lock-timeout`), writes `holder.json`, shows the window with its buttons, the bar of
+   the seconds left to answer and the toast, and keeps the count of waiting calls current. The window's box shows the
+   root's command, with the wrappers of a shell and of Claude Code's Bash tool taken off when they match exactly (from
+   the record's line of up to 1000 characters; `look::root_command`), and says how long an answer lasts with its name.
+   The toast (the Windows notification) is removed when the window closes, except after a time-out (`timeout`), which
+   leaves it. A click (press and release on a button) is remembered for the call (Allow this terminal: also for the
+   shell and the key); after Allow the window drops its buttons ("1Password is asking", with a band that says where
+   1Password keeps a prompt it did not show) until 1Password answers, then closes, and the lock and the turn pass on.
+   Right after a click that allows, the window comes to the front (`SetForegroundWindow`: the click was the last input,
+   so Windows lets the relay set the foreground window), unless the window in front belongs to one of the relay's
+   ancestors other than `explorer.exe` (the terminal program a relay started in one runs under, which 1Password takes
+   for the application); then the relay lets the process that serves 1Password's pipe (`GetNamedPipeServerProcessId`)
+   set the foreground window (`AllowSetForegroundWindow`), and sends the request. When the window closes, it gives the
+   front back to the window that had it, if it still has the front or no window has it
    ([2026-11-22-front-after-allow-design.md](../superpowers/specs/2026-11-22-front-after-allow-design.md);
-   `src/relay_front.rs` decides, `src/win/window.rs` comes forward and gives back). No click
-   within `--answer-wait` (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed
-   it, without remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a
-   press only 400 ms after they appear, and the window captures the mouse from a press on a button until its release.
+   `src/relay_front.rs` decides, `src/win/window.rs` comes forward and gives back). No click within `--answer-wait`
+   (`timeout`) and the close button (`dismissed`) fail the request and the requests that followed it, without
+   remembering; a client gone with no request of its call waiting (`gone`) closes the window. Buttons take a press only
+   400 ms after they appear, and the window captures the mouse from a press on a button until its release.
 4. **show-only**: every signature waits for its turn and the lock, shows the window without buttons, goes to 1Password
    and closes the window with the answer. A signature that passes in under half a second gets a toast once per run, and
    a `no-prompt` record (1Password most likely did not ask).

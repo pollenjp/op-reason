@@ -346,17 +346,18 @@ tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with 
 The window puts the reason first (or "no reason given" in its place), then who asks as chips (Claude Code, a person, a
 program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
 directory), the root command in a monospace box (`git push origin fix/login`: the wrappers of a shell and of Claude
-Code's Bash tool taken off when they match exactly; the root process and the rest of its line in small type under it), what the signature is for
-(logging in as which user, or an SSHSIG namespace such as `git`), the destination with its host key and the key's name
-in 1Password, and the ssh command in small type. A bar shows the seconds left to answer, next to how long an answer lasts
-("Allowing covers this git push until it ends (at most 60 minutes)"), and a band says that 1Password's prompt comes after
-Allow, usually in the middle of the screen, otherwise from the tray. Only a click answers it (a press and a release on a button): it opens without
-taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click on Allow this
-call or Allow this terminal, it comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
-that 1Password shows its prompt at once ([why](#starting-it)); then the window that had the front gets it back, unless
-another window took it meanwhile. It stays behind when the window in front belongs to the program the relay was
-started from (a terminal program, which 1Password sees in front already), and **Deny** never takes the front. No
-answer within 60 seconds fails that signature without remembering anything.
+Code's Bash tool taken off when they match exactly; the root process and the rest of its line in small type under it),
+what the signature is for (logging in as which user, or an SSHSIG namespace such as `git`), the destination with its
+host key and the key's name in 1Password, and the ssh command in small type. A bar shows the seconds left to answer,
+next to how long an answer lasts ("Allowing covers this git push until it ends (at most 60 minutes)"), and a band says
+that 1Password's prompt comes after Allow, usually in the middle of the screen, otherwise from the tray. Only a click
+answers it (a press and a release on a button): it opens without taking the focus and has no default button, so a key
+typed elsewhere never answers it. **After a click on Allow this call or Allow this terminal, it comes to the front**
+until 1Password has answered ("SSH key: 1Password is asking"), so that 1Password shows its prompt at once
+([why](#starting-it)); then the window that had the front gets it back, unless another window took it meanwhile. It
+stays behind when the window in front belongs to the program the relay was started from (a terminal program, which
+1Password sees in front already), and **Deny** never takes the front. No answer within 60 seconds fails that signature
+without remembering anything.
 
 > **The rule changes in per-call mode.** Everywhere else in op-reason the decision is made in 1Password's prompt, and
 > op-reason's window only shows facts. In per-call mode op-reason's window is where you decide, because 1Password cannot
@@ -374,13 +375,14 @@ op-reason shows three things on the screen, each in its own place
 | The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
 
 - **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a
-  card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds, then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed
-  for this call, allowed for this terminal) and the reason. The signatures of one call share one card, which counts them
-  (×N), shows the last destination and starts its four seconds again; each other call gets its own card at the top,
-  three at most: a fourth pushes the oldest out at once, and `+N` under the third card counts the cards pushed out
-  until four seconds after their last signature. A card is drawn at 90% opacity, so that the text behind it shows
-  through faintly. Toasts never take the focus, let clicks through, make no sound and stay out of the notification
-  center. With Windows' animation effects off they neither slide nor fade.
+  card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds, then fades: `Passed ·
+  <caller>`, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and
+  the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts
+  its four seconds again; each other call gets its own card at the top, three at most: a fourth pushes the oldest out at
+  once, and `+N` under the third card counts the cards pushed out until four seconds after their last signature. A card
+  is drawn at 90% opacity, so that the text behind it shows through faintly. Toasts never take the focus, let clicks
+  through, make no sound and stay out of the notification center. With Windows' animation effects off they neither slide
+  nor fade.
 - **Windows** open on the screen you work on (that of the foreground window; the primary screen when there is none)
   and stay there. The windows of `op` calls do too, when `op-reason.exe` runs them; the PowerShell launcher's window
   stays at the top right of the primary screen, and its notifications stay. They open without taking the focus; only
