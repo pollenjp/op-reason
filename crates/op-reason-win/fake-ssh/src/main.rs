@@ -5,7 +5,9 @@
 //!   it listens and appends each message it gets (hex, one per line) to `<dir>/agent.log`. It answers the key list with
 //!   one key (comment `test key`), a sign request with a signature (after the milliseconds in `<dir>/sign-delay-ms`, or
 //!   by closing the connection when `<dir>/close-on-sign` exists), an extension with `SSH_AGENT_FAILURE` (as 1Password
-//!   does), and anything else with `SSH_AGENT_SUCCESS`.
+//!   does), and anything else with `SSH_AGENT_SUCCESS`. When `<dir>/prompt-window` exists, it shows a window titled
+//!   `fake 1Password prompt` (class `fake-ssh-prompt`) in the middle of the screen while it waits to sign, and brings it
+//!   to the front: it stands for 1Password's prompt.
 //! - `fake-ssh client <pipe> <step>…`: one connection, step by step: `list`, `bind` and `bind-fwd`
 //!   (`session-bind@openssh.com` without and with the forwarding flag), `sign` or `sign:<user>` (user authentication),
 //!   `sshsig`, `sleep:<ms>`, `hold` (waits for stdin to close). It prints `<step> <type of the answer>` per step, or
@@ -72,10 +74,12 @@ fn answer(body: &[u8], dir: &Path) -> Option<Vec<u8>> {
             if dir.join("close-on-sign").exists() {
                 return None;
             }
-            if let Some(ms) = fs::read_to_string(dir.join("sign-delay-ms"))
+            let delay = fs::read_to_string(dir.join("sign-delay-ms"))
                 .ok()
-                .and_then(|t| t.trim().parse::<u64>().ok())
-            {
+                .and_then(|t| t.trim().parse::<u64>().ok());
+            if dir.join("prompt-window").exists() {
+                prompt_window(Duration::from_millis(delay.unwrap_or(1500)));
+            } else if let Some(ms) = delay {
                 std::thread::sleep(Duration::from_millis(ms));
             }
             let mut sig = s(b"ssh-ed25519");
@@ -364,6 +368,74 @@ fn front(title: &str, program: &[OsString]) -> i32 {
         }
     }
     0
+}
+
+/// A window that stands for 1Password's prompt, in front for `wait` (the relay lets this process, the server of its
+/// upstream pipe, set the foreground window after a click that allows).
+#[cfg(windows)]
+fn prompt_window(wait: Duration) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{GetStockObject, HBRUSH, WHITE_BRUSH};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE,
+        PeekMessageW, RegisterClassW, SetForegroundWindow, TranslateMessage, WINDOW_EX_STYLE,
+        WNDCLASSW, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+    };
+    use windows::core::w;
+
+    unsafe extern "system" fn proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        // SAFETY: the default procedure with the arguments as received.
+        unsafe { DefWindowProcW(h, msg, wp, lp) }
+    }
+
+    static REGISTERED: AtomicBool = AtomicBool::new(false);
+    // SAFETY: a class with a static name and a valid procedure, and a window of it on this thread, destroyed here.
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else {
+            std::thread::sleep(wait);
+            return;
+        };
+        if !REGISTERED.swap(true, Ordering::SeqCst) {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(proc),
+                hInstance: module.into(),
+                lpszClassName: w!("fake-ssh-prompt"),
+                hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
+                ..Default::default()
+            };
+            RegisterClassW(&class);
+        }
+        let Ok(h) = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("fake-ssh-prompt"),
+            w!("fake 1Password prompt"),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            330,
+            300,
+            360,
+            180,
+            None,
+            None,
+            Some(module.into()),
+            None,
+        ) else {
+            std::thread::sleep(wait);
+            return;
+        };
+        let _ = SetForegroundWindow(h);
+        let t0 = std::time::Instant::now();
+        let mut msg = MSG::default();
+        while t0.elapsed() < wait {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = DestroyWindow(h);
+    }
 }
 
 #[cfg(not(windows))]
