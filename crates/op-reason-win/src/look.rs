@@ -193,6 +193,11 @@ struct Token {
 
 /// The words of a displayed command line; `None` when a quote does not close.
 fn tokens(s: &str) -> Option<Vec<Token>> {
+    lex(s, false)
+}
+
+/// [`tokens`]; with `cut`, a line that op-reason cut (it ends with `…`) may end inside a quote.
+fn lex(s: &str, cut: bool) -> Option<Vec<Token>> {
     let mut out = Vec::new();
     let mut it = s.char_indices().peekable();
     while let Some(&(i, c)) = it.peek() {
@@ -219,7 +224,7 @@ fn tokens(s: &str) -> Option<Vec<Token>> {
                 c => value.push(c),
             }
         }
-        if quoted {
+        if quoted && !(cut && end == s.len() && value.ends_with('…')) {
             return None;
         }
         out.push(Token { value, start, end });
@@ -311,9 +316,9 @@ fn rest_line(s: &str, rest: &[Token]) -> Option<String> {
 }
 
 /// One shell started to run one command (design §4.7, rule 1): the command it runs, when the line has exactly that
-/// shape.
-fn unwrap_shell(s: &str) -> Option<String> {
-    let words = tokens(s)?;
+/// shape. With `cut`, the line may end inside the command string.
+fn unwrap_shell(s: &str, cut: bool) -> Option<String> {
+    let words = lex(s, cut)?;
     let (program, args) = words.split_first()?;
     match base_name(&program.value).as_str() {
         "bash" | "sh" | "zsh" | "dash" | "fish" => {
@@ -365,12 +370,18 @@ fn unwrap_shell(s: &str) -> Option<String> {
     }
 }
 
-/// Splits `s` at `sep` outside single quotes (a backslash outside quotes escapes the next character); `None` when a
-/// quote does not close.
+/// Splits `s` at `sep` outside quotes, as a POSIX shell reads them (single quotes, double quotes, a backslash outside
+/// single quotes escaping the next character); `None` when a quote does not close.
 fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Option<Vec<&'s str>> {
+    #[derive(PartialEq)]
+    enum In {
+        Plain,
+        Single,
+        Double,
+    }
     let mut parts = Vec::new();
     let mut from = 0;
-    let mut quoted = false;
+    let mut state = In::Plain;
     let mut escaped = false;
     let mut i = 0;
     let b = s.as_bytes();
@@ -378,98 +389,178 @@ fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Option<Vec<&'s str>> {
         let c = b[i];
         if escaped {
             escaped = false;
-        } else if quoted {
-            if c == b'\'' {
-                quoted = false;
+        } else {
+            match state {
+                In::Single if c == b'\'' => state = In::Plain,
+                In::Single => {}
+                In::Double if c == b'\\' => escaped = true,
+                In::Double if c == b'"' => state = In::Plain,
+                In::Double => {}
+                In::Plain if c == b'\\' => escaped = true,
+                In::Plain if c == b'\'' => state = In::Single,
+                In::Plain if c == b'"' => state = In::Double,
+                In::Plain if s[i..].starts_with(sep) => {
+                    parts.push(&s[from..i]);
+                    i += sep.len();
+                    from = i;
+                    continue;
+                }
+                In::Plain => {}
             }
-        } else if c == b'\\' {
-            escaped = true;
-        } else if c == b'\'' {
-            quoted = true;
-        } else if s[i..].starts_with(sep) {
-            parts.push(&s[from..i]);
-            i += sep.len();
-            from = i;
-            continue;
         }
         i += 1;
     }
-    if quoted {
+    if state != In::Plain {
         return None;
     }
     parts.push(&s[from..]);
     Some(parts)
 }
 
-/// A single-quoted string from just after its opening quote: its value (`'\''` is a quote) and what follows the closing
-/// quote.
-fn single_quoted(s: &str) -> Option<(String, &str)> {
+/// How a single-quoted string read from just after its opening quote ended.
+enum Quoted<'s> {
+    /// Its value (`'\''` and `'"'"'` are quotes) and what follows the closing quote.
+    Closed(String, &'s str),
+    /// The line ends inside it with `…` (a line cut by op-reason): the value up to the cut.
+    Cut(String),
+}
+
+fn single_quoted(s: &str) -> Option<Quoted<'_>> {
     let mut value = String::new();
     let mut rest = s;
     loop {
-        let end = rest.find('\'')?;
+        let Some(end) = rest.find('\'') else {
+            return rest.strip_suffix('…').map(|cut| {
+                value.push_str(cut);
+                Quoted::Cut(value)
+            });
+        };
         value.push_str(&rest[..end]);
         let after = &rest[end + 1..];
-        match after.strip_prefix("\\''") {
-            Some(more) => {
-                value.push('\'');
-                rest = more;
-            }
-            None => return Some((value, after)),
+        if let Some(more) = after
+            .strip_prefix("\\''")
+            .or_else(|| after.strip_prefix("\"'\"'"))
+        {
+            value.push('\'');
+            rest = more;
+        } else {
+            return Some(Quoted::Closed(value, after));
         }
     }
 }
 
-/// Claude Code's wrapper of its Bash tool (design §4.7, rule 2): `source <file> && eval '<command>'`, optionally
-/// ` \< /dev/null` and `&& pwd -P >| <file>`, and nothing else; the command inside the quotes.
+/// A name of a shell function or alias, as Claude Code's wrapper quotes it.
+fn shell_name(q: &str) -> bool {
+    q.strip_prefix('\'')
+        .and_then(|q| q.strip_suffix('\''))
+        .is_some_and(|n| {
+            !n.is_empty()
+                && n.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+}
+
+/// A part of Claude Code's wrapper that only prepares the shell (design §4.7, rule 2): reading its snapshot, turning
+/// `extglob` off, dropping an alias or a function, writing the directory afterwards.
+fn harmless(seg: &str) -> bool {
+    let w: Vec<&str> = seg.split(' ').collect();
+    match w.as_slice() {
+        ["source", f] | ["source", f, "2>/dev/null", "||", "true"] => !f.is_empty(),
+        ["shopt", "-u", "extglob", "2>/dev/null", "||", "true"]
+        | [
+            "\\builtin",
+            "shopt",
+            "-u",
+            "extglob",
+            "2>/dev/null",
+            "||",
+            "true",
+        ] => true,
+        ["pwd", "-P", ">|", f] => !f.is_empty(),
+        [
+            "{",
+            "\\builtin",
+            "unalias",
+            "--",
+            a,
+            "\\builtin",
+            "unset",
+            "-f",
+            "--",
+            b,
+            "}",
+            ">/dev/null",
+            "2>&1",
+            "||",
+            "true",
+        ] => {
+            a.strip_suffix(';').is_some_and(shell_name)
+                && b.strip_suffix(';').is_some_and(shell_name)
+        }
+        _ => false,
+    }
+}
+
+/// Claude Code's wrapper of its Bash tool (design §4.7, rule 2): parts joined by ` && ` that only prepare the shell
+/// ([`harmless`]) and one `eval '<command>'` (optionally ` \< /dev/null`): the command inside the quotes. A line cut
+/// inside the quotes gives the command up to the cut and `…`.
 fn unwrap_claude(s: &str) -> Option<String> {
-    let mut found = None;
-    for seg in split_outside_quotes(s, " && ")? {
-        if let Some(rest) = seg.strip_prefix("eval '") {
-            if found.is_some() {
-                return None;
+    // the eval's quotes may be cut (a line cut by op-reason): only what comes before the eval is split
+    let start = if s.starts_with("eval '") {
+        0
+    } else {
+        s.find(" && eval '")? + " && ".len()
+    };
+    let head = s[..start].strip_suffix(" && ").unwrap_or(&s[..start]);
+    if !head.is_empty()
+        && !split_outside_quotes(head, " && ")?
+            .iter()
+            .all(|p| harmless(p))
+    {
+        return None;
+    }
+    match single_quoted(s[start..].strip_prefix("eval '")?)? {
+        Quoted::Cut(value) => Some(format!("{value}…")),
+        Quoted::Closed(value, after) => {
+            let after = after.strip_prefix(r" \< /dev/null").unwrap_or(after);
+            if after.is_empty() {
+                return Some(value);
             }
-            let (inner, after) = single_quoted(rest)?;
-            if !(after.is_empty() || after == r" \< /dev/null") {
-                return None;
-            }
-            found = Some(inner);
-        } else {
-            let w: Vec<&str> = seg.split(' ').collect();
-            let harmless = matches!(w.as_slice(), ["source", f] if !f.is_empty())
-                || matches!(w.as_slice(), ["pwd", "-P", ">|", f] if !f.is_empty());
-            if !harmless {
-                return None;
-            }
+            let tail = after.strip_prefix(" && ")?;
+            split_outside_quotes(tail, " && ")?
+                .iter()
+                .all(|p| harmless(p))
+                .then_some(value)
         }
     }
-    found
 }
 
 /// How many wrappers may come off one line.
 const UNWRAP_MAX: usize = 4;
 
 /// The command a person reads in a root's command line (design §4.7): the shells started to run one command and Claude
-/// Code's wrapper taken off, when they match exactly. `None` when nothing came off: the line is shown as it is (also a
-/// line cut at 200 characters, or one whose quoting does not close).
+/// Code's wrapper taken off, when they match exactly. `None` when nothing came off: the line is shown as it is, also one
+/// whose quoting does not close. A line that op-reason cut (it ends with `…`) gives the command only from Claude Code's
+/// `eval`, up to the cut and `…`.
 pub fn root_command(cmd: &str) -> Option<String> {
-    if cmd.ends_with('…') {
-        return None;
-    }
+    let cut = cmd.ends_with('…');
     let shells = |mut s: String| {
         for _ in 0..UNWRAP_MAX {
-            match unwrap_shell(&s) {
+            match unwrap_shell(&s, cut) {
                 Some(inner) if !inner.trim().is_empty() => s = inner,
                 _ => break,
             }
         }
         s
     };
-    let mut s = shells(cmd.to_owned());
-    if let Some(inner) = unwrap_claude(&s).filter(|i| !i.trim().is_empty()) {
-        s = shells(inner);
-    }
-    (s != cmd).then_some(s)
+    let outer = shells(cmd.to_owned());
+    let found = match unwrap_claude(&outer).filter(|i| !i.trim().is_empty()) {
+        Some(inner) if inner.ends_with('…') => inner,
+        Some(inner) => shells(inner),
+        None if cut => return None,
+        None => outer,
+    };
+    (found != cmd).then_some(found)
 }
 
 /// Whether a command line holds `&&`, `||`, `;` or `|` outside quotes: more than one program.
@@ -720,6 +811,55 @@ mod tests {
         );
     }
 
+    /// Claude Code's wrapper as its Bash tool runs commands now (seen on 2026-11-26), as `cmdline::display` shows it.
+    fn claude_now(eval: &str) -> String {
+        let pre = [
+            "source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true",
+            r"\builtin shopt -u extglob 2>/dev/null || true",
+            r"{ \builtin unalias -- 'which'; \builtin unset -f -- 'which'; } >/dev/null 2>&1 || true",
+            r"{ \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true",
+        ]
+        .join(" && ");
+        format!(r#"bash -c "{pre} && eval '{eval}' && pwd -P >| /tmp/claude-f37c-cwd""#)
+    }
+
+    #[test]
+    fn the_root_command_of_claude_codes_wrapper_now() {
+        assert_eq!(
+            root_command(&claude_now("git push origin main")).as_deref(),
+            Some("git push origin main")
+        );
+        assert_eq!(
+            root_command(&claude_now(r#"echo '\"'\"'hi'\"'\"'"#)).as_deref(),
+            Some("echo 'hi'"),
+            "a quote inside the eval, as this wrapper writes it (displayed with escaped double quotes)"
+        );
+        assert_eq!(
+            root_command(&claude_now("cd a && git push")).as_deref(),
+            Some("cd a && git push"),
+            "&& inside the eval"
+        );
+        let mut cut = claude_now("git log --oneline --decorate --graph");
+        cut.truncate(cut.find("--decorate").unwrap() + "--decorate".len());
+        cut.push('…');
+        assert_eq!(
+            root_command(&cut).as_deref(),
+            Some("git log --oneline --decorate…"),
+            "a line cut inside the eval: the command up to the cut"
+        );
+        let mut early = claude_now("git push");
+        early.truncate(early.find("shopt").unwrap());
+        early.push('…');
+        assert_eq!(root_command(&early), None, "a line cut before the eval");
+        let unknown = claude_now("git push")
+            .replace(r"\builtin shopt -u extglob 2>/dev/null || true", "rm -rf x");
+        assert!(
+            root_command(&unknown)
+                .is_some_and(|s| s.starts_with("source ") && s.contains("rm -rf x")),
+            "an unknown part: the shell's whole command string"
+        );
+    }
+
     #[test]
     fn a_root_command_is_never_cut_to_a_part() {
         assert_eq!(
@@ -735,7 +875,7 @@ mod tests {
         assert_eq!(
             root_command(r#"bash -c -l "git push origin fix/lo…"#),
             None,
-            "a cut line"
+            "a cut line without Claude Code's eval"
         );
         assert_eq!(
             root_command(r#"bash -c "git push"#),

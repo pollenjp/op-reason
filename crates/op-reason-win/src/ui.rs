@@ -2,8 +2,12 @@
 //! `Build-NotifyUi` and `Get-Texts` in `launcher/launcher.ps1`). A test reads that table out of the launcher and fails
 //! when the two drift apart, so the PowerShell window and this one keep saying the same thing.
 //!
-//! The window of `op-reason.exe` also switches language ([`Both`], [`SWITCH_LABELS`], [`switch_hit`]; design
+//! The window of `op-reason.exe` also switches language ([`Both`], [`SWITCH`]; design
 //! `2026-11-15-language-toggle-design.md` §4). The launcher's window has no switch.
+//!
+//! The window of `op-reason.exe` draws a [`look::View`] built next to the launcher's lines (design
+//! `2026-11-26-modern-window-design.md` §4.2): the lines stay what the status `ui` reports, and the view adds the words of
+//! that window alone ([`Words`]).
 //!
 //! Both windows list the references the call reads after the command line, and link those whose vault and item are
 //! IDs to the 1Password app ([`RefLines`]; design `2026-11-17-refs-in-window-design.md` §4 and §5).
@@ -14,6 +18,7 @@ use op_reason_core::refs;
 use serde_json::{Value, json};
 
 use crate::account;
+use crate::look::{self, Band, Chip, ChipKind, Icon, Reason, Sketch, View};
 
 /// The texts of one window and its toast (the launcher's status `ui`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +35,8 @@ pub struct Texts {
     pub toast: Vec<String>,
     /// The buttons under the footer (the SSH relay's window, [`crate::relay_ui`]); none for `op` calls.
     pub buttons: Vec<(Button, String)>,
+    /// What the window of `op-reason.exe` draws ([`look::View`]).
+    pub view: View,
 }
 
 /// A button of the SSH relay's window: only a press and a release on it answers (design
@@ -102,13 +109,9 @@ impl Both {
     }
 }
 
-/// The language switch at the right of the footer: each language by its own name, with a bar between them. The
-/// language shown is drawn bold; the other one is the link that switches.
-pub const SWITCH_LABELS: [(&str, Option<Lang>); 3] = [
-    ("English", Some(Lang::En)),
-    (" | ", None),
-    ("日本語", Some(Lang::Ja)),
-];
+/// The language switch: each language by its own name, side by side in a pill; the language shown is drawn bold on the
+/// shown part, the other one is the half that switches ([`look::pill`]).
+pub const SWITCH: [(&str, Lang); 2] = [("English", Lang::En), ("日本語", Lang::Ja)];
 
 /// A rectangle in DIPs of the client area.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,55 +127,6 @@ impl Rect {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.left && x < self.right && y >= self.top && y < self.bottom
     }
-}
-
-/// One part of the switch as laid out: its width, its line height and baseline (DIPs, from DirectWrite), and the
-/// language it stands for (none for the bar).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SwitchPart {
-    pub width: f32,
-    pub height: f32,
-    pub baseline: f32,
-    pub lang: Option<Lang>,
-}
-
-/// Where each part of the switch goes: the switch ends at `right`, its parts on the baseline `baseline` (all in DIPs).
-/// Returns the top left corner of each part's line box.
-pub fn switch_origins(parts: &[SwitchPart], right: f32, baseline: f32) -> Vec<(f32, f32)> {
-    let mut x = right - parts.iter().map(|p| p.width).sum::<f32>();
-    parts
-        .iter()
-        .map(|p| {
-            let at = (x, baseline - p.baseline);
-            x += p.width;
-            at
-        })
-        .collect()
-}
-
-/// The language a click at (`x`, `y`) chooses: the part of the language not `shown`, its line box widened by
-/// `pad_x` on each side and `pad_y` above and below. `None` elsewhere, and on the language shown.
-pub fn switch_hit(
-    parts: &[SwitchPart],
-    right: f32,
-    baseline: f32,
-    shown: Lang,
-    (pad_x, pad_y): (f32, f32),
-    (x, y): (f32, f32),
-) -> Option<Lang> {
-    parts
-        .iter()
-        .zip(switch_origins(parts, right, baseline))
-        .find_map(|(p, (left, top))| {
-            let lang = p.lang.filter(|l| *l != shown)?;
-            let r = Rect {
-                left: left - pad_x,
-                top: top - pad_y,
-                right: left + p.width + pad_x,
-                bottom: top + p.height + pad_y,
-            };
-            r.contains(x, y).then_some(lang)
-        })
 }
 
 /// The toast of a `notify` call (a shared approval found by the WSL watchdog).
@@ -298,6 +252,38 @@ pub fn table(lang: Lang) -> &'static Table {
     }
 }
 
+/// The words of `op-reason.exe`'s window that the launcher's window does not have (design
+/// `2026-11-26-modern-window-design.md` §5). The band's words in `⟦…⟧` and `⟪…⟫` are drawn in the accent and the caution
+/// color ([`look::marked`]).
+#[derive(Debug)]
+pub struct Words {
+    pub subtitle: &'static str,
+    pub band_title: &'static str,
+    pub band_line: &'static str,
+    pub no_reason: &'static str,
+}
+
+pub const WORDS_EN: Words = Words {
+    subtitle: "op-reason · asking 1Password for approval",
+    band_title: "1Password's prompt usually opens in the ⟦middle of the screen⟧",
+    band_line: "If it does not, open it from 1Password in the ⟪tray at the bottom right⟫ (under ^)",
+    no_reason: "no reason given",
+};
+
+pub const WORDS_JA: Words = Words {
+    subtitle: "op-reason · 1Password に承認を求めています",
+    band_title: "1Password の画面は、ふつう⟦画面の中央⟧に出ます",
+    band_line: "出ないときは⟪右下のトレイ⟫の 1Password (^ の中) から",
+    no_reason: "理由なし",
+};
+
+pub fn words(lang: Lang) -> &'static Words {
+    match lang {
+        Lang::En => &WORDS_EN,
+        Lang::Ja => &WORDS_JA,
+    }
+}
+
 /// The launcher's `Get-Clip`: text longer than `n` UTF-16 units is cut (never inside a surrogate pair) and gets `…`.
 pub fn clip_utf16(s: &str, n: usize) -> String {
     let units: Vec<u16> = s.encode_utf16().collect();
@@ -323,6 +309,7 @@ fn fill(template: &str, args: &[&str]) -> String {
 /// The launcher's `Build-Ui`. `account` is the account ID for the links ([`account::pick`]), when one is known.
 pub fn build(f: &Facts, lang: Lang, account: Option<&str>) -> Texts {
     let t = table(lang);
+    let view = view(f, lang);
     let mut lines = vec![(t.time.to_owned(), f.time.clone())];
     let (mut desc, mut short) = if f.caller.kind == "claude" {
         let desc = match f.caller.pid {
@@ -388,6 +375,93 @@ pub fn build(f: &Facts, lang: Lang, account: Option<&str>) -> Texts {
         others: t.others.to_owned(),
         toast,
         buttons: Vec::new(),
+        view,
+    }
+}
+
+/// The window's view of a call (design `2026-11-26-modern-window-design.md` §4.2): the reason first, the caller,
+/// herdr, the repository and the directory as chips, the command in the box, the notes, the band and the footer.
+fn view(f: &Facts, lang: Lang) -> View {
+    let t = table(lang);
+    let w = words(lang);
+    let (time, date) = look::split_time(&f.time);
+    let mut chips = Vec::new();
+    let (kind, mut caller) = if f.caller.kind == "claude" {
+        let c = match f.caller.pid {
+            Some(pid) => format!("Claude Code (pid {pid})"),
+            None => "Claude Code".to_owned(),
+        };
+        (ChipKind::Claude, c)
+    } else {
+        (ChipKind::Person, t.human.to_owned())
+    };
+    if let Some(d) = f.caller.detail.as_deref().filter(|d| !d.is_empty()) {
+        caller = format!("{caller} · {d}");
+    }
+    chips.push(Chip { kind, text: caller });
+    if let Some(h) = &f.herdr {
+        let label = if h.label.is_empty() { "?" } else { &h.label };
+        let pane = if h.pane.is_empty() { "?" } else { &h.pane };
+        chips.push(Chip {
+            kind: ChipKind::Herdr,
+            text: format!("herdr · {label} · {pane}"),
+        });
+    }
+    if let Some(repo) = f.place.repo.as_deref().filter(|r| !r.is_empty()) {
+        let branch = f
+            .place
+            .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .unwrap_or("?");
+        chips.push(Chip {
+            kind: ChipKind::Repo,
+            text: format!("{repo} · {branch}"),
+        });
+    }
+    if !f.place.cwd.is_empty() {
+        chips.push(Chip {
+            kind: ChipKind::Folder,
+            text: f.place.cwd.clone(),
+        });
+    }
+    let notes = f
+        .notes
+        .iter()
+        .filter_map(|n| match n.kind.as_str() {
+            "shared-cleared" => Some(t.shared_cleared.to_owned()),
+            "lock-skipped" => Some(fill(
+                t.lock_skipped,
+                &[n.holder_reason.as_deref().unwrap_or("")],
+            )),
+            _ => None,
+        })
+        .collect();
+    View {
+        icon: Icon::Lock,
+        subtitle: w.subtitle.to_owned(),
+        time,
+        date,
+        reason_label: t.reason.to_owned(),
+        reason: if f.reason.is_empty() {
+            Reason::Missing(w.no_reason.to_owned())
+        } else {
+            Reason::Given(f.reason.clone())
+        },
+        chips,
+        code_label: t.command.to_owned(),
+        code: f.command.clone(),
+        code_note: None,
+        facts: Vec::new(),
+        notes,
+        countdown: None,
+        status: String::new(),
+        band: Band {
+            title: w.band_title.to_owned(),
+            line: w.band_line.to_owned(),
+            sketch: Sketch::Op,
+        },
+        footer: t.footer.to_owned(),
     }
 }
 
@@ -799,69 +873,105 @@ mod tests {
         assert_eq!(both.get(Lang::Ja).title, "1Password CLI の承認の依頼");
         assert_eq!(both.get(Lang::Ja), &build(&facts(), Lang::Ja, None));
         assert_eq!(both.en.lines.len(), both.ja.lines.len());
-        let labels: Vec<&str> = SWITCH_LABELS.iter().map(|(t, _)| *t).collect();
-        assert_eq!(labels.concat(), "English | 日本語");
-    }
-
-    fn parts() -> Vec<SwitchPart> {
-        // English 40 wide, the bar 12, 日本語 34 (a taller line from a fallback font, its baseline lower)
-        vec![
-            SwitchPart {
-                width: 40.0,
-                height: 15.0,
-                baseline: 12.0,
-                lang: Some(Lang::En),
-            },
-            SwitchPart {
-                width: 12.0,
-                height: 15.0,
-                baseline: 12.0,
-                lang: None,
-            },
-            SwitchPart {
-                width: 34.0,
-                height: 18.0,
-                baseline: 14.0,
-                lang: Some(Lang::Ja),
-            },
-        ]
+        let labels: Vec<&str> = SWITCH.iter().map(|(t, _)| *t).collect();
+        assert_eq!(labels, ["English", "日本語"]);
     }
 
     #[test]
-    fn the_switch_ends_at_the_right_edge_on_one_baseline() {
-        let at = switch_origins(&parts(), 500.0, 100.0);
-        assert_eq!(at, vec![(414.0, 88.0), (454.0, 88.0), (466.0, 86.0)]);
+    fn the_view_of_a_call() {
+        let v = build(&facts(), Lang::Ja, None).view;
+        assert_eq!(v.icon, Icon::Lock);
+        assert_eq!(v.subtitle, "op-reason · 1Password に承認を求めています");
+        assert_eq!(
+            (v.time.as_str(), v.date.as_str()),
+            ("06:05:00", "2026-11-15")
+        );
+        assert_eq!(v.reason_label, "理由");
+        assert_eq!(v.reason, Reason::Given("r".repeat(150)));
+        assert_eq!(
+            v.chips,
+            vec![
+                Chip {
+                    kind: ChipKind::Claude,
+                    text: "Claude Code (pid 42) · Windows Terminal".into()
+                },
+                Chip {
+                    kind: ChipKind::Repo,
+                    text: "me/r · ?".into()
+                },
+                Chip {
+                    kind: ChipKind::Folder,
+                    text: "~\\src\\r".into()
+                },
+            ]
+        );
+        assert_eq!(v.code_label, "コマンド");
+        assert_eq!(v.code, "op vault list");
+        assert_eq!(v.code_note, None);
+        assert!(v.facts.is_empty());
+        assert_eq!(v.notes.len(), 1);
+        assert!(v.notes[0].contains("理由「why」"), "{:?}", v.notes);
+        assert_eq!(v.countdown, None);
+        assert_eq!(v.status, "");
+        assert_eq!(v.band.sketch, Sketch::Op);
+        assert_eq!(
+            look::marked(&v.band.title).text,
+            "1Password の画面は、ふつう画面の中央に出ます"
+        );
+        assert_eq!(
+            look::marked(&v.band.line).text,
+            "出ないときは右下のトレイの 1Password (^ の中) から"
+        );
+        assert_eq!(v.footer, JA.footer);
+        let en = build(&facts(), Lang::En, None).view;
+        assert_eq!(en.subtitle, "op-reason · asking 1Password for approval");
+        assert_eq!(
+            look::marked(&en.band.title).text,
+            "1Password's prompt usually opens in the middle of the screen"
+        );
+        assert_eq!(en.footer, EN.footer);
     }
 
     #[test]
-    fn only_the_language_not_shown_is_clickable_with_some_room_around_it() {
-        let hit = |shown, x, y| switch_hit(&parts(), 500.0, 100.0, shown, (4.0, 3.0), (x, y));
-        // 日本語 spans x 466..500, y 86..104 (+4 / +3 around it)
-        assert_eq!(hit(Lang::En, 480.0, 95.0), Some(Lang::Ja));
+    fn herdr_and_a_person_in_chips() {
+        let mut f = facts();
+        f.caller = FactsCaller {
+            kind: "human".into(),
+            ..FactsCaller::default()
+        };
+        f.herdr = Some(Herdr {
+            workspace: "w".into(),
+            label: "lab".into(),
+            pane: String::new(),
+        });
+        let v = build(&f, Lang::En, None).view;
         assert_eq!(
-            hit(Lang::En, 462.5, 83.5),
-            Some(Lang::Ja),
-            "inside the room around it"
+            v.chips[..2],
+            [
+                Chip {
+                    kind: ChipKind::Person,
+                    text: "Human (terminal)".into()
+                },
+                Chip {
+                    kind: ChipKind::Herdr,
+                    text: "herdr · lab · ?".into()
+                },
+            ]
         );
-        assert_eq!(hit(Lang::En, 503.9, 106.9), Some(Lang::Ja));
+        f.reason = String::new();
         assert_eq!(
-            hit(Lang::En, 504.0, 95.0),
-            None,
-            "past the room on the right"
+            build(&f, Lang::Ja, None).view.reason,
+            Reason::Missing("理由なし".into())
         );
-        assert_eq!(hit(Lang::En, 480.0, 107.0), None, "below the room");
-        assert_eq!(
-            hit(Lang::En, 420.0, 95.0),
-            None,
-            "English is shown: not a link"
-        );
-        assert_eq!(hit(Lang::En, 459.0, 95.0), None, "the bar");
-        assert_eq!(hit(Lang::Ja, 420.0, 95.0), Some(Lang::En));
-        assert_eq!(
-            hit(Lang::Ja, 480.0, 95.0),
-            None,
-            "日本語 is shown: not a link"
-        );
+    }
+
+    #[test]
+    fn the_status_ui_keeps_the_launchers_shape() {
+        let t = build(&facts(), Lang::En, None);
+        let ui = t.json();
+        let keys: Vec<&String> = ui.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["footer", "lines", "others", "title", "toast"]);
+        assert_eq!(ui["lines"].as_array().map(Vec::len), Some(t.lines.len()));
     }
 
     #[test]

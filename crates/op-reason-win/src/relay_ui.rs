@@ -1,19 +1,24 @@
 //! The texts of the SSH relay's window and toasts (design `2026-11-17-ssh-relay-design.md` §6), in English and
-//! Japanese. The window is `op-reason.exe`'s ([`crate::ui::Texts`] with buttons); its look and behavior stay the same.
+//! Japanese. The window is `op-reason.exe`'s ([`crate::ui::Texts`] with buttons), and draws the [`View`] built here
+//! (design `2026-11-26-modern-window-design.md` §4.3): the reason first, chips for who and where, the root command in
+//! the box, what the signature is for, and the band.
 //!
-//! - [`Phase::Ask`] (per-call): "SSH key: allow this call?" with who, what and why, and the buttons.
+//! - [`Phase::Ask`] (per-call): "SSH key: allow this call?" with who, what and why, the seconds left to answer, how long
+//!   an answer lasts (tied to the root command, §4.8), and the buttons.
 //! - [`Phase::Asking`]: the same facts without buttons while 1Password's prompt may be open (show-only, after a click on
-//!   Allow, or a request that 1Password is slow to answer), and a last line that says where 1Password keeps a prompt it
-//!   did not show (design `2026-11-22-front-after-allow-design.md` §6).
+//!   Allow, or a request that 1Password is slow to answer), with a band that says where 1Password keeps a prompt it did
+//!   not show (design `2026-11-22-front-after-allow-design.md` §6).
 //!
 //! And the toast of a signature that an earlier answer let through without a window ([`pass_texts`]; design
 //! `2026-11-18-pass-toasts-design.md` §4.3).
 
+use op_reason_core::args;
 use op_reason_core::contract::{Herdr, Place};
 use op_reason_core::lang::Lang;
 use op_reason_core::ssh::decide::Answer;
 use op_reason_core::ssh::wire::Purpose;
 
+use crate::look::{self, Band, Chip, ChipKind, Fact, FactKind, Icon, Reason, Sketch, View};
 use crate::relay_opts::Mode;
 use crate::ui::{self, Both, Button, Texts};
 
@@ -64,6 +69,30 @@ pub enum Request {
     Other(u8),
 }
 
+/// The root process of a call: its name, PID and command line (masked, at most 1000 characters, as the record keeps
+/// it: the command that Claude Code's wrapper runs comes after some 300 characters of it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Root {
+    pub name: String,
+    pub pid: u32,
+    pub cmd: String,
+}
+
+/// How much of a root's command line the window shows when it shows the line itself.
+const ROOT_SHOWN: usize = 200;
+
+impl Root {
+    /// The command line as the window shows it: at most 200 characters.
+    pub fn shown(&self) -> String {
+        args::clip(&self.cmd, ROOT_SHOWN, "…")
+    }
+
+    /// `<name> (pid <n>) · <command line>`: the root process line.
+    pub fn line(&self) -> String {
+        format!("{} (pid {}) · {}", self.name, self.pid, self.shown())
+    }
+}
+
 /// What the window shows of one request (masked and clipped already).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facts {
@@ -71,8 +100,8 @@ pub struct Facts {
     pub time: String,
     pub mode: Mode,
     pub caller: Caller,
-    /// The root process: `<name> (pid <n>) · <command line>`.
-    pub root: Option<String>,
+    /// The root process.
+    pub root: Option<Root>,
     pub herdr: Option<Herdr>,
     /// WSL calls: the distribution.
     pub distro: Option<String>,
@@ -110,11 +139,7 @@ pub enum Phase {
 struct Table {
     title_ask: &'static str,
     title_asking: &'static str,
-    time: &'static str,
-    caller: &'static str,
-    root: &'static str,
     wsl: &'static str,
-    place: &'static str,
     reason: &'static str,
     no_reason: &'static str,
     command: &'static str,
@@ -122,7 +147,6 @@ struct Table {
     host_key: &'static str,
     forwarded_from: &'static str,
     onward: &'static str,
-    purpose: &'static str,
     userauth: &'static str,
     sshsig: &'static str,
     other_signature: &'static str,
@@ -139,13 +163,25 @@ struct Table {
     allow: &'static str,
     allow_terminal: &'static str,
     deny: &'static str,
-    footer_ask: &'static str,
-    footer_ask_alone: &'static str,
+    subtitle_per_call: &'static str,
+    subtitle_show_only: &'static str,
+    root_command: &'static str,
+    /// The seconds left to answer (`{0}`).
+    countdown: &'static str,
+    /// How long an answer lasts (design `2026-11-26-modern-window-design.md` §4.8): the root command's program
+    /// (`{0}`) and the time limit (`{1}`); without one program; a request that cannot be tied to a call.
+    covers_name: &'static str,
+    covers_call: &'static str,
+    covers_alone: &'static str,
     waiting: &'static str,
-    footer_asking_per_call: &'static str,
-    footer_asking_slow: &'static str,
-    footer_asking_show_only: &'static str,
-    /// The last line while 1Password asks: where it keeps a prompt that it did not show (its label and value).
+    band_ask_title: &'static str,
+    band_ask_line: &'static str,
+    /// The band while 1Password asks: per-call after Allow, per-call while 1Password is slow, show-only.
+    asking_per_call: &'static str,
+    asking_slow: &'static str,
+    asking_show_only: &'static str,
+    footer_asking: &'static str,
+    /// The band's last line while 1Password asks: where it keeps a prompt that it did not show (its label and value).
     tray: &'static str,
     tray_how: &'static str,
     pass_word: &'static str,
@@ -156,11 +192,7 @@ struct Table {
 const EN: Table = Table {
     title_ask: "SSH key: allow this call?",
     title_asking: "SSH key: 1Password is asking",
-    time: "Time",
-    caller: "Caller",
-    root: "Root",
     wsl: "WSL",
-    place: "Place",
     reason: "Reason",
     no_reason: "no reason given",
     command: "Command",
@@ -168,7 +200,6 @@ const EN: Table = Table {
     host_key: "host key {0}",
     forwarded_from: "forwarded from {0}",
     onward: "onward to the host with key {0}",
-    purpose: "For",
     userauth: "logging in as {0}",
     sshsig: "a signature (SSHSIG, namespace {0})",
     other_signature: "a signature of another kind",
@@ -185,14 +216,22 @@ const EN: Table = Table {
     allow: "Allow this call",
     allow_terminal: "Allow this terminal for {0} minutes",
     deny: "Deny",
-    footer_ask: "per-call mode · an answer covers this call for {0} minutes",
-    footer_ask_alone: "per-call mode · this answer covers this signature only",
+    subtitle_per_call: "op-reason's relay · per-call mode",
+    subtitle_show_only: "op-reason's relay · show-only mode",
+    root_command: "Root command",
+    countdown: "{0} s left to answer",
+    covers_name: "Allowing covers this {0} until it ends (at most {1} minutes)",
+    covers_call: "Allowing covers this call until it ends (at most {1} minutes)",
+    covers_alone: "This answer covers this signature only",
     waiting: " · {0} more waiting",
-    footer_asking_per_call: "per-call mode · allowed here; 1Password itself may ask now. Deny any 1Password prompt that comes without this window",
-    footer_asking_slow: "per-call mode · 1Password itself may ask now (to unlock it, for example). Deny any 1Password prompt that comes without this window",
-    footer_asking_show_only: "show-only mode: decide in 1Password's prompt. Deny any 1Password prompt that comes without this window",
+    band_ask_title: "Allowing brings up 1Password's prompt",
+    band_ask_line: "Usually in the ⟦middle of the screen⟧; if not, from the ⟪tray at the bottom right⟫",
+    asking_per_call: "Allowed here; 1Password itself may ask now",
+    asking_slow: "1Password itself may ask now (to unlock it, for example)",
+    asking_show_only: "Decide in 1Password's prompt",
+    footer_asking: "Deny any 1Password prompt that comes without this window",
     tray: "If 1Password's prompt does not come",
-    tray_how: "the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting",
+    tray_how: "the ⟪1Password icon at the right of the taskbar⟫ (under ^ when hidden) → SSH request waiting",
     pass_word: "Passed",
     pass_call: "allowed for this call",
     pass_terminal: "allowed for this terminal",
@@ -201,11 +240,7 @@ const EN: Table = Table {
 const JA: Table = Table {
     title_ask: "SSH の鍵: この呼び出しを許可しますか",
     title_asking: "SSH の鍵: 1Password が確認しています",
-    time: "時刻",
-    caller: "呼び手",
-    root: "起点",
     wsl: "WSL",
-    place: "場所",
     reason: "理由",
     no_reason: "理由なし",
     command: "コマンド",
@@ -213,7 +248,6 @@ const JA: Table = Table {
     host_key: "ホストの鍵 {0}",
     forwarded_from: "{0} から転送",
     onward: "行き先のホストの鍵 {0}",
-    purpose: "用途",
     userauth: "{0} としてログイン",
     sshsig: "署名 (SSHSIG、namespace {0})",
     other_signature: "その他の署名",
@@ -230,14 +264,22 @@ const JA: Table = Table {
     allow: "この呼び出しを許可",
     allow_terminal: "このターミナルを {0} 分許可",
     deny: "拒否",
-    footer_ask: "呼び出しごとに決めるモード · 答えはこの呼び出しに {0} 分効きます",
-    footer_ask_alone: "呼び出しごとに決めるモード · この答えはこの署名だけに効きます",
+    subtitle_per_call: "op-reason の中継 · 呼び出しごとに決めるモード",
+    subtitle_show_only: "op-reason の中継 · 表示だけのモード",
+    root_command: "起点のコマンド",
+    countdown: "答えを待つ残り {0} 秒",
+    covers_name: "許可は、この {0} が終わるまで効きます (長くても {1} 分)",
+    covers_call: "許可は、この呼び出しが終わるまで効きます (長くても {1} 分)",
+    covers_alone: "この答えはこの署名だけに効きます",
     waiting: " · ほかに {0} 件待っています",
-    footer_asking_per_call: "呼び出しごとに決めるモード · ここでは許可済み。いまは 1Password 自身が確認することがあります。この窓が出ていない 1Password の確認は拒否してください",
-    footer_asking_slow: "呼び出しごとに決めるモード · いまは 1Password 自身が確認することがあります (ロックの解除など)。この窓が出ていない 1Password の確認は拒否してください",
-    footer_asking_show_only: "表示だけのモード: 決めるのは 1Password の画面です。この窓が出ていない 1Password の確認は拒否してください",
+    band_ask_title: "許可すると 1Password の画面が出ます",
+    band_ask_line: "ふつうは⟦画面の中央⟧。出ないときは⟪右下のトレイ⟫から",
+    asking_per_call: "ここでは許可済み。いまは 1Password 自身が確認することがあります",
+    asking_slow: "いまは 1Password 自身が確認することがあります (ロックの解除など)",
+    asking_show_only: "決めるのは 1Password の画面です",
+    footer_asking: "この窓が出ていない 1Password の確認は拒否してください",
     tray: "1Password の画面が出ないとき",
-    tray_how: "タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」",
+    tray_how: "⟪タスクバーの右の 1Password のアイコン⟫ (隠れていれば ^ の中) →「SSHリクエストを待機中」",
     pass_word: "通過",
     pass_call: "この呼び出しの許可",
     pass_terminal: "ターミナルの許可",
@@ -254,92 +296,25 @@ fn fill(template: &str, value: &str) -> String {
     template.replace("{0}", value)
 }
 
-/// The texts of one window and its toast in `lang`.
+/// The texts of one window and its toast in `lang`: the [`View`] the window draws (design
+/// `2026-11-26-modern-window-design.md` §4.3), the buttons and the toast. The relay reports no status, so its texts
+/// keep no "label: value" lines.
 pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     let t = table(lang);
     let title = match phase {
         Phase::Ask => t.title_ask,
         Phase::Asking => t.title_asking,
     };
-    let mut lines = vec![
-        (t.time.to_owned(), f.time.clone()),
-        (t.caller.to_owned(), caller_line(t, &f.caller)),
-    ];
-    if let Some(root) = &f.root {
-        lines.push((t.root.to_owned(), root.clone()));
-    }
-    if let Some(h) = &f.herdr {
-        let label = if h.label.is_empty() { "?" } else { &h.label };
-        let pane = if h.pane.is_empty() { "?" } else { &h.pane };
-        let ui_t = ui::table(lang);
-        lines.push((
-            ui_t.herdr.to_owned(),
-            ui_t.herdr_line.replace("{0}", label).replace("{1}", pane),
-        ));
-    }
-    if let Some(d) = &f.distro {
-        lines.push((t.wsl.to_owned(), d.clone()));
-    }
-    if let Some(p) = &f.place {
-        let mut place = p.cwd.clone();
-        if let Some(repo) = p.repo.as_deref().filter(|r| !r.is_empty()) {
-            let branch = p.branch.as_deref().filter(|b| !b.is_empty()).unwrap_or("?");
-            place = format!("{repo} ({branch}) · {place}");
-        }
-        lines.push((t.place.to_owned(), place));
-    }
     let reason = if f.reason.is_empty() {
         t.no_reason.to_owned()
     } else {
         f.reason.clone()
     };
-    lines.push((t.reason.to_owned(), reason.clone()));
-    lines.push((t.command.to_owned(), f.command.clone()));
-    if let Some(d) = destination_line(t, f) {
-        lines.push((t.destination.to_owned(), d));
-    }
-    let (purpose, key) = match &f.request {
-        Request::Sign {
-            purpose,
-            comment,
-            fingerprint,
-        } => {
-            let p = match purpose {
-                Purpose::UserAuth { user } => fill(t.userauth, user),
-                Purpose::Sshsig { namespace } => fill(t.sshsig, namespace),
-                Purpose::Other => t.other_signature.to_owned(),
-            };
-            let k = match comment.as_deref().filter(|c| !c.is_empty()) {
-                Some(c) => format!("{c} · {fingerprint}"),
-                None => fingerprint.clone(),
-            };
-            (p, Some(k))
-        }
-        Request::List => (t.list.to_owned(), None),
-        Request::Other(n) => (fill(t.other_request, &n.to_string()), None),
+    let view = view(f, phase, lang);
+    let footer = match phase {
+        Phase::Ask => view.status.clone(),
+        Phase::Asking => view.footer.clone(),
     };
-    lines.push((t.purpose.to_owned(), purpose));
-    if let Some(k) = key {
-        lines.push((t.key.to_owned(), k));
-    }
-    // 1Password keeps the prompt of an application that is not in front behind its icon (design
-    // `2026-11-22-front-after-allow-design.md` §6)
-    if phase == Phase::Asking {
-        lines.push((t.tray.to_owned(), t.tray_how.to_owned()));
-    }
-    let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
-    let mut footer = match (phase, f.mode) {
-        (Phase::Ask, _) if alone => t.footer_ask_alone.to_owned(),
-        (Phase::Ask, _) => fill(t.footer_ask, &f.limit_minutes.to_string()),
-        (Phase::Asking, Mode::PerCall) if matches!(f.request, Request::Sign { .. }) => {
-            t.footer_asking_per_call.to_owned()
-        }
-        (Phase::Asking, Mode::PerCall) => t.footer_asking_slow.to_owned(),
-        (Phase::Asking, Mode::ShowOnly) => t.footer_asking_show_only.to_owned(),
-    };
-    if f.waiting > 0 {
-        footer.push_str(&fill(t.waiting, &f.waiting.to_string()));
-    }
     let buttons = match phase {
         Phase::Asking => Vec::new(),
         Phase::Ask => {
@@ -365,16 +340,198 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
             ui::clip_utf16(&f.command, 80)
         ),
     ];
-    let refs_at = lines.len();
     Texts {
         title: title.to_owned(),
-        lines,
+        lines: Vec::new(),
         refs: None,
-        refs_at,
+        refs_at: 0,
         footer,
         others: String::new(),
         toast,
         buttons,
+        view,
+    }
+}
+
+/// The window's view of a request.
+fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
+    let t = table(lang);
+    let (time, date) = look::split_time(&f.time);
+    let alone = f.single || matches!(f.caller, Caller::Unknown(_)) || f.forwarded.is_some();
+    let (code_label, code, code_note) = match &f.root {
+        Some(root) => {
+            let inner = look::root_command(&root.cmd);
+            let note = inner.is_some().then(|| root.line());
+            (t.root_command, inner.unwrap_or_else(|| root.shown()), note)
+        }
+        None => (t.command, f.command.clone(), None),
+    };
+    let mut facts = vec![Fact {
+        kind: FactKind::Purpose,
+        text: purpose_line(t, &f.request),
+    }];
+    let mut detail = Vec::new();
+    if let Some(d) = destination_line(t, f) {
+        detail.push(format!("{} {d}", t.destination));
+    }
+    if let Some(k) = key_line(&f.request) {
+        detail.push(format!("{} {k}", t.key));
+    }
+    if !detail.is_empty() {
+        facts.push(Fact {
+            kind: FactKind::Detail,
+            text: detail.join(" · "),
+        });
+    }
+    if f.root.is_some() {
+        facts.push(Fact {
+            kind: FactKind::Mono,
+            text: format!("{}: {}", t.command, f.command),
+        });
+    }
+    let waiting = if f.waiting > 0 {
+        fill(t.waiting, &f.waiting.to_string())
+    } else {
+        String::new()
+    };
+    let limit = f.limit_minutes.to_string();
+    let (countdown, status, band, footer) = match phase {
+        Phase::Ask => {
+            let covers = if alone {
+                t.covers_alone.to_owned()
+            } else {
+                match f.root.as_ref().and_then(|_| look::program_name(&code)) {
+                    Some(name) => t.covers_name.replace("{0}", &name).replace("{1}", &limit),
+                    None => t.covers_call.replace("{1}", &limit),
+                }
+            };
+            (
+                Some(t.countdown.to_owned()),
+                format!("{covers}{waiting}"),
+                Band {
+                    title: t.band_ask_title.to_owned(),
+                    line: t.band_ask_line.to_owned(),
+                    sketch: Sketch::Ask,
+                },
+                String::new(),
+            )
+        }
+        Phase::Asking => {
+            let now = match f.mode {
+                Mode::PerCall if matches!(f.request, Request::Sign { .. }) => t.asking_per_call,
+                Mode::PerCall => t.asking_slow,
+                Mode::ShowOnly => t.asking_show_only,
+            };
+            (
+                None,
+                String::new(),
+                // 1Password keeps the prompt of an application that is not in front behind its icon (design
+                // `2026-11-22-front-after-allow-design.md` §6)
+                Band {
+                    title: now.to_owned(),
+                    line: format!("{}: {}", t.tray, t.tray_how),
+                    sketch: Sketch::Asking,
+                },
+                format!("{}{waiting}", t.footer_asking),
+            )
+        }
+    };
+    View {
+        icon: Icon::Key,
+        subtitle: match f.mode {
+            Mode::PerCall => t.subtitle_per_call,
+            Mode::ShowOnly => t.subtitle_show_only,
+        }
+        .to_owned(),
+        time,
+        date,
+        reason_label: t.reason.to_owned(),
+        reason: if f.reason.is_empty() {
+            Reason::Missing(t.no_reason.to_owned())
+        } else {
+            Reason::Given(f.reason.clone())
+        },
+        chips: chips(t, f, lang),
+        code_label: code_label.to_owned(),
+        code,
+        code_note,
+        facts,
+        notes: Vec::new(),
+        countdown,
+        status,
+        band,
+        footer,
+    }
+}
+
+/// The chips: the caller, the WSL distribution, herdr, the repository and its branch, the directory.
+fn chips(t: &Table, f: &Facts, lang: Lang) -> Vec<Chip> {
+    let kind = match f.caller {
+        Caller::Claude { .. } => ChipKind::Claude,
+        Caller::Person { .. } => ChipKind::Person,
+        Caller::Program { .. } | Caller::Unknown(_) => ChipKind::Other,
+    };
+    let mut out = vec![Chip {
+        kind,
+        text: caller_line(t, &f.caller),
+    }];
+    if let Some(d) = &f.distro {
+        out.push(Chip {
+            kind: ChipKind::Wsl,
+            text: format!("{} · {d}", t.wsl),
+        });
+    }
+    if let Some(h) = &f.herdr {
+        let label = if h.label.is_empty() { "?" } else { &h.label };
+        let pane = if h.pane.is_empty() { "?" } else { &h.pane };
+        out.push(Chip {
+            kind: ChipKind::Herdr,
+            text: format!("{} · {label} · {pane}", ui::table(lang).herdr),
+        });
+    }
+    if let Some(p) = &f.place {
+        if let Some(repo) = p.repo.as_deref().filter(|r| !r.is_empty()) {
+            let branch = p.branch.as_deref().filter(|b| !b.is_empty()).unwrap_or("?");
+            out.push(Chip {
+                kind: ChipKind::Repo,
+                text: format!("{repo} · {branch}"),
+            });
+        }
+        if !p.cwd.is_empty() {
+            out.push(Chip {
+                kind: ChipKind::Folder,
+                text: p.cwd.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// What the request is for.
+fn purpose_line(t: &Table, r: &Request) -> String {
+    match r {
+        Request::Sign { purpose, .. } => match purpose {
+            Purpose::UserAuth { user } => fill(t.userauth, user),
+            Purpose::Sshsig { namespace } => fill(t.sshsig, namespace),
+            Purpose::Other => t.other_signature.to_owned(),
+        },
+        Request::List => t.list.to_owned(),
+        Request::Other(n) => fill(t.other_request, &n.to_string()),
+    }
+}
+
+/// The key of a signature: its comment in 1Password and its fingerprint.
+fn key_line(r: &Request) -> Option<String> {
+    match r {
+        Request::Sign {
+            comment,
+            fingerprint,
+            ..
+        } => Some(match comment.as_deref().filter(|c| !c.is_empty()) {
+            Some(c) => format!("{c} · {fingerprint}"),
+            None => fingerprint.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -562,7 +719,11 @@ mod tests {
             time: "2026-11-18 09:00:00".into(),
             mode: Mode::PerCall,
             caller: Caller::Claude { pid: Some(4242) },
-            root: Some("cmd.exe (pid 77) · cmd.exe /d /s /c x".into()),
+            root: Some(Root {
+                name: "bash".into(),
+                pid: 31337,
+                cmd: r#"bash -c -l "git push origin fix/login""#.into(),
+            }),
             herdr: None,
             distro: None,
             place: Some(Place {
@@ -587,11 +748,22 @@ mod tests {
         }
     }
 
-    fn line<'a>(t: &'a Texts, label: &str) -> Option<&'a str> {
-        t.lines
-            .iter()
-            .find(|(l, _)| l == label)
-            .map(|(_, v)| v.as_str())
+    fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
+        build(f, phase, lang).view
+    }
+
+    fn chip(kind: ChipKind, text: &str) -> Chip {
+        Chip {
+            kind,
+            text: text.to_owned(),
+        }
+    }
+
+    fn fact(kind: FactKind, text: &str) -> Fact {
+        Fact {
+            kind,
+            text: text.to_owned(),
+        }
     }
 
     #[test]
@@ -625,91 +797,169 @@ mod tests {
     }
 
     #[test]
-    fn while_1password_asks_the_last_line_says_where_a_hidden_prompt_waits() {
-        let mut show = facts();
-        show.mode = Mode::ShowOnly;
-        let mut list = facts();
-        list.request = Request::List;
-        for f in [facts(), show, list] {
-            let en = build(&f, Phase::Asking, Lang::En);
-            assert_eq!(
-                en.lines.last().map(|(l, v)| (l.as_str(), v.as_str())),
-                Some((
-                    "If 1Password's prompt does not come",
-                    "the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting"
-                ))
-            );
-            let ja = build(&f, Phase::Asking, Lang::Ja);
-            assert_eq!(
-                ja.lines.last().map(|(l, v)| (l.as_str(), v.as_str())),
-                Some((
-                    "1Password の画面が出ないとき",
-                    "タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」"
-                ))
-            );
-        }
-        // the window that asks has its buttons instead
-        let ask = build(&facts(), Phase::Ask, Lang::En);
-        assert_eq!(ask.lines.last().map(|(l, _)| l.as_str()), Some("Key"));
-    }
-
-    #[test]
-    fn the_lines_of_a_call() {
+    fn the_view_of_a_call_that_asks() {
+        let v = view(&facts(), Phase::Ask, Lang::En);
+        assert_eq!(v.icon, Icon::Key);
+        assert_eq!(v.subtitle, "op-reason's relay · per-call mode");
+        assert_eq!(
+            (v.time.as_str(), v.date.as_str()),
+            ("09:00:00", "2026-11-18")
+        );
+        assert_eq!(v.reason_label, "Reason");
+        assert_eq!(v.reason, Reason::Given("push the fix".into()));
+        assert_eq!(
+            v.chips,
+            vec![
+                chip(ChipKind::Claude, "Claude Code (pid 4242)"),
+                chip(ChipKind::Repo, "me/r · main"),
+                chip(ChipKind::Folder, r"~\src\r"),
+            ]
+        );
+        assert_eq!(v.code_label, "Root command");
+        assert_eq!(v.code, "git push origin fix/login");
+        assert_eq!(
+            v.code_note.as_deref(),
+            Some(r#"bash (pid 31337) · bash -c -l "git push origin fix/login""#)
+        );
+        assert_eq!(
+            v.facts,
+            vec![
+                fact(FactKind::Purpose, "logging in as git"),
+                fact(
+                    FactKind::Detail,
+                    "Destination git@github.com · host key SHA256:h · Key GitHub · SHA256:k"
+                ),
+                fact(
+                    FactKind::Mono,
+                    r#"Command: ssh.exe git@github.com "git-receive-pack 'me/r.git'""#
+                ),
+            ]
+        );
+        assert_eq!(v.countdown.as_deref(), Some("{0} s left to answer"));
+        assert_eq!(
+            v.status,
+            "Allowing covers this git push until it ends (at most 60 minutes)"
+        );
+        assert_eq!(v.band.sketch, Sketch::Ask);
+        assert_eq!(v.band.title, "Allowing brings up 1Password's prompt");
+        assert_eq!(
+            look::marked(&v.band.line).text,
+            "Usually in the middle of the screen; if not, from the tray at the bottom right"
+        );
+        assert_eq!(v.footer, "");
+        assert!(v.notes.is_empty());
         let t = build(&facts(), Phase::Ask, Lang::En);
-        let labels: Vec<&str> = t.lines.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                "Time",
-                "Caller",
-                "Root",
-                "Place",
-                "Reason",
-                "Command",
-                "Destination",
-                "For",
-                "Key"
-            ]
-        );
-        assert_eq!(line(&t, "Caller"), Some("Claude Code (pid 4242)"));
-        assert_eq!(
-            line(&t, "Root"),
-            Some("cmd.exe (pid 77) · cmd.exe /d /s /c x")
-        );
-        assert_eq!(line(&t, "Place"), Some(r"me/r (main) · ~\src\r"));
-        assert_eq!(
-            line(&t, "Destination"),
-            Some("git@github.com · host key SHA256:h")
-        );
-        assert_eq!(line(&t, "For"), Some("logging in as git"));
-        assert_eq!(line(&t, "Key"), Some("GitHub · SHA256:k"));
-        let ja = build(&facts(), Phase::Ask, Lang::Ja);
-        let labels: Vec<&str> = ja.lines.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                "時刻",
-                "呼び手",
-                "起点",
-                "場所",
-                "理由",
-                "コマンド",
-                "接続先",
-                "用途",
-                "鍵"
-            ]
-        );
-        assert_eq!(
-            line(&ja, "接続先"),
-            Some("git@github.com · ホストの鍵 SHA256:h")
-        );
-        assert_eq!(line(&ja, "用途"), Some("git としてログイン"));
+        assert!(t.lines.is_empty(), "the relay keeps no label-value lines");
+        assert_eq!(t.footer, v.status);
         assert_eq!(t.toast[0], "SSH key: allow this call?");
         assert_eq!(t.toast[1], "Reason: push the fix");
         assert!(
             t.toast[2].starts_with("Claude Code · ssh.exe git@github.com"),
             "{:?}",
             t.toast
+        );
+        let ja = view(&facts(), Phase::Ask, Lang::Ja);
+        assert_eq!(ja.subtitle, "op-reason の中継 · 呼び出しごとに決めるモード");
+        assert_eq!(ja.reason_label, "理由");
+        assert_eq!(ja.code_label, "起点のコマンド");
+        assert_eq!(ja.countdown.as_deref(), Some("答えを待つ残り {0} 秒"));
+        assert_eq!(
+            ja.status,
+            "許可は、この git push が終わるまで効きます (長くても 60 分)"
+        );
+        assert_eq!(ja.facts[0].text, "git としてログイン");
+        assert_eq!(
+            ja.facts[1].text,
+            "接続先 git@github.com · ホストの鍵 SHA256:h · 鍵 GitHub · SHA256:k"
+        );
+        assert_eq!(ja.band.title, "許可すると 1Password の画面が出ます");
+        assert_eq!(
+            look::marked(&ja.band.line).text,
+            "ふつうは画面の中央。出ないときは右下のトレイから"
+        );
+    }
+
+    #[test]
+    fn the_root_as_it_is_when_nothing_wraps_it() {
+        let mut f = facts();
+        f.root = Some(Root {
+            name: "git".into(),
+            pid: 2718,
+            cmd: "git pull --rebase".into(),
+        });
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(v.code, "git pull --rebase");
+        assert_eq!(v.code_note, None, "the box shows the whole line");
+        assert_eq!(
+            v.status,
+            "Allowing covers this git pull until it ends (at most 60 minutes)"
+        );
+    }
+
+    #[test]
+    fn a_long_root_line() {
+        let mut f = facts();
+        let eval = "git push origin main";
+        let cmd = format!(
+            r#"bash -c "source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && {pad} && eval '{eval}' && pwd -P >| /tmp/claude-f37c-cwd""#,
+            pad = [r"\builtin shopt -u extglob 2>/dev/null || true"; 8].join(" && ")
+        );
+        assert!(
+            cmd.chars().count() > 300,
+            "the command comes late in the line"
+        );
+        f.root = Some(Root {
+            name: "bash".into(),
+            pid: 7,
+            cmd: cmd.clone(),
+        });
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(
+            v.code, eval,
+            "taken from the record's line, past 200 characters"
+        );
+        let note = v.code_note.unwrap();
+        assert!(note.starts_with("bash (pid 7) · bash -c "), "{note}");
+        assert!(
+            note.ends_with('…'),
+            "the root line is cut at 200 characters: {note}"
+        );
+        // a line that cannot be unwrapped is shown cut at 200 characters, as before
+        let long = format!("someprog {}", "x".repeat(400));
+        f.root = Some(Root {
+            name: "someprog".into(),
+            pid: 8,
+            cmd: long,
+        });
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(v.code.chars().count(), 201);
+        assert!(v.code.ends_with('…'));
+        assert_eq!(v.code_note, None);
+    }
+
+    #[test]
+    fn a_shell_line_says_this_call() {
+        let mut f = facts();
+        f.root = Some(Root {
+            name: "bash".into(),
+            pid: 9,
+            cmd: r#"bash -c "cd a && git push""#.into(),
+        });
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(v.code, "cd a && git push");
+        assert_eq!(
+            v.status,
+            "Allowing covers this call until it ends (at most 60 minutes)"
+        );
+        assert_eq!(
+            view(&f, Phase::Ask, Lang::Ja).status,
+            "許可は、この呼び出しが終わるまで効きます (長くても 60 分)"
+        );
+        f.limit_minutes = 15;
+        assert!(
+            view(&f, Phase::Ask, Lang::En)
+                .status
+                .contains("(at most 15 minutes)")
         );
     }
 
@@ -718,13 +968,71 @@ mod tests {
         let mut f = facts();
         f.reason = String::new();
         assert_eq!(
-            line(&build(&f, Phase::Ask, Lang::En), "Reason"),
-            Some("no reason given")
+            view(&f, Phase::Ask, Lang::En).reason,
+            Reason::Missing("no reason given".into())
         );
         assert_eq!(
-            line(&build(&f, Phase::Ask, Lang::Ja), "理由"),
-            Some("理由なし")
+            view(&f, Phase::Asking, Lang::Ja).reason,
+            Reason::Missing("理由なし".into())
         );
+    }
+
+    #[test]
+    fn while_1password_asks() {
+        let mut show = facts();
+        show.mode = Mode::ShowOnly;
+        let mut list = facts();
+        list.request = Request::List;
+        assert_eq!(
+            view(&show, Phase::Asking, Lang::En).subtitle,
+            "op-reason's relay · show-only mode"
+        );
+        assert_eq!(
+            view(&show, Phase::Asking, Lang::Ja).subtitle,
+            "op-reason の中継 · 表示だけのモード"
+        );
+        for (f, en_title, ja_title) in [
+            (
+                facts(),
+                "Allowed here; 1Password itself may ask now",
+                "ここでは許可済み。いまは 1Password 自身が確認することがあります",
+            ),
+            (
+                list,
+                "1Password itself may ask now (to unlock it, for example)",
+                "いまは 1Password 自身が確認することがあります (ロックの解除など)",
+            ),
+            (
+                show,
+                "Decide in 1Password's prompt",
+                "決めるのは 1Password の画面です",
+            ),
+        ] {
+            let en = view(&f, Phase::Asking, Lang::En);
+            assert_eq!(en.band.title, en_title);
+            assert_eq!(
+                look::marked(&en.band.line).text,
+                "If 1Password's prompt does not come: the 1Password icon at the right of the taskbar (under ^ when hidden) → SSH request waiting"
+            );
+            assert_eq!(en.band.sketch, Sketch::Asking);
+            assert_eq!(
+                en.footer,
+                "Deny any 1Password prompt that comes without this window"
+            );
+            assert_eq!(en.countdown, None);
+            assert_eq!(en.status, "");
+            let ja = view(&f, Phase::Asking, Lang::Ja);
+            assert_eq!(ja.band.title, ja_title);
+            assert_eq!(
+                look::marked(&ja.band.line).text,
+                "1Password の画面が出ないとき: タスクバーの右の 1Password のアイコン (隠れていれば ^ の中) →「SSHリクエストを待機中」"
+            );
+            assert_eq!(
+                ja.footer,
+                "この窓が出ていない 1Password の確認は拒否してください"
+            );
+            assert_eq!(build(&f, Phase::Asking, Lang::Ja).footer, ja.footer);
+        }
     }
 
     #[test]
@@ -744,71 +1052,51 @@ mod tests {
             build(&f, Phase::Ask, Lang::Ja).buttons[1].1,
             "このターミナルを 60 分許可"
         );
-        assert_eq!(line(&en, "Caller"), Some("Human (terminal) · pwsh.exe"));
+        assert_eq!(
+            en.view.chips[0],
+            chip(ChipKind::Person, "Human (terminal) · pwsh.exe")
+        );
         assert!(build(&f, Phase::Asking, Lang::En).buttons.is_empty());
     }
 
     #[test]
-    fn the_footer_says_the_mode_the_limit_and_who_waits() {
-        let f = facts();
-        let en = build(&f, Phase::Ask, Lang::En);
+    fn waiting_calls_and_a_signature_alone() {
+        let mut f = facts();
+        f.waiting = 2;
         assert!(
-            en.footer.contains("per-call") && en.footer.contains("60 minutes"),
-            "{}",
-            en.footer
+            view(&f, Phase::Ask, Lang::En)
+                .status
+                .ends_with(" · 2 more waiting")
         );
-        assert!(!en.footer.contains("waiting"), "{}", en.footer);
+        assert!(
+            view(&f, Phase::Ask, Lang::Ja)
+                .status
+                .ends_with(" · ほかに 2 件待っています")
+        );
+        assert!(
+            view(&f, Phase::Asking, Lang::En)
+                .footer
+                .ends_with(" · 2 more waiting")
+        );
+        assert!(
+            !view(&facts(), Phase::Ask, Lang::En)
+                .status
+                .contains("waiting")
+        );
         let mut single = facts();
         single.single = true;
-        assert!(
-            build(&single, Phase::Ask, Lang::En)
-                .footer
-                .contains("this signature only")
+        assert_eq!(
+            view(&single, Phase::Ask, Lang::En).status,
+            "This answer covers this signature only"
         );
-        let mut waiting = facts();
-        waiting.waiting = 2;
-        assert!(
-            build(&waiting, Phase::Ask, Lang::En)
-                .footer
-                .contains("2 more waiting")
-        );
-        assert!(
-            build(&waiting, Phase::Ask, Lang::Ja)
-                .footer
-                .contains("ほかに 2 件待っています")
-        );
-        let mut show = facts();
-        show.mode = Mode::ShowOnly;
-        let s = build(&show, Phase::Asking, Lang::En);
-        assert!(
-            s.footer.contains("show-only") && s.footer.contains("Deny any 1Password prompt"),
-            "{}",
-            s.footer
-        );
-        assert!(
-            build(&show, Phase::Asking, Lang::Ja)
-                .footer
-                .contains("この窓が出ていない 1Password の確認は拒否")
-        );
-        // 1Password slow to answer the key list: nothing was allowed here
-        let mut list = facts();
-        list.request = Request::List;
-        let l = build(&list, Phase::Asking, Lang::En);
-        assert!(!l.footer.contains("allowed"), "{}", l.footer);
-        assert!(
-            l.footer.contains("Deny any 1Password prompt"),
-            "{}",
-            l.footer
-        );
-        assert!(
-            !build(&list, Phase::Asking, Lang::Ja)
-                .footer
-                .contains("許可済み")
+        assert_eq!(
+            view(&single, Phase::Ask, Lang::Ja).status,
+            "この答えはこの署名だけに効きます"
         );
     }
 
     #[test]
-    fn a_forwarded_signature_shows_both_host_keys() {
+    fn a_request_without_a_root_shows_the_ssh_command() {
         let mut f = facts();
         f.caller = Caller::Unknown(Unknown::Forwarded);
         f.root = None;
@@ -817,24 +1105,26 @@ mod tests {
             from_key: Some("SHA256:a".into()),
             onward_key: Some("SHA256:b".into()),
         });
-        let en = build(&f, Phase::Ask, Lang::En);
+        let en = view(&f, Phase::Ask, Lang::En);
         assert_eq!(
-            line(&en, "Caller"),
-            Some("unknown (forwarded from a remote host)")
+            en.chips[0],
+            chip(ChipKind::Other, "unknown (forwarded from a remote host)")
         );
+        assert_eq!(en.code_label, "Command");
+        assert_eq!(en.code, f.command);
+        assert_eq!(en.code_note, None);
+        assert!(en.facts.iter().all(|x| x.kind != FactKind::Mono));
         assert_eq!(
-            line(&en, "Destination"),
-            Some(
-                "forwarded from jumphost (host key SHA256:a) · onward to the host with key SHA256:b"
-            )
+            en.facts[1].text,
+            "Destination forwarded from jumphost (host key SHA256:a) · onward to the host with key SHA256:b · Key GitHub · SHA256:k"
         );
-        assert!(en.footer.contains("this signature only"), "{}", en.footer);
-        let ja = build(&f, Phase::Ask, Lang::Ja);
+        assert_eq!(en.status, "This answer covers this signature only");
+        let ja = view(&f, Phase::Ask, Lang::Ja);
+        assert_eq!(ja.code_label, "コマンド");
         assert_eq!(
-            line(&ja, "接続先"),
-            Some("jumphost (ホストの鍵 SHA256:a) から転送 · 行き先のホストの鍵 SHA256:b")
+            ja.facts[1].text,
+            "接続先 jumphost (ホストの鍵 SHA256:a) から転送 · 行き先のホストの鍵 SHA256:b · 鍵 GitHub · SHA256:k"
         );
-        assert!(line(&en, "Root").is_none());
     }
 
     #[test]
@@ -846,17 +1136,19 @@ mod tests {
             pane: "w1:p2".into(),
         });
         f.distro = Some("Ubuntu".into());
-        let en = build(&f, Phase::Ask, Lang::En);
+        let en = view(&f, Phase::Ask, Lang::En);
         assert_eq!(
-            line(&en, "herdr"),
-            Some("workspace \"デプロイ\" · pane w1:p2")
+            en.chips[1..3],
+            [
+                chip(ChipKind::Wsl, "WSL · Ubuntu"),
+                chip(ChipKind::Herdr, "herdr · デプロイ · w1:p2"),
+            ]
         );
-        assert_eq!(line(&en, "WSL"), Some("Ubuntu"));
         let mut direct = facts();
         direct.caller = Caller::Unknown(Unknown::WslDirect);
         assert_eq!(
-            line(&build(&direct, Phase::Ask, Lang::En), "Caller"),
-            Some("unknown (a WSL ssh.exe not started through op-reason-ssh)")
+            view(&direct, Phase::Ask, Lang::En).chips[0].text,
+            "unknown (a WSL ssh.exe not started through op-reason-ssh)"
         );
     }
 
@@ -870,17 +1162,24 @@ mod tests {
             comment: None,
             fingerprint: "SHA256:k".into(),
         };
-        let t = build(&f, Phase::Asking, Lang::En);
-        assert_eq!(line(&t, "For"), Some("a signature (SSHSIG, namespace git)"));
-        assert_eq!(line(&t, "Key"), Some("SHA256:k"));
+        let v = view(&f, Phase::Asking, Lang::En);
+        assert_eq!(v.facts[0].text, "a signature (SSHSIG, namespace git)");
+        assert!(
+            v.facts[1].text.ends_with(" · Key SHA256:k"),
+            "{:?}",
+            v.facts
+        );
         f.request = Request::List;
-        let t = build(&f, Phase::Asking, Lang::Ja);
-        assert_eq!(line(&t, "用途"), Some("鍵の一覧"));
-        assert_eq!(line(&t, "鍵"), None);
+        let v = view(&f, Phase::Asking, Lang::Ja);
+        assert_eq!(v.facts[0].text, "鍵の一覧");
+        assert_eq!(
+            v.facts[1].text, "接続先 git@github.com · ホストの鍵 SHA256:h",
+            "no key for the key list"
+        );
         f.request = Request::Other(17);
         assert_eq!(
-            line(&build(&f, Phase::Asking, Lang::En), "For"),
-            Some("agent request 17")
+            view(&f, Phase::Asking, Lang::En).facts[0].text,
+            "agent request 17"
         );
     }
 

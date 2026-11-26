@@ -122,19 +122,24 @@ impl Drop for Shown<'_> {
 }
 
 impl<'a> Shown<'a> {
-    /// Shows the window of `facts` (and its toast); with `held`, writes the holder file.
+    /// Shows the window of `facts` (and its toast); with `held`, writes the holder file. `answer_by`: the end of the
+    /// answer wait and its length, for the window's countdown (the window that asks).
     fn open(
         shared: &'a Shared,
         ticket: Ticket<'a>,
         held: Option<mutex::Held>,
         facts: Facts,
         phase: Phase,
+        answer_by: Option<(Instant, Duration)>,
     ) -> Result<Shown<'a>, String> {
         let lang = shared.lang();
         let texts = relay_ui::both(&facts, phase);
         let w = window::Window::create(&texts, lang, false, Box::new(app::remember))
             .map_err(|e| e.message())?;
         w.draw_without_gpu();
+        if let Some((end, total)) = answer_by {
+            w.set_deadline(end, total);
+        }
         w.show();
         let t0 = Instant::now();
         while !w.painted() && t0.elapsed() < Duration::from_millis(500) {
@@ -367,11 +372,19 @@ fn ask<'a>(
         return Outcome::Gone;
     }
     facts.waiting = waiting;
-    let mut shown = match Shown::open(shared, ticket, held, facts, Phase::Ask) {
+    let wait = Duration::from_secs(shared.opts.answer_secs);
+    let deadline = Instant::now() + wait;
+    let mut shown = match Shown::open(
+        shared,
+        ticket,
+        held,
+        facts,
+        Phase::Ask,
+        Some((deadline, wait)),
+    ) {
         Ok(s) => s,
         Err(_) => return Outcome::NoWindow,
     };
-    let deadline = Instant::now() + Duration::from_secs(shared.opts.answer_secs);
     loop {
         shown.pump(Duration::from_millis(50));
         if let Some(b) = shown.window.answer() {
@@ -450,11 +463,11 @@ pub(super) fn show_only<'a>(
     if quit(shared, client) {
         return Err(Outcome::Gone);
     }
-    Shown::open(shared, ticket, held, facts, Phase::Asking).map_err(|_| Outcome::NoWindow)
+    Shown::open(shared, ticket, held, facts, Phase::Asking, None).map_err(|_| Outcome::NoWindow)
 }
 
 /// The window without buttons for a request whose answer is late (its ticket's turn has come): no lock, the request is
 /// with 1Password already.
 pub(super) fn late<'a>(shared: &'a Shared, ticket: Ticket<'a>, facts: Facts) -> Option<Shown<'a>> {
-    Shown::open(shared, ticket, None, facts, Phase::Asking).ok()
+    Shown::open(shared, ticket, None, facts, Phase::Asking, None).ok()
 }

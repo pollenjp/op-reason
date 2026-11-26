@@ -185,19 +185,28 @@ The command, as the window shows it today (masked, at most 300 characters), spli
 
 ### 4.7 The relay's root command
 
-The root's command line, as recorded (masked, at most 200 characters), with the wrappers that hide the command a
-person reads taken off, only when they match exactly (else the line as it is):
+The root's command line as the record keeps it (masked, at most 1000 characters: the command that Claude Code's
+wrapper runs comes after some 300 characters of it), with the wrappers that hide the command a person reads taken off,
+only when they match exactly:
 
 1. A shell started to run one command: `bash`, `sh`, `zsh`, `dash`, `fish` (also with `.exe`) whose arguments are
    options, `-c` (alone or in a group such as `-lc`) and one command string; `cmd.exe` with `/c` (after `/d`, `/s`, `/q`
    only) and the rest; `pwsh` or `powershell` (also with `.exe`) with `-Command` (or `-c`) after options
    (`-NoProfile`, `-NonInteractive`, `-NoLogo`, `-ExecutionPolicy <value>`) and one command string. The command string
    is what remains; this repeats (cmd.exe's `pwsh -Command "…"` in Claude Code on Windows).
-2. Claude Code's wrapper of its Bash tool: `source <file> && eval '<command>'`, optionally followed by
-   ` \< /dev/null` and `&& pwd -P >| <file>`, and nothing else: the command inside the quotes (`'\''` is a quote).
+2. Claude Code's wrapper of its Bash tool: parts joined by ` && ` (outside quotes, as a POSIX shell reads them), all of
+   them parts that only prepare the shell, and exactly one `eval '<command>'` (optionally followed by ` \< /dev/null`):
+   the command inside the quotes (`'\''` and `'"'"'` are quotes). The parts that prepare the shell, word for word:
+   `source <file>` (optionally followed by `2>/dev/null || true`); `shopt -u extglob 2>/dev/null || true` (also after
+   `\builtin`); `{ \builtin unalias -- '<name>'; \builtin unset -f -- '<name>'; } >/dev/null 2>&1 || true`; and after
+   the eval, `pwd -P >| <file>`. Seen on 2026-11-26 (the form of `tests/cases/roots.json`, `source … && eval '…'`, is an
+   older one and matches too).
 
-A line cut at 200 characters, or quoting that does not close, is shown as it is. The box shows the result; when it is
-not the whole line, the root process line follows, small, so that nothing of it is hidden.
+Anything else stays (a part of another kind keeps the shell's whole command string). The record's line cut inside the
+eval's quotes gives the command up to the cut and `…`; a line cut anywhere else, or whose quoting does not close, is
+shown as the window shows it today (its first 200 characters). When the box shows less than that line, the root process
+line follows under it, small, as the window shows it today (`<name> (pid <n>) · <first 200 characters>`): what the box
+leaves out is the parts that matched rule 1 or 2, nothing else.
 
 ### 4.8 How long an answer lasts
 
@@ -240,7 +249,7 @@ covers the point 26 DIPs left of the client area's right edge and 21 above its b
 30 DIPs high, corners of 6 DIPs, 11 DIPs above the client area's bottom (the tests click 26 DIPs above it), labels 12
 (Allow bold); at least 96 DIPs wide. Allow this call: the accent fill, its text on accent. Allow this terminal: the
 surface with an accent border and accent text. Deny: the surface with a critical border and critical text, at the right
-end. A pressed button is drawn darker (an overlay of the text color at 15%).
+end. A pressed button gets a border 2 DIPs wide; its fill and its label stay, so that the label keeps its contrast.
 
 ### 4.12 The toasts
 
@@ -249,7 +258,17 @@ line color's border and a soft shadow; "Passed" and the check, the ×N tag, the 
 in the success color (the tag on a tint of it); the caller in the text color; the command and its destination in the
 monospace font; line 3 in the secondary color. `+N` is on a small tag of the surface color.
 
-### 4.13 The theme
+### 4.13 A window taller than the screen
+
+The window is laid out for the work area of its screen. When it would be taller than the work area (less the margins):
+
+1. the reason is drawn at 14 DIPs instead of 17;
+2. then the band is left out (it says where the prompt comes, not what is asked);
+3. then the command's box keeps as many lines as fit (at least two) and ends with `…`.
+
+The buttons, the footer and the switch always stay inside the work area.
+
+### 4.14 The theme
 
 - Dark when `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` is 0, light otherwise
   (1, missing or unreadable: Windows' default is light).
@@ -348,6 +367,11 @@ Within the chosen approach:
 | The ssh command: fold it or make it small? | Small (one monospace line) | A fold is a click target more in a window that answers clicks |
 | How does the countdown move? | A timer of the window redraws it every 250 ms from the deadline the relay set | The bar and the seconds stay right without the relay's thread doing more |
 | The README animations: which theme? | Dark, the drafts' | One look in the README; the text says that the window follows Windows' setting |
+| Claude Code's wrapper today has more parts (`2>/dev/null \|\| true`, `shopt`, `unalias`), quotes with `'"'"'`, and puts the eval after some 300 characters, past the window's 200: does rule 2 still find the command? | Rule 2 lists those parts word for word (§4.7), and reads the record's line of 1000 characters | The command a person reads is the reason for the box; with the old rule no call of Claude Code would show it |
+| Then what does the small line under the box show? | The root line as today (its first 200 characters) | It is today's item; the parts the box leaves out between are those rule 1 and 2 matched, nothing else |
+| What when the window is taller than the work area? | The steps of §4.13 | Today's window could grow out of the screen too; the new one is taller, and its buttons must stay reachable |
+| The drafts are not in the repository: what is the source? | This document (§1, §4); the drafts' commands are written out in §4.6 and §4.7 and in the tests | The drafts carried example values; the repository keeps its own examples |
+| A pressed button with an overlay drops the label below 4.5:1 | A border 2 DIPs wide instead (§4.11) | The contrast rule of §2 holds in every state |
 
 ## 11. Left to the implementer
 

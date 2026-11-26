@@ -1,4 +1,4 @@
-//! The two looks of `op-reason.exe`'s windows and toasts (design `2026-11-26-modern-window-design.md` §4.4, §4.13): dark
+//! The two looks of `op-reason.exe`'s windows and toasts (design `2026-11-26-modern-window-design.md` §4.4, §4.14): dark
 //! and light, as Windows' app mode says. The colors of each look are the roles of the window (background, text, the
 //! accent, the caution and critical colors, the band and its picture …); the window and the toasts take every color
 //! from here.

@@ -27,7 +27,7 @@ use op_reason_core::time;
 use super::ask::{self, Outcome, Shown, Ticket};
 use super::{Shared, peer, pipe};
 use crate::relay_opts::Mode;
-use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Unknown};
+use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Root, Unknown};
 use crate::win::{procs, toast, window};
 
 /// How long 1Password may take before the window without buttons comes (§5.5).
@@ -129,7 +129,8 @@ struct Who {
     caller: Caller,
     caller_rec: Option<LogCaller>,
     session: Option<String>,
-    root_line: Option<String>,
+    /// The root process as the window shows it.
+    root_shown: Option<Root>,
     root_rec: Option<ProcRec>,
     shell_rec: Option<ProcRec>,
     distro: Option<String>,
@@ -351,7 +352,7 @@ impl<'a> Conn<'a> {
             root: if is_forwarded {
                 None
             } else {
-                who.root_line.clone()
+                who.root_shown.clone()
             },
             herdr: if is_forwarded {
                 None
@@ -715,7 +716,7 @@ fn unknown(why: Unknown) -> Who {
         caller: Caller::Unknown(why),
         caller_rec: None,
         session: None,
-        root_line: None,
+        root_shown: None,
         root_rec: None,
         shell_rec: None,
         distro: None,
@@ -898,12 +899,11 @@ fn identify(pid: Option<u32>) -> Who {
             .var("CLAUDE_CODE_SESSION_ID")
             .filter(|s| !s.is_empty())
             .map(str::to_owned),
-        root_line: Some(format!(
-            "{} (pid {}) · {}",
-            root.name,
-            root.pid,
-            cmdline::shown(&nodes[found.root].args, 200)
-        )),
+        root_shown: Some(Root {
+            name: root.name.clone(),
+            pid: root.pid,
+            cmd: cmdline::shown(&nodes[found.root].args, call::CMD_MAX),
+        }),
         root_rec: proc_rec(found.root),
         shell_rec: found.shell.and_then(proc_rec),
         distro: None,
@@ -957,12 +957,11 @@ fn from_wsl(base: Who, c: call::WslCall) -> Who {
         caller,
         caller_rec: Some(c.caller.clone()),
         session: c.session.clone(),
-        root_line: Some(format!(
-            "{} (pid {}) · {}",
-            c.root.name,
-            c.root.pid,
-            args::clip(&c.root.cmd, 200, "…")
-        )),
+        root_shown: Some(Root {
+            name: c.root.name.clone(),
+            pid: c.root.pid,
+            cmd: args::clip(&c.root.cmd, call::CMD_MAX, "…"),
+        }),
         root_rec: Some(rec_of(&c.root)),
         shell_rec: c.shell.as_ref().map(rec_of),
         distro: Some(c.distro.clone()),

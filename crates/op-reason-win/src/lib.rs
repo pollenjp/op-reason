@@ -17,6 +17,7 @@
 
 pub mod account;
 pub mod cmdline;
+pub mod look;
 pub mod messages;
 pub mod pass_toast;
 pub mod payload;
