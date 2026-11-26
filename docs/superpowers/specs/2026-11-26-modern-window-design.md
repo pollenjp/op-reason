@@ -206,16 +206,20 @@ comes off only when it matches exactly:
    2>/dev/null || true` (also after `\builtin`); `{ \builtin unalias -- '<name>'; \builtin unset -f -- '<name>'; }
    >/dev/null 2>&1 || true` (one name twice); and `pwd -P >| <plain path ending in -cwd>`. Seen on 2026-11-26 (the form
    of `tests/cases/roots.json`, `source … && eval '…'`, is an older one and matches too).
-3. **Claude Code's launcher of its PowerShell tool** (Windows; §13), which carries no command: `cmd.exe /d /s /c`
+3. **Claude Code's launcher of its PowerShell tool** (Windows; §13), which carries no command: `<cmd> /d /s /c`
    running `<chcp> 65001 >nul & <PowerShell> -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command <code> >
    <file> 2>&1` (`-ExecutionPolicy Bypass` may be missing), where `<code>` is, word for word, `$__claudeCodeScript =
    $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = $null; Invoke-Expression -Command
-   $__claudeCodeScript` (the script comes through that variable and a file, never the command line), `<chcp>` ends in
-   `\System32\chcp.com`, `<PowerShell>` is a `pwsh.exe` or a `powershell.exe`, and the three are paths as Claude Code
-   itself checks them: a drive, `:\`, and no quotes, `%`, `!`, `^`, `&`, `|`, `<` or `>`. The record's line splits it
-   where cmd.exe does not read it (the line's quotes are made for cmd.exe), so its words are joined with spaces and
-   compared with that form (the record masks the code's `=` as `=***`). Then the box shows the ssh command, as for a
-   request without a root.
+   $__claudeCodeScript` (the script comes through that variable and a file, never the command line), `<cmd>` ends in
+   `\System32\cmd.exe` and `<chcp>` in `\System32\chcp.com`, `<PowerShell>` is a `pwsh.exe` or a `powershell.exe`,
+   and the four are paths as Claude Code itself checks its three: a drive, `:\`, and no quotes, `%`, `!`, `^`, `&`,
+   `|`, `<` or `>`. It is told from the root's own arguments (its command line as Windows splits it), before they are
+   masked: the record's line shows any word after `=` as `=***`, so a word such as `="&calc&"`, which cmd.exe runs,
+   would look like the code's `=`. The line's quotes are made for cmd.exe and split its arguments elsewhere, so the
+   arguments after `/c` are joined with spaces (the line cmd.exe runs, without its quotes) and compared with that form.
+   Only for a call of Claude Code (rule 1 of the roots, the caller Claude Code) whose root's image is System32's
+   `cmd.exe`; the window gets the answer with the root. Then the box shows the ssh command, as for a request without a
+   root.
 
 A part of any other kind keeps the shell's whole command string in the box. The record's line cut inside the eval's
 quotes gives the command up to the cut and `…`; a line cut anywhere else, or whose quoting does not close, is shown as
@@ -444,8 +448,20 @@ program's file name.
 
 | Question | Decision | Why |
 | --- | --- | --- |
-| How exact is the match? | Word for word, with only the three paths free, each checked as Claude Code checks it; a line cut by the record, or one with anything more, keeps today's view | A wrapper comes off only when it matches exactly (§4.7); what Claude Code changes later shows as today, not as something hidden |
-| Is it read from the record's line, or from the process's arguments? | The record's line, in `look.rs` | The window has the record's line only; the tests build the launcher as Claude Code does and pass it through op-reason's splitting and masking, so they break when either changes |
+| How exact is the match? | Word for word, with only the paths free, each checked as Claude Code checks its own; anything more or different keeps today's view | A wrapper comes off only when it matches exactly (§4.7); what Claude Code changes later shows as today, not as something hidden |
+| Is it read from the record's line, or from the process's arguments? | The root's own arguments, before masking, where the relay reads the chain (`win/relay/conn.rs`), with the match in `look.rs` (portable, tested on Linux); the window gets the answer as a flag of its root | The record's masked line cannot tell `=` from `="&calc&"` (found in the review below); the tests build the launcher as Claude Code does and split it as Windows does |
+| Which calls? | Only those of Claude Code (rule 1, the caller Claude Code), whose root's image is System32's `cmd.exe` | A person's or a program's root with the same line is not Claude Code's tool, and must not be shown as it |
 | What does the line of §4.8 say? | "this call" | The answer covers the tool's call, whose script is not seen; "this ssh" would claim less than it covers |
 | The launcher's paths under the box? | Not shown; the record keeps the line | They are fixed by Claude Code and checked to be plain paths, and they would fill lines of small type without telling what runs |
 | How is it checked on Windows? | A relay test and a screenshot start the launcher's very line from a `claude.exe` (fake-ssh, `spawn-raw`) with a script that runs a fake `ssh.exe` | Windows splits that line, the relay finds the root by its rule 1, and the record and the window show what a person would see |
+
+**The review before the pull request was made ready.** A fresh reviewer read the change. What it found, and what
+changed:
+
+| Finding | Change |
+| --- | --- |
+| The match read the record's masked line, where `=` and `="&calc&"` are both `=***`: a line that runs more could pass as the launcher | The match reads the root's own arguments before masking, in the relay (the table above) |
+| A person's or a program's root with the launcher's line would be shown as Claude Code's tool | Only for a call of Claude Code (the relay's rule 1, and the window checks the caller too) |
+| `cmd.exe` itself could be anywhere | Its path in the arguments must end in `\System32\cmd.exe`, and the root's image must be System32's `cmd.exe` |
+| The screenshot script's `$out` hid its `$Out` (PowerShell's names ignore case), so the scene's picture went under the launcher's output file (the first CI run failed there) | The launcher's output is `$shellOut` |
+| A relay test that failed left the launcher's processes behind | The test kills the whole tree of its `claude.exe` when it ends |

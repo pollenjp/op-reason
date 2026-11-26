@@ -7,7 +7,8 @@
   ends". The tool runs its script through a launcher that carries no command (`cmd.exe /d /s /c` running
   `chcp.com 65001`, then PowerShell with a fixed `-Command` that runs the script from an environment variable): the
   window showed the launcher's line as the root command and named "pwsh.exe -NoProfile -NonInteractive …" in the line
-  about how long an answer lasts. The launcher is told only when its line matches word for word.
+  about how long an answer lasts. Only a call of Claude Code is shown so, when the launcher's own arguments (not the
+  record's masked line) match word for word.
 
 ## 0.8.0 — 2026-11-26
 
