@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 — 2026-11-27
 
 - **The SSH relay's window for a call of Claude Code's PowerShell tool** on Windows shows the ssh command in its box,
   with the root process and "Claude Code's PowerShell tool" under it, and says "Allowing covers this call until it
