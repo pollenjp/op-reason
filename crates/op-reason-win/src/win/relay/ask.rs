@@ -383,10 +383,12 @@ fn lock(shared: &Shared, stop: &dyn Fn() -> bool) -> Result<Option<mutex::Held>,
     }
 }
 
-/// per-call: the answer that covers the request, or its own window (design §5.4, §5.5).
+/// per-call: the answer that covers the request, or its own window (design §5.4, §5.5). `ssh`: the client's process,
+/// which an answer for this ssh covers (design `2026-11-27-relay-process-tree-design.md` §4).
 pub(super) fn per_call<'a>(
     shared: &'a Shared,
     mark: &Mark,
+    ssh: Option<&ProcId>,
     shell: Option<&ProcId>,
     client: &File,
     facts: Facts,
@@ -413,7 +415,7 @@ pub(super) fn per_call<'a>(
                 None => continue,
             }
         }
-        if let Some(d) = st.book.lookup(mark, shell, time::epoch_now(), &alive) {
+        if let Some(d) = st.book.lookup(mark, ssh, shell, time::epoch_now(), &alive) {
             return if d.answer.allows() {
                 Outcome::Passed(d)
             } else {
@@ -433,7 +435,7 @@ pub(super) fn per_call<'a>(
             }
         }
         // an answer for the terminal may have come while it waited
-        if let Some(d) = st.book.lookup(mark, shell, time::epoch_now(), &alive) {
+        if let Some(d) = st.book.lookup(mark, ssh, shell, time::epoch_now(), &alive) {
             drop(st);
             drop(ticket);
             return if d.answer.allows() {
@@ -449,7 +451,7 @@ pub(super) fn per_call<'a>(
         }
         let waiting = st.queue.waiting();
         drop(st);
-        return ask(shared, ticket, mark, shell, client, facts, waiting, id);
+        return ask(shared, ticket, mark, ssh, shell, client, facts, waiting, id);
     }
 }
 
@@ -468,6 +470,7 @@ fn ask<'a>(
     shared: &'a Shared,
     ticket: Ticket<'a>,
     mark: &Mark,
+    ssh: Option<&ProcId>,
     shell: Option<&ProcId>,
     client: &File,
     mut facts: Facts,
@@ -494,6 +497,7 @@ fn ask<'a>(
         if let Some(b) = shown.window.answer() {
             let answer = match b {
                 Button::Allow => Answer::Allow,
+                Button::AllowSsh => Answer::AllowSsh,
                 Button::AllowTerminal => Answer::AllowTerminal,
                 Button::Deny => Answer::Deny,
             };
@@ -505,7 +509,7 @@ fn ask<'a>(
             shared
                 .lock()
                 .book
-                .remember(mark, shell, answer, id, time::epoch_now());
+                .remember(mark, ssh, shell, answer, id, time::epoch_now());
             shared.turn.notify_all();
             if answer.allows() {
                 shown.asking();
