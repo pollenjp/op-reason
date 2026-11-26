@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **The SSH relay's window shows the call's processes as a tree**, parent above child, from the caller (Claude Code,
+  the person's shell, or the program) down to the ssh process, each with its PID. The command's box sits on the row of
+  the process whose words it shows: the root command under the root's row (marked "Root"), with the rest of the root's
+  line and the ssh command in small type; for Claude Code's PowerShell tool, the ssh command under the ssh process's
+  row. Frames on the tree show what each button covers. A WSL call shows what `op-reason-ssh` sends, then "… in WSL,
+  not seen"; more than four processes between fold into one row.
+- **A call of Claude Code's PowerShell tool asks for each ssh.** Its script reaches no command line, so the second ssh
+  of such a call passed without a window, seen only in a toast. Now **Allow this ssh** (the default) covers that ssh
+  process until it ends, and another ssh of the call asks in a window of its own; **Allow this call** covers the call as
+  before, and **Deny** refuses it.
+- `ssh-sign` records: the answer `allow-ssh`, and `by`, the answer that covered a request that passed or was refused
+  without a window; `op-reason --log` says "(this ssh)". The guide for agents (`op-reason --skill`) says that the
+  PowerShell tool asks for each ssh.
+
 ## 0.8.1 — 2026-11-27
 
 - **The SSH relay's window for a call of Claude Code's PowerShell tool** on Windows shows the ssh command in its box,

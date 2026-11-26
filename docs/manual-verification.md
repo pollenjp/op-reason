@@ -275,18 +275,23 @@ The last record of a signature: `Get-Content "$env:LOCALAPPDATA\op-reason\ssh-lo
 Put everything back as after S31 (the block above): remove the task, stop the relay if it still runs, and lock
 1Password once.
 
-### A call of Claude Code's PowerShell tool (S37)
+### A call of Claude Code's PowerShell tool, and the process tree (S37–S41)
 
 Claude Code's PowerShell tool on Windows runs its script through a launcher (`cmd.exe` running `chcp.com 65001` and
-then PowerShell, the script in an environment variable), whose line holds no command: the window tells that launcher and
-shows the ssh command in its box
-([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md) §4.7, rule 3, and §13). It
-needs a per-call relay on `\\.\pipe\op-reason-ssh-agent` (step 5 of the preparation, or the task of S32) and Claude
-Code on Windows with its PowerShell tool.
+then PowerShell, the script in an environment variable), whose line holds no command: the window tells that launcher,
+shows the ssh command in its box on the ssh process's row of the tree, and asks for each ssh
+([2026-11-26-modern-window-design.md](superpowers/specs/2026-11-26-modern-window-design.md) §4.7, rule 3, and §13;
+[2026-11-27-relay-process-tree-design.md](superpowers/specs/2026-11-27-relay-process-tree-design.md)). It needs a
+per-call relay on `\\.\pipe\op-reason-ssh-agent` (step 5 of the preparation, or the task of S32) and Claude Code on
+Windows with its PowerShell tool; S40 needs WSL with `op-reason-ssh`.
 
 | # | Do | Expect |
 | --- | --- | --- |
-| S37 | Ask Claude Code to run, in one call of its PowerShell tool, `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'; $env:OPREASON_SSH_REASON = 'check S37: PowerShell tool'; ssh -T git@github.com`. Click **Allow this call** and approve 1Password's prompt | The box, labelled "Command", shows the ssh command (`ssh.exe -T git@github.com`); under it, small, "cmd.exe (pid …) · Claude Code's PowerShell tool", and no second line of the ssh command below; after the seconds left, "Allowing covers this call until it ends (at most 60 minutes)"; the caller's chip "Claude Code (pid …)". `Hi <user>!` comes back to Claude Code. The record's `call.root.cmd` holds the launcher's line. If the box shows a long line with `chcp.com 65001 >nul &` instead, note `claude --version`: the launcher may have changed |
+| S37 | Ask Claude Code to run, in one call of its PowerShell tool, `$env:SSH_AUTH_SOCK = '\\.\pipe\op-reason-ssh-agent'; $env:OPREASON_SSH_REASON = 'check S37: PowerShell tool'; ssh -T git@github.com`. Click **Allow this ssh** and approve 1Password's prompt | The title reads "SSH key: allow this ssh?". Under "Process tree": Claude Code (`claude.exe · pid …`, a purple dot) → `cmd.exe` (pid …) with the pill "Claude Code's PowerShell tool" and the mark "Root" → `pwsh.exe` (or `powershell.exe`) → `ssh.exe` with the box `ssh.exe -T git@github.com` under it. A dashed frame "this call" runs from `cmd.exe` down, a solid frame "this ssh" holds `ssh.exe` and its box. The buttons: **Allow this ssh** (filled), **Allow this call**, **Deny**; after the seconds left, "Allowing covers the frame you choose (this ssh or this call) until it ends (at most 60 minutes)". `Hi <user>!` comes back to Claude Code. The record: `"answer":"allow-ssh"`, and `call.root.cmd` holds the launcher's line. If the root's row shows `chcp.com 65001 >nul &` in a box instead, note `claude --version`: the launcher may have changed |
+| S38 | As S37, with two ssh in the one call: `…; ssh -T git@github.com; ssh -T git@github.com`. Click **Allow this ssh** in the first window, then in the second | The second ssh asks in a window of its own (another `ssh.exe` PID in its tree) after the first has signed; both print `Hi <user>!`. Two records `allowed` with `"answer":"allow-ssh"`, and no `passed` |
+| S39 | S38 again, but click **Allow this call** in the first window | The second ssh signs without a window; a toast at the top left: "Passed · Claude Code", the ssh command, "allowed for this call". The second record: `passed`, `"by":"allow"`, its `decision` the first record's `id`. `op-reason.exe --log` shows both |
+| S40 | From WSL, ask Claude Code to run, in one call of its Bash tool, `OPREASON_SSH_REASON='check S40: WSL tree' ssh -T git@github.com`; look at the window, then **Allow this call** | The tree: Claude Code (`pid …`, the PID on Linux) → the root (`bash`, the mark "Root", the box `ssh -T git@github.com`, the rest of its line small under the box) → "… in WSL, not seen" → `ssh.exe` (its Windows PID) with the ssh command small under it; one solid frame "this call" from the root down; the buttons **Allow this call** and **Deny**, as before |
+| S41 | In Windows Terminal (PowerShell), type `$env:OPREASON_SSH_REASON = 'check S41: terminal tree'; ssh -T git@github.com`; look at the window in the dark theme, switch Windows to the light theme while it is open (Settings → Personalization → Colors), then **Deny** | The tree: Human (terminal) (`pwsh.exe · pid …`, a green dot) → `ssh.exe` (the mark "Root", the box with the command); a solid frame "this call" around `ssh.exe` and a dashed frame "this terminal" from the shell down; the buttons **Allow this call**, **Allow this terminal for 60 minutes**, **Deny**. The tree's lines, frames and texts stay readable in both themes |
 
 ### Results of 2026-11-18
 

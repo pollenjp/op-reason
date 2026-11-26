@@ -79,6 +79,9 @@ allow it in op-reason's window, which shows you as the caller, the command, the 
   - PowerShell: `$env:OPREASON_SSH_REASON = "push the login fix to the review branch"; git push`
 - One answer covers one call: everything one command does (all connections of one `git push`, all hosts of one
   `ansible-playbook` run). A later command asks again. Put the work into as few commands as possible.
+- Through Claude Code's PowerShell tool on Windows, the window cannot see the script, so it asks for each ssh process
+  (each `ssh`, each `git push`) unless the person allows the whole call. Run one command that signs per tool call, with
+  its reason, so that each window says what it is for.
 - Give the tool call a long timeout (the person may take a minute); the window gives up after 60 seconds, and ssh then
   fails as if the key were refused.
 - If ssh fails with `Permission denied (publickey)` or an agent error right after the window, the person denied it or
