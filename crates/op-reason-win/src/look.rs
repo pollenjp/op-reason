@@ -137,9 +137,14 @@ pub struct Frame {
 /// `2026-11-27-relay-process-tree-design.md` §3): the view's box goes under one of its rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
+    /// Above the tree, in the place of the command section's label.
+    pub label: String,
     pub rows: Vec<Row>,
-    /// The row under which the box goes (the view's `code`, and its `code_note` under the box).
+    /// The row under which the box goes.
     pub boxed: usize,
+    /// The command in the box ([`color_words`]), and under the box, small, the rest of the root's line.
+    pub code: String,
+    pub note: Option<String>,
     /// A small monospace line under a row: the ssh command under the client's row, when the box shows the root's.
     pub small: Option<(usize, String)>,
     /// The outer frame first.
@@ -180,10 +185,10 @@ pub struct View {
     pub code_label: String,
     /// The command in the monospace box ([`color_words`]).
     pub code: String,
-    /// Under the box, small: the root process line when the box shows less than it (with a tree: the rest of the root's
-    /// line).
+    /// Under the box, small: the root process line when the box shows less than it.
     pub code_note: Option<String>,
-    /// The relay: the process tree, with the box under its row.
+    /// The relay: the process tree with its own box, drawn in the place of the command section and of the ssh
+    /// command's small line among the facts ([`FactKind::Mono`]), which a window too short for it shows instead.
     pub tree: Option<Tree>,
     /// The same tree with the processes between the root and the client in one row, for a window taller than its
     /// screen (design `2026-11-27-relay-process-tree-design.md` §3.6); `None` when there are fewer than two.

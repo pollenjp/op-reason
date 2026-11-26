@@ -396,6 +396,15 @@ pub(super) fn per_call<'a>(
 ) -> Outcome<'a> {
     let mut st = shared.lock();
     loop {
+        // An answer that covers it goes first: an answer for its own ssh does not wait for the window of another ssh of
+        // the call (design `2026-11-27-relay-process-tree-design.md` §4.3)
+        if let Some(d) = st.book.lookup(mark, ssh, shell, time::epoch_now(), &alive) {
+            return if d.answer.allows() {
+                Outcome::Passed(d)
+            } else {
+                Outcome::Refused(d)
+            };
+        }
         // A request of this call asks already, in its window or with 1Password after the click: wait for it
         if let Some(t) = st.queue.asking(mark) {
             *st.followers.entry(t).or_default() += 1;
@@ -414,13 +423,6 @@ pub(super) fn per_call<'a>(
                 Some(End::Dismissed) => return Outcome::Dismissed,
                 None => continue,
             }
-        }
-        if let Some(d) = st.book.lookup(mark, ssh, shell, time::epoch_now(), &alive) {
-            return if d.answer.allows() {
-                Outcome::Passed(d)
-            } else {
-                Outcome::Refused(d)
-            };
         }
         let Join::Ask(t) = st.queue.join(Some(mark)) else {
             continue;

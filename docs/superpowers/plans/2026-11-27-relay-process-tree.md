@@ -40,7 +40,8 @@ DirectWrite), PowerShell (the screenshots), Python (the README's animation).
 2. A client whose start time is 0: "Allow this ssh" must not be remembered by PID alone.
 3. A tree with no root (forwarded, unreadable, WSL direct): no tree and no frames, the box as today.
 4. A long caller chain (more than four between) in a small work area: the fold must happen before the box is cut, and
-   the buttons stay on screen.
+   the buttons stay on screen (the review found that folding is not enough: §3.6 of the spec gained a step that drops
+   the tree).
 5. Japanese texts with a long pill and a long frame name on one row: the frame's name must not cover the row's text
    (wrap or move it under).
 

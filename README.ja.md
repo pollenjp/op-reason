@@ -337,14 +337,15 @@ WSL でも)。選んだ言語は `%LOCALAPPDATA%\op-reason\settings.json` に残
 
 **Claude Code の PowerShell は ssh ごとに聞きます**
 ([設計](docs/superpowers/specs/2026-11-27-relay-process-tree-design.md))。スクリプトがコマンドラインに無いので、
-呼び出しがほかに何を動かすかを窓に出せないためです。**この ssh を許可** (既定) は、その ssh の process が終わるまで効きます。
+呼び出しがほかに何を動かすかを窓に出せないためです。**この ssh を許可** (最初のボタン) は、その ssh の process が終わるまで効きます。
 同じ呼び出しのほかの ssh は、それぞれの窓で聞きます。**この呼び出しを許可** は上のとおり呼び出しに効き、**拒否** は
 呼び出しを断ります。
 
 窓は一番上に理由を出し (無ければ同じ所に「理由なし」)、誰が呼んだかをチップで (Claude Code・人・プログラム。WSL からなら
 あわせてディストリビューションと herdr の workspace と pane。repository・branch・ディレクトリ)、続けて **プロセスの木** を
 出します。呼び手から ssh の process までを、親を上に、それぞれ PID とともに並べたものです。木は Claude Code (または
-あなたの shell、プログラム) から、呼び出しの起点 (**起点** の印) と間の process (4 つを超えると 1 段にまとめる) を通って
+あなたの shell、プログラム) から、呼び出しの起点 (**起点** の印) と間の process (4 つを超えると、先頭の 1 つと末尾の 2 つの
+ほかを 1 段にまとめる) を通って
 ssh の process まで続きます。コマンドの等幅の枠は、その字を出す process の段に付きます:
 
 - 起点のコマンドは起点の段の下 (`git push origin fix/login`。shell と Claude Code の Bash の包みは、形がきっちり合うときだけ
@@ -465,7 +466,7 @@ op-reason.exe --ssh-agent --status             # パイプで中継が答えれ�
 09:00:13  SSH 通過  0.1  Claude デプロイ …  ログインの修正を push する  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
 ```
 
-前の答えで通った署名の記録は、その答えの記録 (`decision`) を指し、答えの種類 (`by`: `allow`・`allow-ssh`・`allow-terminal`・
+前の答えで通った署名と断った署名の記録は、その答えの記録 (`decision`) を指し、答えの種類 (`by`: `allow`・`allow-ssh`・`allow-terminal`・
 `deny`) を書きます。その答えか、押した答えが 1 つの ssh かターミナルに効くものなら、行の結果の後ろに「(この ssh)」か
 「(ターミナル)」が付きます。
 

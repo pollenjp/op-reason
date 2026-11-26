@@ -345,7 +345,7 @@ tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with 
 
 **Claude Code's PowerShell tool asks for each ssh**
 ([design](docs/superpowers/specs/2026-11-27-relay-process-tree-design.md)). Its script reaches no command line, so the
-window cannot show what else the call runs. **Allow this ssh** (the default) covers that ssh process until it ends:
+window cannot show what else the call runs. **Allow this ssh** (the first button) covers that ssh process until it ends:
 another ssh of the same call asks in a window of its own. **Allow this call** covers the whole call, as above, and
 **Deny** refuses the call.
 
@@ -353,7 +353,8 @@ The window puts the reason first (or "no reason given" in its place), then who a
 program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
 directory), then the **process tree**: the processes from the caller down to the ssh process, parent above child, each
 with its PID. The tree runs from Claude Code (or your shell, or the program) through the root of the call (marked
-**Root**) and the processes between (more than four fold into one row) to the ssh process. The command's monospace box
+**Root**) and the processes between (with more than four, all but the first and the last two fold into one row) to the
+ssh process. The command's monospace box
 sits on the row of the process whose words it shows:
 
 - the root command under the root's row (`git push origin fix/login`: the wrappers of a shell and of Claude Code's Bash
@@ -486,7 +487,7 @@ Time      Result       Secs  Caller           Reason              Command
 09:00:13  SSH passed   0.1   Claude deploy …  push the login fix  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
 ```
 
-A signature that an earlier answer let through refers to that answer's record (`decision`) and names the answer
+A signature that an earlier answer let through or refused refers to that answer's record (`decision`) and names the answer
 (`by`: `allow`, `allow-ssh`, `allow-terminal`, `deny`); the line says "(this ssh)" or "(terminal)" after the result
 when that answer, or the click, covered one ssh or the terminal.
 

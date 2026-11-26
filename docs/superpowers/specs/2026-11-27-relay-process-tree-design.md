@@ -100,8 +100,10 @@ shows.
 | Any other call with a root | the box, with the root command (§4.7); under it, small, the rest of the root's line with the box's command as `…`, when something came off | the ssh command, small (monospace, the tertiary color), wrapped |
 
 Today's small line under the box splits: the root process goes to the root's row, the rest of the line stays under the
-box. The ssh command's small line among the facts (`Command: …`) goes to the client's row, without its label. The facts
-keep what the signature is for and the line with the destination and the key.
+box. The ssh command's small line among the facts (`Command: …`) goes to the client's row, without its label; when the
+root is the client itself (`ssh` typed in a terminal), there is no client's row, and it goes under the root's box (that
+box shows only the first 200 characters of the line). The facts keep what the signature is for and the line with the
+destination and the key.
 
 ### 3.3 A deep tree
 
@@ -148,7 +150,9 @@ The steps of §4.13 of the modern-window design, with one more before the box is
 1. the reason at 14 DIPs instead of 17;
 2. the band left out (except while 1Password asks);
 3. the processes between the root and the client folded into one row ("… N more processes");
-4. the box keeps as many lines as fit (at least two) and ends with `…`.
+4. no tree: the command section as it was before the tree (the box, the root process and the rest of its line under
+   it, the ssh command's small line among the facts), without frames; it is no taller than the window of 0.8.1;
+5. the box keeps as many lines as fit (at least two) and ends with `…`.
 
 ## 4. One ssh at a time: Claude Code's PowerShell tool
 
@@ -181,8 +185,10 @@ The relay marks such a request on the window's facts (`per_ssh`).
 
 ### 4.3 The queue
 
-The queue is unchanged:
+The queue is unchanged, but the book comes first:
 
+- A request that an answer covers goes at once, before it looks at the queue: an answer for its own ssh does not wait
+  for the window of another ssh of the call.
 - A request of a call whose window asks waits for that window (`Join::Follow`), then looks again.
 - An answer for the call covers it.
 - After "Allow this ssh", a request from another process finds no answer and takes a ticket of its own, so its window
@@ -340,6 +346,16 @@ Within the chosen approaches:
 The exact paddings, the elbow's path, the sizes of the pill and the mark, the names of the tests' helpers and how the
 scenes of the screenshots are arranged.
 
-## 13. The review before the pull request was made ready
+## 13. The review before the pull request
 
-(after the review)
+A fresh reviewer read the branch against this document. It found no way for a signature to pass without the window
+that this document asks for. What it found, and what changed:
+
+| Finding | Change |
+| --- | --- |
+| When the root is the client itself (`ssh` typed in a terminal), the tree has no client's row, so the ssh command's small line was gone; the root's box shows only the first 200 characters of the line, and the 201st to the 300th were lost | The small line goes under the root's box then (§3.2); a test with a line of more than 200 characters |
+| The tree made the window some 70 DIPs taller, and nothing took that back on a small screen: the window of the PowerShell tool has one process between, so folding saved nothing, and the box has one line to cut. On 1366 × 768 at 150 % the buttons would go under the taskbar, where the window of 0.8.1 fit | A step before the box is cut drops the tree for the command section as it was before (§3.6). The view keeps that section as it was (the box, its small line, the ssh command among the facts) and the tree carries its own box; the window leaves the facts' ssh line out when it draws the tree |
+| A request that "Allow this ssh" covered waited behind the window of another ssh of the same call (the queue was looked at before the book), and failed with it when that window timed out or was closed | The book is looked up first (§4.3) |
+| The tests of the view without a tree tested a path that a request with a root never took | They test the command section that a short screen shows now; the tests of the tree check its own box and its small line |
+| S40 ran a plain `ssh` in WSL, and expected the box to show `ssh -T git@github.com`, where the reason's assignment shows too | S40 runs `op-reason-ssh`, as S3 does, and expects the command as Claude Code ran it |
+| The READMEs said that more than four processes fold into one row, called "Allow this ssh" the default next to "no default button", and said that `by` comes with a signature "let through" while it comes with a refused one too | The words say what the window and the records do |

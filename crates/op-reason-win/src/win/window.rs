@@ -93,7 +93,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
-use crate::look::{self, ChipKind, FactKind, Icon, Reason, RowTone, Sketch, Tone, View, Word};
+use crate::look::{self, ChipKind, FactKind, Icon, Reason, RowTone, Sketch, Tone, Word};
 use crate::theme::{self, Palette, Rgb, Theme};
 use crate::ui::{self, Both, Button, Rect, Texts};
 
@@ -478,6 +478,9 @@ enum Fit {
     /// The processes between the root and the client in one row (design `2026-11-27-relay-process-tree-design.md`
     /// §3.6).
     FoldTree,
+    /// No tree: the command section as before it (the box, the root process and the rest of its line, the ssh
+    /// command's small line).
+    NoTree,
     /// The command's text cut to this height.
     CutCode(f32),
 }
@@ -488,11 +491,18 @@ impl Fit {
     }
 
     fn no_band(self) -> bool {
-        matches!(self, Fit::NoBand | Fit::FoldTree | Fit::CutCode(_))
+        matches!(
+            self,
+            Fit::NoBand | Fit::FoldTree | Fit::NoTree | Fit::CutCode(_)
+        )
     }
 
     fn fold_tree(self) -> bool {
-        matches!(self, Fit::FoldTree | Fit::CutCode(_))
+        self == Fit::FoldTree
+    }
+
+    fn no_tree(self) -> bool {
+        matches!(self, Fit::NoTree | Fit::CutCode(_))
     }
 }
 
@@ -724,9 +734,10 @@ impl Builder<'_> {
     }
 
     /// The relay's process tree from `y` (design `2026-11-27-relay-process-tree-design.md` §3): a row per process, each
-    /// child indented under its parent with an elbow, the box (`v.code`, `v.code_note` under it) under its row, the small
-    /// line, and the frames around the rows they cover, in the gaps. Returns where it ends and the command's height.
-    fn tree(&mut self, tree: &look::Tree, v: &View, mut y: f32, fit: Fit) -> Result<(f32, f32)> {
+    /// child indented under its parent with an elbow, its box (with the rest of the root's line under it) under its row,
+    /// the small line, and the frames around the rows they cover, in the gaps. Returns where it ends and the command's
+    /// height.
+    fn tree(&mut self, tree: &look::Tree, mut y: f32, fit: Fit) -> Result<(f32, f32)> {
         /// A part of a row: a text, or a text in a pill (the root's kind, or its mark).
         enum Piece {
             Text(IDWriteTextLayout, f32, f32, Ink),
@@ -868,10 +879,10 @@ impl Builder<'_> {
             let inner = right - TREE_INSET - tx;
             if i == tree.boxed {
                 y += 2.0;
-                let (box_h, h) = self.code_box(&v.code, (tx, y), inner, fit)?;
+                let (box_h, h) = self.code_box(&tree.code, (tx, y), inner, fit)?;
                 code_h = h;
                 y += box_h;
-                if let Some(note) = &v.code_note {
+                if let Some(note) = &tree.note {
                     y += 3.0;
                     let (_, _, h) = self.label(&fonts.m10, note, (tx, y), inner, Ink::Tertiary)?;
                     y += h;
@@ -1224,7 +1235,7 @@ fn lay_out(
     max_h: f32,
 ) -> Result<Layout> {
     let mut layout = build(fonts, text, lang, width, others, Fit::Full)?;
-    for fit in [Fit::SmallReason, Fit::NoBand, Fit::FoldTree] {
+    for fit in [Fit::SmallReason, Fit::NoBand, Fit::FoldTree, Fit::NoTree] {
         if layout.height <= max_h {
             return Ok(layout);
         }
@@ -1380,18 +1391,21 @@ fn build(
         y = yy - CHIP_GAP + SECTION_GAP;
     }
 
-    // the relay's process tree with the box under its row (on a short screen, the processes between in one row), or
-    // the command in its box with colored words
-    let tree = if fit.fold_tree() {
+    // the relay's process tree with the box under its row (on a short screen, the processes between in one row; on a
+    // shorter one, none), or the command in its box with colored words
+    let tree = if fit.no_tree() {
+        None
+    } else if fit.fold_tree() {
         v.tree_short.as_ref().or(v.tree.as_ref())
     } else {
         v.tree.as_ref()
     };
-    let (_, _, h) = b.label(&fonts.f10, &v.code_label, (x0, y), width, Ink::Secondary)?;
+    let label = tree.map_or(&v.code_label, |t| &t.label);
+    let (_, _, h) = b.label(&fonts.f10, label, (x0, y), width, Ink::Secondary)?;
     let code_h;
     if let Some(tree) = tree {
         y += h + 6.0;
-        (y, code_h) = b.tree(tree, v, y, fit)?;
+        (y, code_h) = b.tree(tree, y, fit)?;
     } else {
         y += h + 4.0;
         let (box_h, h) = b.code_box(&v.code, (x0, y), width, fit)?;
@@ -1473,6 +1487,8 @@ fn build(
                     let (_, _, h) = b.label(&fonts.f10, &fact.text, at, w, Ink::Tertiary)?;
                     y += h + 2.0;
                 }
+                // the tree shows the ssh command under the client's row
+                FactKind::Mono if tree.is_some() => {}
                 FactKind::Mono => {
                     let (_, _, h) = b.label(&fonts.m10, &fact.text, at, w, Ink::Tertiary)?;
                     y += h + 2.0;

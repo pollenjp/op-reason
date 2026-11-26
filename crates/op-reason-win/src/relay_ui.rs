@@ -479,18 +479,13 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
     // the launcher of Claude Code's PowerShell tool carries no command (its script comes through the environment)
     let powershell = matches!(f.caller, Caller::Claude { .. })
         && f.root.as_ref().is_some_and(|r| r.claude_powershell);
-    // with the processes of the call (design `2026-11-27-relay-process-tree-design.md` §3.2): the root command in the
-    // box under the root's row, and under the box the rest of the root's line (the root process is on its row); for
-    // the PowerShell tool, the ssh command in the box under the client's row
+    // the processes of the call, as a tree that carries its own box (design `2026-11-27-relay-process-tree-design.md`
+    // §3.2); the window draws it in the place of the command section and of the ssh command's small line
     let with_tree = f.root.as_ref().zip(f.tree.as_ref());
-    // without them: the root command in the box, and under it the root process and the rest of its line: the two show
-    // all of it; for the PowerShell tool, the ssh command, and under it the root process and what it is
+    // without it (and on a screen too short for it, §3.6): the root command in the box, and under it the root process
+    // and the rest of its line: the two show all of it; for the PowerShell tool, the ssh command, and under it the
+    // root process and what it is
     let (code_label, code, code_note) = match &f.root {
-        Some(_) if with_tree.is_some() && powershell => (t.tree_label, f.command.clone(), None),
-        Some(root) if with_tree.is_some() => match look::root_command(&root.cmd) {
-            Some(u) => (t.tree_label, u.command, Some(u.frame)),
-            None => (t.tree_label, root.shown(), None),
-        },
         Some(root) if powershell => (
             t.command,
             f.command.clone(),
@@ -523,8 +518,8 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
             text: detail.join(" · "),
         });
     }
-    // the ssh command, small (with a tree: under the client's row)
-    if f.root.is_some() && f.tree.is_none() && !powershell {
+    // the ssh command, small (with a tree, the window shows it under the client's row instead)
+    if f.root.is_some() && !powershell {
         facts.push(Fact {
             kind: FactKind::Mono,
             text: format!("{}: {}", t.command, f.command),
@@ -717,14 +712,19 @@ fn tree_view(
         rows.len() - 1
     });
     let last = rows.len() - 1;
-    let boxed = if powershell {
-        client_at.unwrap_or(root_at)
+    // the box: the ssh command under the client's row for the PowerShell tool, else the root command under the root's
+    // row with the rest of the root's line under it; the ssh command small under the client's row, or under the root's
+    // when the root is the client (its box shows only the first 200 characters of the line)
+    let (boxed, code, note) = if powershell {
+        (client_at.unwrap_or(root_at), f.command.clone(), None)
     } else {
-        root_at
+        match look::root_command(&root.cmd) {
+            Some(u) => (root_at, u.command, Some(u.frame)),
+            None => (root_at, root.shown(), None),
+        }
     };
-    let small = client_at
-        .filter(|_| !powershell && !f.command.is_empty())
-        .map(|i| (i, f.command.clone()));
+    let small = (!powershell && !f.command.is_empty())
+        .then(|| (client_at.unwrap_or(root_at), f.command.clone()));
     let frame = |first: usize, label: &str, solid: bool| Frame {
         first,
         last,
@@ -746,8 +746,11 @@ fn tree_view(
         }
     }
     look::Tree {
+        label: t.tree_label.to_owned(),
         rows,
         boxed,
+        code,
+        note,
         small,
         frames: out,
     }
@@ -1158,17 +1161,24 @@ mod tests {
     fn the_tree_of_a_call_of_claude_codes_bash_tool() {
         let f = bash_call();
         let v = view(&f, Phase::Ask, Lang::En);
-        assert_eq!(v.code_label, "Process tree");
+        let tree = v.tree.clone().expect("a tree");
+        assert_eq!(tree.label, "Process tree");
         assert_eq!(
-            v.code, "git push origin fix/login",
+            tree.code, "git push origin fix/login",
             "the box keeps the root command"
         );
         assert_eq!(
-            v.code_note.as_deref(),
+            tree.note.as_deref(),
             Some(r#"bash -c -l "…""#),
             "under the box, the rest of the root's line (the root process is on its row)"
         );
-        let tree = v.tree.expect("a tree");
+        // what a window too short for the tree shows instead: the command section as before the tree (§3.6)
+        assert_eq!(v.code_label, "Root command");
+        assert_eq!(v.code, tree.code);
+        assert_eq!(
+            v.code_note.as_deref(),
+            Some(r#"bash.exe (pid 31337) · bash -c -l "…""#)
+        );
         assert_eq!(
             tree.rows,
             vec![
@@ -1192,17 +1202,16 @@ mod tests {
         );
         assert_eq!(tree.frames, vec![frame(1, 3, "this call", true)]);
         assert!(
-            !v.facts.iter().any(|x| x.kind == FactKind::Mono),
-            "the ssh command moved to the tree: {:?}",
+            v.facts.iter().any(|x| x.kind == FactKind::Mono),
+            "the ssh command's small line, which the window leaves out when it draws the tree: {:?}",
             v.facts
         );
         assert_eq!(v.tree_short, None, "one process between: nothing to fold");
         let asking = view(&f, Phase::Asking, Lang::En).tree.unwrap();
         assert!(asking.frames.is_empty(), "no buttons, no frames");
         assert_eq!(asking.rows, tree.rows);
-        let ja = view(&f, Phase::Ask, Lang::Ja);
-        assert_eq!(ja.code_label, "プロセスの木");
-        let ja = ja.tree.unwrap();
+        let ja = view(&f, Phase::Ask, Lang::Ja).tree.unwrap();
+        assert_eq!(ja.label, "プロセスの木");
         assert_eq!(ja.rows[1].mark.as_deref(), Some("起点"));
         assert_eq!(ja.frames, vec![frame(1, 3, "この呼び出し", true)]);
     }
@@ -1224,8 +1233,19 @@ mod tests {
             en.view.status,
             "Allowing covers the frame you choose (this ssh or this call) until it ends (at most 60 minutes)"
         );
-        assert_eq!(en.view.code, "ssh.exe -T git@github.com");
-        assert_eq!(en.view.code_note, None);
+        assert_eq!(
+            (en.view.code.as_str(), en.view.code_note.as_deref()),
+            (
+                "ssh.exe -T git@github.com",
+                Some("cmd.exe (pid 2024) · Claude Code's PowerShell tool")
+            ),
+            "without the tree, as before"
+        );
+        let t = en.view.tree.as_ref().unwrap();
+        assert_eq!(
+            (t.code.as_str(), t.note.as_deref()),
+            ("ssh.exe -T git@github.com", None)
+        );
         let tree = en.view.tree.clone().expect("a tree");
         assert_eq!(
             tree.rows[1],
@@ -1295,6 +1315,52 @@ mod tests {
     }
 
     #[test]
+    fn when_the_root_is_the_client_its_ssh_command_stays_whole_under_the_box() {
+        // `ssh` typed in a terminal: the root is the client itself, whose box shows its line's first 200 characters
+        let long = format!("ssh.exe -T git@github.com {}", "-o SendEnv=X ".repeat(16));
+        assert!(long.chars().count() > 200);
+        let f = Facts {
+            caller: Caller::Person {
+                shell: "pwsh.exe".into(),
+            },
+            root: Some(Root {
+                name: "ssh.exe".into(),
+                pid: 6100,
+                cmd: long.clone(),
+                claude_powershell: false,
+            }),
+            tree: Some(Tree {
+                head: Some(pid("pwsh.exe", 5120)),
+                between: Vec::new(),
+                unseen: false,
+                client: None,
+            }),
+            command: long.clone(),
+            terminal: true,
+            ..facts()
+        };
+        let tree = view(&f, Phase::Ask, Lang::En).tree.unwrap();
+        assert_eq!(
+            tree.rows.len(),
+            2,
+            "the shell and the root, which is the client"
+        );
+        assert!(tree.code.ends_with('…'), "the box: {}", tree.code);
+        assert_eq!(
+            tree.small,
+            Some((1, long)),
+            "the whole ssh command under the root's row, as the small line showed it before the tree"
+        );
+        assert_eq!(
+            tree.frames,
+            vec![
+                frame(0, 1, "this terminal", false),
+                frame(1, 1, "this call", true)
+            ]
+        );
+    }
+
+    #[test]
     fn a_persons_command_frames_the_terminal_too() {
         let f = Facts {
             caller: Caller::Person {
@@ -1316,7 +1382,7 @@ mod tests {
             ..facts()
         };
         let v = view(&f, Phase::Ask, Lang::En);
-        let tree = v.tree.unwrap();
+        let tree = v.tree.clone().unwrap();
         assert_eq!(
             tree.rows[0],
             Row {
@@ -1329,8 +1395,12 @@ mod tests {
                 )
             }
         );
-        assert_eq!(v.code, "git push");
-        assert_eq!(v.code_note, None, "nothing came off the root's line");
+        assert_eq!(tree.code, "git push");
+        assert_eq!(
+            v.tree.as_ref().unwrap().note,
+            None,
+            "nothing came off the root's line"
+        );
         assert_eq!(
             tree.frames,
             vec![

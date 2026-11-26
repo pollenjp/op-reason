@@ -404,8 +404,10 @@ def sources() -> dict:
         "y = yy - CHIP_GAP + SECTION_GAP;",
         # the relay's process tree under its label (Builder::tree): the rows, the elbows, the box and the small lines
         # under their rows, the frames
-        "let (_, _, h) = b.label(&fonts.f10, &v.code_label, (x0, y), width, Ink::Secondary)?;",
-        "if let Some(tree) = tree { y += h + 6.0; (y, code_h) = b.tree(tree, v, y, fit)?;",
+        "let label = tree.map_or(&v.code_label, |t| &t.label);",
+        "let (_, _, h) = b.label(&fonts.f10, label, (x0, y), width, Ink::Secondary)?;",
+        "if let Some(tree) = tree { y += h + 6.0; (y, code_h) = b.tree(tree, y, fit)?;",
+        "FactKind::Mono if tree.is_some() => {}",
         "let name_fmt = |solid: bool| if solid { &fonts.f10b } else { &fonts.f10 };",
         "name_w.push(fonts.text(name_fmt(f.solid), &f.label, NO_WRAP)?.1);",
         "let rx = x0 + TREE_INDENT * row.depth as f32; let tx = rx + TREE_TEXT;",
@@ -437,8 +439,8 @@ def sources() -> dict:
         "self.rect(rect(x, py, widths[k], ph), ph / 2.0, fill, stroke);",
         "x: x + pad, y: py + (ph - h) / 2.0,",
         "y = yy + 2.0; let inner = right - TREE_INSET - tx; if i == tree.boxed { y += 2.0;"
-        " let (box_h, h) = self.code_box(&v.code, (tx, y), inner, fit)?;",
-        "if let Some(note) = &v.code_note { y += 3.0;"
+        " let (box_h, h) = self.code_box(&tree.code, (tx, y), inner, fit)?;",
+        "if let Some(note) = &tree.note { y += 3.0;"
         " let (_, _, h) = self.label(&fonts.m10, note, (tx, y), inner, Ink::Tertiary)?; y += h; } y += 4.0; }",
         "let (_, _, h) = self.label(&fonts.m10, line, (tx, y), inner, Ink::Tertiary)?; y += h + 4.0;",
         "let left = x0 + TREE_INDENT * first.depth as f32 - 5.0;",
@@ -497,12 +499,12 @@ def sources() -> dict:
         'text: detail.join(" · "),',
         # a call with a root and its processes: the tree (tree_view) from Claude Code (its dot, its image and PID) to
         # the root (its mark) and the client; the command the root runs in the box under the root's row and the rest of
-        # its line under the box; the client's command line small under its row (no longer among the facts); the frame
+        # its line under the box; the client's command line small under its row (the window leaves its line among the
+        # facts out when it draws the tree); the frame
         # of what Allow this call covers, from the root down, while the window asks; and the program in the line about
         # how long an answer lasts
-        "Some(root) if with_tree.is_some() => match look::root_command(&root.cmd) {"
-        " Some(u) => (t.tree_label, u.command, Some(u.frame)),",
-        "if f.root.is_some() && f.tree.is_none() && !powershell {",
+        "match look::root_command(&root.cmd) { Some(u) => (root_at, u.command, Some(u.frame)),",
+        "if f.root.is_some() && !powershell {",
         "let frames = phase == Phase::Ask && !alone;",
         'let pid_of = |p: Option<u32>| p.map(|n| format!("pid {n}")).unwrap_or_default();',
         "Caller::Claude { .. } => ChipKind::Claude,",
@@ -512,7 +514,7 @@ def sources() -> dict:
         "dot: Some(dot), ..plain(0, name, detail, RowTone::Strong)",
         "mark: Some(t.root_mark.to_owned()), ..plain(root_at, &root.name, pid_of(Some(root.pid)), RowTone::Strong)",
         "rows.push(plain(rows.len(), &c.name, pid_of(c.pid), RowTone::Strong));",
-        ".map(|i| (i, f.command.clone()));",
+        ".then(|| (client_at.unwrap_or(root_at), f.command.clone()));",
         "out.push(frame(root_at, t.frame_call, true));",
         "let named = f.root.is_some() && !powershell;",
         "match named.then(|| look::program_name(&code)).flatten() {",

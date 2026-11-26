@@ -224,7 +224,7 @@ no GPU, no swap chain, no wait for the display's refresh); the windows of `op` c
    `look::root_command`), or, for the launcher of Claude Code's PowerShell tool, which carries no command, the ssh
    command under the client's row (told in `win/relay/conn.rs` from the root's own arguments, for a call of Claude Code:
    `look::claude_powershell`). Frames on the tree show what each button covers, and the window says how long an answer
-   lasts with its name. For the PowerShell tool the window asks for this ssh: Allow this ssh, Allow this call, Deny. The toast (the Windows notification) is removed when the window closes, except after a time-out
+   lasts with its name; on a screen too short for the tree, the window shows the command section as before it. For the PowerShell tool the window asks for this ssh: Allow this ssh, Allow this call, Deny. The toast (the Windows notification) is removed when the window closes, except after a time-out
    (`timeout`), which leaves it. A click (press and release on a button) is remembered for the call (Allow this
    terminal: also for the shell and the key; Allow this ssh: for the client process only); after Allow the window drops its buttons ("1Password is asking", with a
    band that says where 1Password keeps a prompt it did not show) until 1Password answers, then closes, and the lock and

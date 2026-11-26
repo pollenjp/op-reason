@@ -7,9 +7,9 @@
   the process whose words it shows: the root command under the root's row (marked "Root"), with the rest of the root's
   line and the ssh command in small type; for Claude Code's PowerShell tool, the ssh command under the ssh process's
   row. Frames on the tree show what each button covers. A WSL call shows what `op-reason-ssh` sends, then "… in WSL,
-  not seen"; more than four processes between fold into one row.
+  not seen"; with more than four processes between, all but the first and the last two fold into one row.
 - **A call of Claude Code's PowerShell tool asks for each ssh.** Its script reaches no command line, so the second ssh
-  of such a call passed without a window, seen only in a toast. Now **Allow this ssh** (the default) covers that ssh
+  of such a call passed without a window, seen only in a toast. Now **Allow this ssh** (the first button) covers that ssh
   process until it ends, and another ssh of the call asks in a window of its own; **Allow this call** covers the call as
   before, and **Deny** refuses it.
 - `ssh-sign` records: the answer `allow-ssh`, and `by`, the answer that covered a request that passed or was refused
