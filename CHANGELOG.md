@@ -16,6 +16,12 @@
   answer covers this call for 60 minutes", which read like a permission for 60 minutes). **Allow this terminal for 60
   minutes** is unchanged.
 - The relay's toasts take the windows' colors, and show the command and its destination in a monospace font.
+- **After a click on Allow, the relay's window watches for 1Password's prompt**: when a window of 1Password comes (to
+  the front, or new), it says "Approve in 1Password's window" with a sketch of the question; when none has come within
+  two seconds (1Password kept its prompt behind its icon once, for a request while it was locked), the window lights
+  up, counts down the seconds until 1Password closes the request, and a small click-through window next to the
+  notification area points at the 1Password icon in the tray (SSH request waiting). The `ssh-sign` record of such a
+  request says what the relay saw (`prompt`: `front`, `seen`, `hint`).
 
 ## 0.7.0 — 2026-11-24
 
