@@ -22,7 +22,9 @@ use op_reason_core::lang::Lang;
 use op_reason_core::ssh::decide::Answer;
 use op_reason_core::ssh::wire::Purpose;
 
-use crate::look::{self, Band, Chip, ChipKind, Fact, FactKind, Icon, Reason, Sketch, View};
+use crate::look::{
+    self, Band, Chip, ChipKind, Fact, FactKind, Frame, Icon, Reason, Row, RowTone, Sketch, View,
+};
 use crate::relay_opts::Mode;
 use crate::ui::{self, Both, Button, Texts};
 
@@ -85,6 +87,28 @@ pub struct Root {
     pub claude_powershell: bool,
 }
 
+/// A process of the tree: its image (empty when it is not known: Claude Code in a WSL call) and its PID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeProc {
+    pub name: String,
+    pub pid: Option<u32>,
+}
+
+/// The processes of a call besides its root, from the caller to the client (design
+/// `2026-11-27-relay-process-tree-design.md` §3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tree {
+    /// The caller's process above the root (Claude Code's, a person's shell); `None`: the root is the caller (a
+    /// program).
+    pub head: Option<TreeProc>,
+    /// The processes between the root and the client, the root's child first.
+    pub between: Vec<TreeProc>,
+    /// A WSL call: the processes between the root and the client are on Linux, where the relay cannot look.
+    pub unseen: bool,
+    /// The client, `None` when it is the root.
+    pub client: Option<TreeProc>,
+}
+
 /// How much of a root's command line the window shows when it shows the line itself.
 const ROOT_SHOWN: usize = 200;
 
@@ -131,6 +155,11 @@ pub struct Facts {
     pub terminal: bool,
     /// The answer covers this signature only (a connection that cannot be tied to a call).
     pub single: bool,
+    /// The processes of the call besides its root (with a root).
+    pub tree: Option<Tree>,
+    /// A call of Claude Code's PowerShell tool in per-call mode that can be tied to its call: the window asks for this
+    /// ssh, and offers this call too (design `2026-11-27-relay-process-tree-design.md` §4).
+    pub per_ssh: bool,
 }
 
 /// Which window.
@@ -149,6 +178,8 @@ pub enum Phase {
 /// The words of the window and the toasts.
 struct Table {
     title_ask: &'static str,
+    /// The title of a window that asks for one ssh (design `2026-11-27-relay-process-tree-design.md` §4.4).
+    title_ask_ssh: &'static str,
     title_asking: &'static str,
     wsl: &'static str,
     reason: &'static str,
@@ -172,6 +203,7 @@ struct Table {
     unknown_wsl: &'static str,
     unknown_unreadable: &'static str,
     allow: &'static str,
+    allow_ssh: &'static str,
     allow_terminal: &'static str,
     deny: &'static str,
     subtitle_per_call: &'static str,
@@ -186,7 +218,18 @@ struct Table {
     covers_name: &'static str,
     covers_call: &'static str,
     covers_alone: &'static str,
+    /// How long an answer lasts in a window that asks for one ssh (`{1}`: the time limit).
+    covers_frame: &'static str,
     waiting: &'static str,
+    /// The process tree (design `2026-11-27-relay-process-tree-design.md` §5): its label, the root's mark, the rows
+    /// of processes not shown (`{0}`: how many), the frames' names.
+    tree_label: &'static str,
+    root_mark: &'static str,
+    unseen: &'static str,
+    more: &'static str,
+    frame_ssh: &'static str,
+    frame_call: &'static str,
+    frame_terminal: &'static str,
     band_ask_title: &'static str,
     band_ask_line: &'static str,
     /// The band while 1Password asks: per-call after Allow, per-call while 1Password is slow, show-only.
@@ -211,11 +254,13 @@ struct Table {
     pointer_item: &'static str,
     pass_word: &'static str,
     pass_call: &'static str,
+    pass_ssh: &'static str,
     pass_terminal: &'static str,
 }
 
 const EN: Table = Table {
     title_ask: "SSH key: allow this call?",
+    title_ask_ssh: "SSH key: allow this ssh?",
     title_asking: "SSH key: 1Password is asking",
     wsl: "WSL",
     reason: "Reason",
@@ -239,6 +284,7 @@ const EN: Table = Table {
     unknown_wsl: "unknown (a WSL ssh.exe not started through op-reason-ssh)",
     unknown_unreadable: "unknown (its process could not be read)",
     allow: "Allow this call",
+    allow_ssh: "Allow this ssh",
     allow_terminal: "Allow this terminal for {0} minutes",
     deny: "Deny",
     subtitle_per_call: "op-reason's relay · per-call mode",
@@ -249,7 +295,15 @@ const EN: Table = Table {
     covers_name: "Allowing covers this {0} until it ends (at most {1} minutes)",
     covers_call: "Allowing covers this call until it ends (at most {1} minutes)",
     covers_alone: "This answer covers this signature only",
+    covers_frame: "Allowing covers the frame you choose (this ssh or this call) until it ends (at most {1} minutes)",
     waiting: " · {0} more waiting",
+    tree_label: "Process tree",
+    root_mark: "Root",
+    unseen: "in WSL, not seen",
+    more: "{0} more processes",
+    frame_ssh: "this ssh",
+    frame_call: "this call",
+    frame_terminal: "this terminal",
     band_ask_title: "Allowing brings up 1Password's prompt",
     band_ask_line: "Usually in the ⟦middle of the screen⟧; if not, from the ⟪tray at the bottom right⟫",
     asking_per_call: "Allowed here; 1Password itself may ask now",
@@ -269,11 +323,13 @@ const EN: Table = Table {
     pointer_item: "SSH request waiting",
     pass_word: "Passed",
     pass_call: "allowed for this call",
+    pass_ssh: "allowed for this ssh",
     pass_terminal: "allowed for this terminal",
 };
 
 const JA: Table = Table {
     title_ask: "SSH の鍵: この呼び出しを許可しますか",
+    title_ask_ssh: "SSH の鍵: この ssh を許可しますか",
     title_asking: "SSH の鍵: 1Password が確認しています",
     wsl: "WSL",
     reason: "理由",
@@ -297,6 +353,7 @@ const JA: Table = Table {
     unknown_wsl: "分からない (op-reason-ssh を通さずに起きた WSL の ssh.exe)",
     unknown_unreadable: "分からない (process を読めなかった)",
     allow: "この呼び出しを許可",
+    allow_ssh: "この ssh を許可",
     allow_terminal: "このターミナルを {0} 分許可",
     deny: "拒否",
     subtitle_per_call: "op-reason の中継 · 呼び出しごとに決めるモード",
@@ -307,7 +364,15 @@ const JA: Table = Table {
     covers_name: "許可は、この {0} が終わるまで効きます (長くても {1} 分)",
     covers_call: "許可は、この呼び出しが終わるまで効きます (長くても {1} 分)",
     covers_alone: "この答えはこの署名だけに効きます",
+    covers_frame: "許可は、選んだ枠 (この ssh か、この呼び出し) が終わるまで効きます (長くても {1} 分)",
     waiting: " · ほかに {0} 件待っています",
+    tree_label: "プロセスの木",
+    root_mark: "起点",
+    unseen: "WSL の中は見えない",
+    more: "ほかに {0} 個のプロセス",
+    frame_ssh: "この ssh",
+    frame_call: "この呼び出し",
+    frame_terminal: "このターミナル",
     band_ask_title: "許可すると 1Password の画面が出ます",
     band_ask_line: "ふつうは⟦画面の中央⟧。出ないときは⟪右下のトレイ⟫から",
     asking_per_call: "ここでは許可済み。いまは 1Password 自身が確認することがあります",
@@ -327,6 +392,7 @@ const JA: Table = Table {
     pointer_item: "SSHリクエストを待機中",
     pass_word: "通過",
     pass_call: "この呼び出しの許可",
+    pass_ssh: "この ssh の許可",
     pass_terminal: "ターミナルの許可",
 };
 
@@ -347,6 +413,7 @@ fn fill(template: &str, value: &str) -> String {
 pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     let t = table(lang);
     let title = match phase {
+        Phase::Ask if f.per_ssh => t.title_ask_ssh,
         Phase::Ask => t.title_ask,
         Phase::Asking | Phase::Seen | Phase::Hidden => t.title_asking,
     };
@@ -362,6 +429,12 @@ pub fn build(f: &Facts, phase: Phase, lang: Lang) -> Texts {
     };
     let buttons = match phase {
         Phase::Asking | Phase::Seen | Phase::Hidden => Vec::new(),
+        // this ssh first (the default), then the call (design `2026-11-27-relay-process-tree-design.md` §4.2)
+        Phase::Ask if f.per_ssh => vec![
+            (Button::AllowSsh, t.allow_ssh.to_owned()),
+            (Button::Allow, t.allow.to_owned()),
+            (Button::Deny, t.deny.to_owned()),
+        ],
         Phase::Ask => {
             let mut b = vec![(Button::Allow, t.allow.to_owned())];
             if f.terminal {
@@ -406,9 +479,18 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
     // the launcher of Claude Code's PowerShell tool carries no command (its script comes through the environment)
     let powershell = matches!(f.caller, Caller::Claude { .. })
         && f.root.as_ref().is_some_and(|r| r.claude_powershell);
-    // the root command in the box, and under it the root process and the rest of its line: the two show all of it;
-    // for the PowerShell tool, the ssh command, and under it the root process and what it is
+    // with the processes of the call (design `2026-11-27-relay-process-tree-design.md` §3.2): the root command in the
+    // box under the root's row, and under the box the rest of the root's line (the root process is on its row); for
+    // the PowerShell tool, the ssh command in the box under the client's row
+    let with_tree = f.root.as_ref().zip(f.tree.as_ref());
+    // without them: the root command in the box, and under it the root process and the rest of its line: the two show
+    // all of it; for the PowerShell tool, the ssh command, and under it the root process and what it is
     let (code_label, code, code_note) = match &f.root {
+        Some(_) if with_tree.is_some() && powershell => (t.tree_label, f.command.clone(), None),
+        Some(root) if with_tree.is_some() => match look::root_command(&root.cmd) {
+            Some(u) => (t.tree_label, u.command, Some(u.frame)),
+            None => (t.tree_label, root.shown(), None),
+        },
         Some(root) if powershell => (
             t.command,
             f.command.clone(),
@@ -441,7 +523,8 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
             text: detail.join(" · "),
         });
     }
-    if f.root.is_some() && !powershell {
+    // the ssh command, small (with a tree: under the client's row)
+    if f.root.is_some() && f.tree.is_none() && !powershell {
         facts.push(Fact {
             kind: FactKind::Mono,
             text: format!("{}: {}", t.command, f.command),
@@ -455,7 +538,9 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
     let limit = f.limit_minutes.to_string();
     let (countdown, status, band, footer) = match phase {
         Phase::Ask => {
-            let covers = if alone {
+            let covers = if f.per_ssh {
+                t.covers_frame.replace("{1}", &limit)
+            } else if alone {
                 t.covers_alone.to_owned()
             } else {
                 // the PowerShell tool's script is not seen: its call may run more than the ssh command
@@ -525,6 +610,12 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
             format!("{}{waiting}", t.footer_asking),
         ),
     };
+    // the frames explain the buttons (design `2026-11-27-relay-process-tree-design.md` §3.4)
+    let frames = phase == Phase::Ask && !alone;
+    let tree = with_tree.map(|(root, tr)| tree_view(t, f, root, tr, powershell, frames, false));
+    let tree_short = with_tree
+        .filter(|(_, tr)| tr.between.len() >= 2)
+        .map(|(root, tr)| tree_view(t, f, root, tr, powershell, frames, true));
     View {
         icon: Icon::Key,
         subtitle: match f.mode {
@@ -544,12 +635,121 @@ fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
         code_label: code_label.to_owned(),
         code,
         code_note,
+        tree,
+        tree_short,
         facts,
         notes: Vec::new(),
         countdown,
         status,
         band,
         footer,
+    }
+}
+
+/// The process tree of a call (design `2026-11-27-relay-process-tree-design.md` §3): the caller, the root, the processes
+/// between (`short`: in one row), the client; the box under the root's row, or the client's for the PowerShell tool
+/// (`powershell`); `frames`: what each button that allows covers.
+fn tree_view(
+    t: &Table,
+    f: &Facts,
+    root: &Root,
+    tree: &Tree,
+    powershell: bool,
+    frames: bool,
+    short: bool,
+) -> look::Tree {
+    let dot = match f.caller {
+        Caller::Claude { .. } => ChipKind::Claude,
+        Caller::Person { .. } => ChipKind::Person,
+        Caller::Program { .. } | Caller::Unknown(_) => ChipKind::Other,
+    };
+    let pid_of = |p: Option<u32>| p.map(|n| format!("pid {n}")).unwrap_or_default();
+    let plain = |depth: usize, name: &str, detail: String, tone: RowTone| Row {
+        depth,
+        dot: None,
+        name: name.to_owned(),
+        detail,
+        pill: None,
+        mark: None,
+        tone,
+    };
+    let mut rows = Vec::new();
+    if let Some(h) = &tree.head {
+        let name = match &f.caller {
+            Caller::Claude { .. } => t.claude,
+            Caller::Person { .. } => t.person,
+            Caller::Program { .. } | Caller::Unknown(_) => h.name.as_str(),
+        };
+        let detail = [h.name.clone(), pid_of(h.pid)]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        rows.push(Row {
+            dot: Some(dot),
+            ..plain(0, name, detail, RowTone::Strong)
+        });
+    }
+    let root_at = rows.len();
+    rows.push(Row {
+        dot: tree.head.is_none().then_some(dot),
+        pill: powershell.then(|| t.claude_powershell.to_owned()),
+        mark: Some(t.root_mark.to_owned()),
+        ..plain(root_at, &root.name, pid_of(Some(root.pid)), RowTone::Strong)
+    });
+    for k in look::between(tree.between.len(), short) {
+        let depth = rows.len();
+        rows.push(match k {
+            Ok(i) => plain(
+                depth,
+                &tree.between[i].name,
+                pid_of(tree.between[i].pid),
+                RowTone::Plain,
+            ),
+            Err(n) => plain(depth, "…", fill(t.more, &n.to_string()), RowTone::Faint),
+        });
+    }
+    if tree.unseen {
+        rows.push(plain(rows.len(), "…", t.unseen.to_owned(), RowTone::Faint));
+    }
+    let client_at = tree.client.as_ref().map(|c| {
+        rows.push(plain(rows.len(), &c.name, pid_of(c.pid), RowTone::Strong));
+        rows.len() - 1
+    });
+    let last = rows.len() - 1;
+    let boxed = if powershell {
+        client_at.unwrap_or(root_at)
+    } else {
+        root_at
+    };
+    let small = client_at
+        .filter(|_| !powershell && !f.command.is_empty())
+        .map(|i| (i, f.command.clone()));
+    let frame = |first: usize, label: &str, solid: bool| Frame {
+        first,
+        last,
+        label: label.to_owned(),
+        solid,
+    };
+    let mut out = Vec::new();
+    if frames {
+        if f.per_ssh {
+            out.push(frame(root_at, t.frame_call, false));
+            if let Some(c) = client_at {
+                out.push(frame(c, t.frame_ssh, true));
+            }
+        } else {
+            if f.terminal && tree.head.is_some() {
+                out.push(frame(0, t.frame_terminal, false));
+            }
+            out.push(frame(root_at, t.frame_call, true));
+        }
+    }
+    look::Tree {
+        rows,
+        boxed,
+        small,
+        frames: out,
     }
 }
 
@@ -754,6 +954,7 @@ pub fn pass_texts(f: &Facts, answer: Answer, lang: Lang) -> PassTexts {
     let t = table(lang);
     let how = match answer {
         Answer::AllowTerminal => t.pass_terminal,
+        Answer::AllowSsh => t.pass_ssh,
         Answer::Allow | Answer::Deny => t.pass_call,
     };
     let reason = if f.reason.is_empty() {
@@ -872,11 +1073,399 @@ mod tests {
             waiting: 0,
             terminal: false,
             single: false,
+            tree: None,
+            per_ssh: false,
         }
     }
 
     fn view(f: &Facts, phase: Phase, lang: Lang) -> View {
         build(f, phase, lang).view
+    }
+
+    fn pid(name: &str, pid: u32) -> TreeProc {
+        TreeProc {
+            name: name.into(),
+            pid: Some(pid),
+        }
+    }
+
+    /// A row of the tree without a dot, a pill or a mark.
+    fn row(depth: usize, name: &str, detail: &str, tone: RowTone) -> Row {
+        Row {
+            depth,
+            dot: None,
+            name: name.into(),
+            detail: detail.into(),
+            pill: None,
+            mark: None,
+            tone,
+        }
+    }
+
+    fn frame(first: usize, last: usize, label: &str, solid: bool) -> Frame {
+        Frame {
+            first,
+            last,
+            label: label.into(),
+            solid,
+        }
+    }
+
+    /// Claude Code's Bash tool on Windows: `claude.exe` → `bash.exe` (the root) → `git.exe` → `ssh.exe`.
+    fn bash_call() -> Facts {
+        Facts {
+            root: Some(Root {
+                name: "bash.exe".into(),
+                pid: 31337,
+                cmd: r#"bash -c -l "git push origin fix/login""#.into(),
+                claude_powershell: false,
+            }),
+            tree: Some(Tree {
+                head: Some(pid("claude.exe", 4242)),
+                between: vec![pid("git.exe", 31400)],
+                unseen: false,
+                client: Some(pid("ssh.exe", 31500)),
+            }),
+            ..facts()
+        }
+    }
+
+    /// A call of Claude Code's PowerShell tool: `claude.exe` → `cmd.exe` (the root, the launcher) → `pwsh.exe` →
+    /// `ssh.exe`, each ssh asking on its own.
+    fn powershell_call() -> Facts {
+        Facts {
+            caller: Caller::Claude { pid: Some(1000) },
+            root: Some(Root {
+                name: "cmd.exe".into(),
+                pid: 2024,
+                cmd: r#"C:\Windows\System32\cmd.exe /d /s /c "…""#.into(),
+                claude_powershell: true,
+            }),
+            tree: Some(Tree {
+                head: Some(pid("claude.exe", 1000)),
+                between: vec![pid("pwsh.exe", 2100)],
+                unseen: false,
+                client: Some(pid("ssh.exe", 2200)),
+            }),
+            command: "ssh.exe -T git@github.com".into(),
+            destination: Some("git@github.com".into()),
+            per_ssh: true,
+            ..facts()
+        }
+    }
+
+    #[test]
+    fn the_tree_of_a_call_of_claude_codes_bash_tool() {
+        let f = bash_call();
+        let v = view(&f, Phase::Ask, Lang::En);
+        assert_eq!(v.code_label, "Process tree");
+        assert_eq!(
+            v.code, "git push origin fix/login",
+            "the box keeps the root command"
+        );
+        assert_eq!(
+            v.code_note.as_deref(),
+            Some(r#"bash -c -l "…""#),
+            "under the box, the rest of the root's line (the root process is on its row)"
+        );
+        let tree = v.tree.expect("a tree");
+        assert_eq!(
+            tree.rows,
+            vec![
+                Row {
+                    dot: Some(ChipKind::Claude),
+                    ..row(0, "Claude Code", "claude.exe · pid 4242", RowTone::Strong)
+                },
+                Row {
+                    mark: Some("Root".into()),
+                    ..row(1, "bash.exe", "pid 31337", RowTone::Strong)
+                },
+                row(2, "git.exe", "pid 31400", RowTone::Plain),
+                row(3, "ssh.exe", "pid 31500", RowTone::Strong),
+            ]
+        );
+        assert_eq!(tree.boxed, 1, "the box under the root's row");
+        assert_eq!(
+            tree.small,
+            Some((3, f.command.clone())),
+            "the ssh command under the client's row"
+        );
+        assert_eq!(tree.frames, vec![frame(1, 3, "this call", true)]);
+        assert!(
+            !v.facts.iter().any(|x| x.kind == FactKind::Mono),
+            "the ssh command moved to the tree: {:?}",
+            v.facts
+        );
+        assert_eq!(v.tree_short, None, "one process between: nothing to fold");
+        let asking = view(&f, Phase::Asking, Lang::En).tree.unwrap();
+        assert!(asking.frames.is_empty(), "no buttons, no frames");
+        assert_eq!(asking.rows, tree.rows);
+        let ja = view(&f, Phase::Ask, Lang::Ja);
+        assert_eq!(ja.code_label, "プロセスの木");
+        let ja = ja.tree.unwrap();
+        assert_eq!(ja.rows[1].mark.as_deref(), Some("起点"));
+        assert_eq!(ja.frames, vec![frame(1, 3, "この呼び出し", true)]);
+    }
+
+    #[test]
+    fn a_call_of_the_powershell_tool_asks_for_each_ssh() {
+        let f = powershell_call();
+        let en = build(&f, Phase::Ask, Lang::En);
+        assert_eq!(en.title, "SSH key: allow this ssh?");
+        assert_eq!(
+            en.buttons,
+            vec![
+                (Button::AllowSsh, "Allow this ssh".to_owned()),
+                (Button::Allow, "Allow this call".to_owned()),
+                (Button::Deny, "Deny".to_owned()),
+            ]
+        );
+        assert_eq!(
+            en.view.status,
+            "Allowing covers the frame you choose (this ssh or this call) until it ends (at most 60 minutes)"
+        );
+        assert_eq!(en.view.code, "ssh.exe -T git@github.com");
+        assert_eq!(en.view.code_note, None);
+        let tree = en.view.tree.clone().expect("a tree");
+        assert_eq!(
+            tree.rows[1],
+            Row {
+                pill: Some("Claude Code's PowerShell tool".into()),
+                mark: Some("Root".into()),
+                ..row(1, "cmd.exe", "pid 2024", RowTone::Strong)
+            }
+        );
+        assert_eq!(tree.rows[2], row(2, "pwsh.exe", "pid 2100", RowTone::Plain));
+        assert_eq!(tree.rows[3], row(3, "ssh.exe", "pid 2200", RowTone::Strong));
+        assert_eq!(tree.boxed, 3, "the box with the ssh command under the leaf");
+        assert_eq!(tree.small, None);
+        assert_eq!(
+            tree.frames,
+            vec![
+                frame(1, 3, "this call", false),
+                frame(3, 3, "this ssh", true)
+            ],
+            "the outer frame first; the default answer's frame is solid"
+        );
+        let ja = build(&f, Phase::Ask, Lang::Ja);
+        assert_eq!(ja.title, "SSH の鍵: この ssh を許可しますか");
+        assert_eq!(
+            ja.buttons,
+            vec![
+                (Button::AllowSsh, "この ssh を許可".to_owned()),
+                (Button::Allow, "この呼び出しを許可".to_owned()),
+                (Button::Deny, "拒否".to_owned()),
+            ]
+        );
+        assert_eq!(
+            ja.view.status,
+            "許可は、選んだ枠 (この ssh か、この呼び出し) が終わるまで効きます (長くても 60 分)"
+        );
+        let ja = ja.view.tree.unwrap();
+        assert_eq!(
+            ja.rows[1].pill.as_deref(),
+            Some("Claude Code の PowerShell")
+        );
+        assert_eq!(
+            ja.frames,
+            vec![
+                frame(1, 3, "この呼び出し", false),
+                frame(3, 3, "この ssh", true)
+            ]
+        );
+        let asking = build(&f, Phase::Asking, Lang::En);
+        assert_eq!(asking.title, "SSH key: 1Password is asking");
+        assert!(asking.buttons.is_empty());
+        assert!(asking.view.tree.unwrap().frames.is_empty());
+        // the launcher without the questions for each ssh (an answer that covers its signature only)
+        let single = Facts {
+            per_ssh: false,
+            single: true,
+            ..powershell_call()
+        };
+        let s = build(&single, Phase::Ask, Lang::En);
+        assert_eq!(s.title, "SSH key: allow this call?");
+        assert_eq!(s.buttons.len(), 2);
+        assert_eq!(
+            s.view.tree.as_ref().unwrap().boxed,
+            3,
+            "the box stays on the leaf"
+        );
+        assert!(s.view.tree.unwrap().frames.is_empty(), "nothing to frame");
+    }
+
+    #[test]
+    fn a_persons_command_frames_the_terminal_too() {
+        let f = Facts {
+            caller: Caller::Person {
+                shell: "pwsh.exe".into(),
+            },
+            root: Some(Root {
+                name: "git.exe".into(),
+                pid: 6000,
+                cmd: "git push".into(),
+                claude_powershell: false,
+            }),
+            tree: Some(Tree {
+                head: Some(pid("pwsh.exe", 5120)),
+                between: Vec::new(),
+                unseen: false,
+                client: Some(pid("ssh.exe", 6100)),
+            }),
+            terminal: true,
+            ..facts()
+        };
+        let v = view(&f, Phase::Ask, Lang::En);
+        let tree = v.tree.unwrap();
+        assert_eq!(
+            tree.rows[0],
+            Row {
+                dot: Some(ChipKind::Person),
+                ..row(
+                    0,
+                    "Human (terminal)",
+                    "pwsh.exe · pid 5120",
+                    RowTone::Strong
+                )
+            }
+        );
+        assert_eq!(v.code, "git push");
+        assert_eq!(v.code_note, None, "nothing came off the root's line");
+        assert_eq!(
+            tree.frames,
+            vec![
+                frame(0, 2, "this terminal", false),
+                frame(1, 2, "this call", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_program_heads_its_tree_and_wsl_shows_what_it_carries() {
+        let program = Facts {
+            caller: Caller::Program {
+                name: "app.exe".into(),
+            },
+            root: Some(Root {
+                name: "app.exe".into(),
+                pid: 700,
+                cmd: "app.exe --sync".into(),
+                claude_powershell: false,
+            }),
+            tree: Some(Tree {
+                head: None,
+                between: Vec::new(),
+                unseen: false,
+                client: Some(pid("ssh.exe", 701)),
+            }),
+            ..facts()
+        };
+        let tree = view(&program, Phase::Ask, Lang::En).tree.unwrap();
+        assert_eq!(
+            tree.rows,
+            vec![
+                Row {
+                    dot: Some(ChipKind::Other),
+                    mark: Some("Root".into()),
+                    ..row(0, "app.exe", "pid 700", RowTone::Strong)
+                },
+                row(1, "ssh.exe", "pid 701", RowTone::Strong),
+            ]
+        );
+        assert_eq!(tree.frames, vec![frame(0, 1, "this call", true)]);
+        let wsl = Facts {
+            caller: Caller::Claude { pid: Some(4100) },
+            distro: Some("Ubuntu".into()),
+            root: Some(Root {
+                name: "bash".into(),
+                pid: 4200,
+                cmd: r#"bash -c "git fetch""#.into(),
+                claude_powershell: false,
+            }),
+            tree: Some(Tree {
+                head: Some(TreeProc {
+                    name: String::new(),
+                    pid: Some(4100),
+                }),
+                between: Vec::new(),
+                unseen: true,
+                client: Some(pid("ssh.exe", 9100)),
+            }),
+            ..facts()
+        };
+        let en = view(&wsl, Phase::Ask, Lang::En).tree.unwrap();
+        assert_eq!(en.rows[0].detail, "pid 4100", "no image travels from WSL");
+        assert_eq!(en.rows[2], row(2, "…", "in WSL, not seen", RowTone::Faint));
+        assert_eq!(en.rows[3], row(3, "ssh.exe", "pid 9100", RowTone::Strong));
+        let ja = view(&wsl, Phase::Ask, Lang::Ja).tree.unwrap();
+        assert_eq!(ja.rows[2].detail, "WSL の中は見えない");
+    }
+
+    #[test]
+    fn a_deep_tree_folds_and_a_request_without_a_root_has_none() {
+        let f = Facts {
+            tree: Some(Tree {
+                between: (1..=6)
+                    .map(|i| pid(&format!("p{i}.exe"), 100 + i))
+                    .collect(),
+                ..bash_call().tree.unwrap()
+            }),
+            ..bash_call()
+        };
+        let v = view(&f, Phase::Ask, Lang::En);
+        let names: Vec<(String, String)> = v
+            .tree
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| (r.name.clone(), r.detail.clone()))
+            .collect();
+        let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        assert_eq!(
+            names,
+            vec![
+                pair("Claude Code", "claude.exe · pid 4242"),
+                pair("bash.exe", "pid 31337"),
+                pair("p1.exe", "pid 101"),
+                pair("…", "3 more processes"),
+                pair("p5.exe", "pid 105"),
+                pair("p6.exe", "pid 106"),
+                pair("ssh.exe", "pid 31500"),
+            ]
+        );
+        let short = v.tree_short.expect("folded for a short screen");
+        assert_eq!(short.rows.len(), 4);
+        assert_eq!(
+            short.rows[2],
+            row(2, "…", "6 more processes", RowTone::Faint)
+        );
+        assert_eq!(short.rows[3].depth, 3);
+        assert_eq!(short.small.as_ref().map(|s| s.0), Some(3));
+        assert_eq!(short.frames, vec![frame(1, 3, "this call", true)]);
+        let ja = view(&f, Phase::Ask, Lang::Ja).tree.unwrap();
+        assert_eq!(ja.rows[3].detail, "ほかに 3 個のプロセス");
+        let forwarded = Facts {
+            root: None,
+            tree: None,
+            ..facts()
+        };
+        let v = view(&forwarded, Phase::Ask, Lang::En);
+        assert_eq!((v.code_label.as_str(), v.tree), ("Command", None));
+    }
+
+    #[test]
+    fn the_toast_of_a_signature_that_an_answer_for_its_ssh_let_through() {
+        let f = powershell_call();
+        assert!(
+            pass_texts(&f, Answer::AllowSsh, Lang::En)
+                .why
+                .starts_with("allowed for this ssh · ")
+        );
+        assert!(
+            pass_texts(&f, Answer::AllowSsh, Lang::Ja)
+                .why
+                .starts_with("この ssh の許可 · ")
+        );
     }
 
     fn chip(kind: ChipKind, text: &str) -> Chip {

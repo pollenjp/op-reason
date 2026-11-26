@@ -94,6 +94,76 @@ pub struct Band {
     pub alert: bool,
 }
 
+/// How a row of the process tree is drawn (design `2026-11-27-relay-process-tree-design.md` §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowTone {
+    /// The caller, the root and the client: the name in bold, in the text color.
+    Strong,
+    /// A process between the root and the client: the name in the secondary color.
+    Plain,
+    /// A row that stands for processes not shown (`…`): the tertiary color.
+    Faint,
+}
+
+/// One row of the process tree: a process, or the processes it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// How deep it is indented: the tree's first row is 0.
+    pub depth: usize,
+    /// The caller's dot, on the tree's first row.
+    pub dot: Option<ChipKind>,
+    pub name: String,
+    /// After the name, in the tertiary color: the caller's image and PID, `pid N`, or what a row of `…` stands for.
+    pub detail: String,
+    /// A pill after the detail: what the root is (Claude Code's PowerShell tool).
+    pub pill: Option<String>,
+    /// The root's mark, outlined in the caution color.
+    pub mark: Option<String>,
+    pub tone: RowTone,
+}
+
+/// What an answer covers, framed on the tree: from its first row to the end of its last row (with that row's box or
+/// small line), its name at its top right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub first: usize,
+    pub last: usize,
+    pub label: String,
+    /// The filled button's frame (solid); else the outlined button's (dashed).
+    pub solid: bool,
+}
+
+/// The processes from the caller to the client, drawn in the place of the command section (design
+/// `2026-11-27-relay-process-tree-design.md` §3): the view's box goes under one of its rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tree {
+    pub rows: Vec<Row>,
+    /// The row under which the box goes (the view's `code`, and its `code_note` under the box).
+    pub boxed: usize,
+    /// A small monospace line under a row: the ssh command under the client's row, when the box shows the root's.
+    pub small: Option<(usize, String)>,
+    /// The outer frame first.
+    pub frames: Vec<Frame>,
+}
+
+/// The most processes between the root and the client that a tree shows one per row (design
+/// `2026-11-27-relay-process-tree-design.md` §3.3).
+pub const BETWEEN_SHOWN: usize = 4;
+
+/// The rows of `n` processes between the root and the client: `Ok(i)` shows the `i`th, `Err(count)` stands for `count`
+/// not shown. All of up to [`BETWEEN_SHOWN`]; with more, the first, one row for the rest and the last two (the root's
+/// child says what the root ran, the client's parent what started the client). `short` (a window taller than its
+/// screen): all of them in one row, when there are two or more.
+pub fn between(n: usize, short: bool) -> Vec<Result<usize, usize>> {
+    if short && n >= 2 {
+        return vec![Err(n)];
+    }
+    if n <= BETWEEN_SHOWN {
+        return (0..n).map(Ok).collect();
+    }
+    vec![Ok(0), Err(n - 3), Ok(n - 2), Ok(n - 1)]
+}
+
 /// Everything a window shows, top to bottom (design §4.2, §4.3). The buttons, the references, the orange line and the
 /// switch come from [`crate::ui::Texts`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,8 +180,14 @@ pub struct View {
     pub code_label: String,
     /// The command in the monospace box ([`color_words`]).
     pub code: String,
-    /// Under the box, small: the root process line when the box shows less than it.
+    /// Under the box, small: the root process line when the box shows less than it (with a tree: the rest of the root's
+    /// line).
     pub code_note: Option<String>,
+    /// The relay: the process tree, with the box under its row.
+    pub tree: Option<Tree>,
+    /// The same tree with the processes between the root and the client in one row, for a window taller than its
+    /// screen (design `2026-11-27-relay-process-tree-design.md` §3.6); `None` when there are fewer than two.
+    pub tree_short: Option<Tree>,
     pub facts: Vec<Fact>,
     /// The notes (`shared-cleared`, `lock-skipped`), each with a mark.
     pub notes: Vec<String>,
@@ -798,6 +874,24 @@ mod tests {
     use op_reason_core::ssh::cmdline;
 
     use super::*;
+
+    #[test]
+    fn the_processes_between_that_a_tree_shows() {
+        assert!(between(0, false).is_empty());
+        assert_eq!(between(4, false), vec![Ok(0), Ok(1), Ok(2), Ok(3)]);
+        assert_eq!(
+            between(7, false),
+            vec![Ok(0), Err(4), Ok(5), Ok(6)],
+            "the first, one row for the rest, the last two"
+        );
+        assert_eq!(
+            between(5, true),
+            vec![Err(5)],
+            "all in one row on a short screen"
+        );
+        assert_eq!(between(2, true), vec![Err(2)]);
+        assert_eq!(between(1, true), vec![Ok(0)], "one row stays one row");
+    }
 
     #[test]
     fn the_time_and_the_date() {

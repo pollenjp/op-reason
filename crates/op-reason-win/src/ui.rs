@@ -45,6 +45,9 @@ pub struct Texts {
 pub enum Button {
     /// Allow this call.
     Allow,
+    /// The relay: allow this ssh of a call of Claude Code's PowerShell tool (design
+    /// `2026-11-27-relay-process-tree-design.md` §4).
+    AllowSsh,
     /// Allow the terminal (a person's commands) for the time limit.
     AllowTerminal,
     /// Deny.
@@ -452,6 +455,8 @@ fn view(f: &Facts, lang: Lang) -> View {
         code_label: t.command.to_owned(),
         code: f.command.clone(),
         code_note: None,
+        tree: None,
+        tree_short: None,
         facts: Vec::new(),
         notes,
         countdown: None,
