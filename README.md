@@ -330,7 +330,7 @@ signature, which ansible on WSL (new connections for every task and host) turns 
 
 | Mode | Where you decide | 1Password's setting |
 | --- | --- | --- |
-| `per-call` (default) | op-reason's window, once per call: **Allow this call**, **Deny**, and for `ssh`, `git`, `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, **Allow this terminal for 60 minutes**. 1Password approves the relay once, until it locks | "application and terminal session" (recommended); "application" works too, but then 1Password no longer asks about clients that connect to it directly from the terminal program the relay runs in ([What it does not stop](#what-it-does-not-stop)) |
+| `per-call` (default) | op-reason's window, once per call: **Allow this call**, **Deny**, and for `ssh`, `git`, `scp`, `sftp`, `rsync` or `ansible` typed in a terminal, **Allow this terminal for 60 minutes**; for Claude Code's PowerShell tool on Windows, once per ssh: **Allow this ssh**, **Allow this call**, **Deny**. 1Password approves the relay once, until it locks | "application and terminal session" (recommended); "application" works too, but then 1Password no longer asks about clients that connect to it directly from the terminal program the relay runs in ([What it does not stop](#what-it-does-not-stop)) |
 | `show-only` | 1Password's prompt, for every signature; op-reason's window shows who and why next to it | "request" |
 
 A **call** is its root process, the key and the reason. The root is Claude Code's tool call, the command you typed in a
@@ -343,18 +343,37 @@ ssh-family commands typed later in that shell, not programs that live on (a term
 command-line tool). Requests forwarded back from a remote host (`ssh -A`) are each a call of their own: the relay
 tells them by `session-bind@openssh.com`, which OpenSSH sends from 8.9 on; with an older `ssh.exe` every signature asks.
 
+**Claude Code's PowerShell tool asks for each ssh**
+([design](docs/superpowers/specs/2026-11-27-relay-process-tree-design.md)). Its script reaches no command line, so the
+window cannot show what else the call runs. **Allow this ssh** (the first button) covers that ssh process until it ends:
+another ssh of the same call asks in a window of its own. **Allow this call** covers the whole call, as above, and
+**Deny** refuses the call.
+
 The window puts the reason first (or "no reason given" in its place), then who asks as chips (Claude Code, a person, a
 program; for WSL calls also the distribution and herdr's workspace and pane; the repository, the branch and the
-directory), the root command in a monospace box (`git push origin fix/login`: the wrappers of a shell and of Claude
-Code's Bash tool taken off when they match exactly; the root process and the rest of its line in small type under it;
-for Claude Code's PowerShell tool on Windows, whose script is on no command line, the ssh command, with the root process
-and "Claude Code's PowerShell tool" under it), what the signature is for (logging in as which user, or an SSHSIG
-namespace such as `git`), the destination with its host key and the key's name in 1Password, and the ssh command in
-small type. A bar shows the seconds left to answer, next to how long an answer lasts ("Allowing covers this git push
-until it ends (at most 60 minutes)"), and a band says that 1Password's prompt comes after Allow, usually in the middle
+directory), then the **process tree**: the processes from the caller down to the ssh process, parent above child, each
+with its PID. The tree runs from Claude Code (or your shell, or the program) through the root of the call (marked
+**Root**) and the processes between (with more than four, all but the first and the last two fold into one row) to the
+ssh process. The command's monospace box
+sits on the row of the process whose words it shows:
+
+- the root command under the root's row (`git push origin fix/login`: the wrappers of a shell and of Claude Code's Bash
+  tool taken off when they match exactly, the rest of the root's line in small type under the box), and the ssh command
+  in small type under the ssh process's row;
+- for Claude Code's PowerShell tool on Windows, whose script is on no command line, the ssh command under the ssh
+  process's row, the root's row saying "Claude Code's PowerShell tool";
+- for a WSL call, what `op-reason-ssh` sends (the caller and the root), then "… in WSL, not seen", then `ssh.exe`.
+
+In the window that asks, frames on the tree show what each button covers: **this call** (the root and below) and, for a
+command typed in a terminal, **this terminal** (the shell and below); for the PowerShell tool, **this ssh** and **this
+call**. The filled button's frame is solid, the outlined one's dashed. Under the tree: what the signature is for
+(logging in as which user, or an SSHSIG namespace such as `git`), the destination with its host key and the key's name
+in 1Password. A bar shows the seconds left to answer, next to how long an answer lasts ("Allowing covers this git push
+until it ends (at most 60 minutes)"; for the PowerShell tool, "Allowing covers the frame you choose (this ssh or this
+call) until it ends"), and a band says that 1Password's prompt comes after Allow, usually in the middle
 of the screen, otherwise from the tray. Only a click answers it (a press and a release on a button): it opens without
-taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click on Allow this
-call or Allow this terminal, it comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
+taking the focus and has no default button, so a key typed elsewhere never answers it. **After a click that allows, it
+comes to the front** until 1Password has answered ("SSH key: 1Password is asking"), so
 that 1Password shows its prompt at once ([why](#starting-it)); then the window that had the front gets it back, unless
 another window took it meanwhile. It stays behind when the window in front belongs to the program the relay was started
 from (a terminal program, which 1Password sees in front already), and **Deny** never takes the front. No answer within
@@ -386,9 +405,10 @@ op-reason shows four things on the screen, each in its own place
 | The pointer to the tray: 1Password's prompt did not come within two seconds of Allow | next to the notification area of the taskbar | when the prompt comes or the request ends |
 | The Windows notification of a window | the bottom right (Windows' notifications) | with its window, unless the window timed out unanswered |
 
-- **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this terminal**) shows a
-  card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds, then fades: `Passed ·
-  <caller>`, the ssh command and its destination, why it passed (allowed for this call, allowed for this terminal) and
+- **Toasts.** A signature that an earlier answer lets through (**Allow this call**, **Allow this ssh**, **Allow this
+  terminal**) shows a card in the colors of op-reason's window (dark or light, as Windows' app mode) for four seconds,
+  then fades: `Passed · <caller>`, the ssh command and its destination, why it passed (allowed for this call, allowed
+  for this ssh, allowed for this terminal) and
   the reason. The signatures of one call share one card, which counts them (×N), shows the last destination and starts
   its four seconds again; each other call gets its own card at the top, three at most: a fourth pushes the oldest out at
   once, and `+N` under the third card counts the cards pushed out until four seconds after their last signature. A card
@@ -403,7 +423,7 @@ op-reason shows four things on the screen, each in its own place
   timed out leaves its notification as the sign of a request that went unanswered. The one-time notices (1Password
   did not ask, 1Password did not answer, the relay has no parent process) stay.
 
-![Animation of a Windows desktop. A signature that passes without a window shows a small dark card in the colors of op-reason's window, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right (the root command in a box, the seconds left to answer counting down), with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
+![Animation of a Windows desktop. A signature that passes without a window shows a small dark card in the colors of op-reason's window, a toast, at the top left, at 90% opacity so that the text behind shows through faintly: Passed · Human, the ssh command and its destination, allowed for this terminal · no reason given; it fades after four seconds. An ansible run signs eight times in one call: one card counts them (×2 … ×8), shows the last host and lights up at each. Three other calls each put a card on top and push the others down; a fourth and a fifth push the oldest out at once, and +N under the third card counts the cards pushed out (+1, +2) until four seconds after their last signature; four seconds after its last signature each card fades. Then a new call asks in op-reason's window at the top right (the process tree from Claude Code down to ssh.exe, the root command in a box on the root's row, a frame for this call, the seconds left to answer counting down), with its Windows notification at the bottom right, while another toast comes at the top left; a click on Allow this call closes the window and its notification together, and the call's later signatures come as one toast at the top left (×3).](docs/images/readme-6-relay-screens.en.svg)
 
 🌐 [HTML version: the relay's windows, toasts and notifications](docs/html/relay-screens.html)
 
@@ -466,6 +486,10 @@ Time      Result       Secs  Caller           Reason              Command
 09:00:12  SSH allowed  2.5   Claude deploy …  push the login fix  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
 09:00:13  SSH passed   0.1   Claude deploy …  push the login fix  ssh.exe git@github.com "git-receive-pack 'me/r.git'"
 ```
+
+A signature that an earlier answer let through or refused refers to that answer's record (`decision`) and names the answer
+(`by`: `allow`, `allow-ssh`, `allow-terminal`, `deny`); the line says "(this ssh)" or "(terminal)" after the result
+when that answer, or the click, covered one ssh or the terminal.
 
 ### What it does not stop
 

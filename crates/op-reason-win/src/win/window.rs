@@ -93,7 +93,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
-use crate::look::{self, ChipKind, FactKind, Icon, Reason, Sketch, Tone, Word};
+use crate::look::{self, ChipKind, FactKind, Icon, Reason, RowTone, Sketch, Tone, Word};
 use crate::theme::{self, Palette, Rgb, Theme};
 use crate::ui::{self, Both, Button, Rect, Texts};
 
@@ -142,6 +142,16 @@ const PILL_PAD: f32 = 9.0;
 const PILL_GAP: f32 = 12.0;
 /// The bar of the seconds left to answer.
 const BAR_H: f32 = 4.0;
+
+// The relay's process tree (design `2026-11-27-relay-process-tree-design.md` §3.5): how far each level indents, the
+// height of a row's line, where its text starts after its dot or elbow, the height of its pills, how far the boxes
+// under the rows end before the right edge (inside the frames), and the gap between a row's parts.
+const TREE_INDENT: f32 = 16.0;
+const TREE_LINE: f32 = 16.0;
+const TREE_TEXT: f32 = 14.0;
+const TREE_PILL_H: f32 = 18.0;
+const TREE_INSET: f32 = 14.0;
+const TREE_GAP: f32 = 6.0;
 /// The width of a layout that must not wrap.
 const NO_WRAP: f32 = 10_000.0;
 /// How long a closing window waits for the threads that open links.
@@ -302,10 +312,11 @@ enum Ink {
     PicWindow,
     SwitchShown,
     AlertBg,
+    Tree,
 }
 
 impl Ink {
-    const ALL: [Ink; 29] = [
+    const ALL: [Ink; 30] = [
         Ink::Background,
         Ink::Text,
         Ink::Secondary,
@@ -335,6 +346,7 @@ impl Ink {
         Ink::PicWindow,
         Ink::SwitchShown,
         Ink::AlertBg,
+        Ink::Tree,
     ];
 
     fn rgb(self, p: &Palette) -> Rgb {
@@ -368,6 +380,7 @@ impl Ink {
             Ink::PicWindow => p.pic_window,
             Ink::SwitchShown => p.switch_shown,
             Ink::AlertBg => p.alert_bg,
+            Ink::Tree => p.tree,
         }
     }
 }
@@ -421,6 +434,9 @@ struct Pill {
 /// A button of the row: what it answers, where it is, its label.
 struct ButtonAt {
     button: Button,
+    /// The first button, unless it is Deny: filled with the accent color, its label bold (design
+    /// `2026-11-27-relay-process-tree-design.md` §4.4).
+    filled: bool,
     rect: Rect,
     label: Label,
 }
@@ -459,6 +475,12 @@ enum Fit {
     SmallReason,
     /// No band.
     NoBand,
+    /// The processes between the root and the client in one row (design `2026-11-27-relay-process-tree-design.md`
+    /// §3.6).
+    FoldTree,
+    /// No tree: the command section as before it (the box, the root process and the rest of its line, the ssh
+    /// command's small line).
+    NoTree,
     /// The command's text cut to this height.
     CutCode(f32),
 }
@@ -469,7 +491,18 @@ impl Fit {
     }
 
     fn no_band(self) -> bool {
-        matches!(self, Fit::NoBand | Fit::CutCode(_))
+        matches!(
+            self,
+            Fit::NoBand | Fit::FoldTree | Fit::NoTree | Fit::CutCode(_)
+        )
+    }
+
+    fn fold_tree(self) -> bool {
+        self == Fit::FoldTree
+    }
+
+    fn no_tree(self) -> bool {
+        matches!(self, Fit::NoTree | Fit::CutCode(_))
     }
 }
 
@@ -492,6 +525,7 @@ struct Fonts {
     f11: IDWriteTextFormat,
     f11b: IDWriteTextFormat,
     f10: IDWriteTextFormat,
+    f10b: IDWriteTextFormat,
     m12: IDWriteTextFormat,
     m11: IDWriteTextFormat,
     m10: IDWriteTextFormat,
@@ -512,6 +546,7 @@ impl Fonts {
             f11: format(&dw, normal, 11.0, &loc)?,
             f11b: format(&dw, bold, 11.0, &loc)?,
             f10: format(&dw, normal, 10.0, &loc)?,
+            f10b: format(&dw, bold, 10.0, &loc)?,
             m12: format_in(&dw, mono, normal, CODE_SIZE, &loc)?,
             m11: format_in(&dw, mono, normal, REF_SIZE, &loc)?,
             m10: format_in(&dw, mono, normal, 10.0, &loc)?,
@@ -647,6 +682,253 @@ impl Builder<'_> {
 
     fn line(&mut self, a: (f32, f32), b: (f32, f32), ink: Ink, width: f32) {
         self.parts.push(Part::Line { a, b, ink, width });
+    }
+
+    /// The command in its box with colored words (design §4.6), its top left at (`x`, `y`), `w` wide, cut to the height
+    /// that `fit` keeps. Returns the box's height and the command's.
+    fn code_box(&mut self, code: &str, (x, y): (f32, f32), w: f32, fit: Fit) -> Result<(f32, f32)> {
+        let fonts = self.f;
+        let inner_w = w - 2.0 * CODE_PAD_X;
+        let (layout, _, code_h) = match fit {
+            Fit::CutCode(keep) => fonts.cut_text(&fonts.m12, code, inner_w, keep)?,
+            _ => fonts.text(&fonts.m12, code, inner_w)?,
+        };
+        let mut tints = Vec::new();
+        for (start, len, word) in look::color_words(code) {
+            match word {
+                Word::Program => {
+                    // SAFETY: a valid layout; the range is inside its text.
+                    unsafe {
+                        layout.SetFontWeight(
+                            DWRITE_FONT_WEIGHT_BOLD,
+                            DWRITE_TEXT_RANGE {
+                                startPosition: start,
+                                length: len,
+                            },
+                        )?;
+                    }
+                    tints.push((start, len, Ink::Accent));
+                }
+                Word::Path => tints.push((start, len, Ink::CodePath)),
+                Word::Plain => {}
+            }
+        }
+        let box_h = code_h + 2.0 * CODE_PAD_Y;
+        self.rect(
+            rect(x, y, w, box_h),
+            CODE_RADIUS,
+            Some((Ink::CodeBg, 1.0)),
+            Some((Ink::CodeBorder, 1.0)),
+        );
+        self.labels.push(Label {
+            layout,
+            x: x + CODE_PAD_X,
+            y: y + CODE_PAD_Y,
+            h: code_h,
+            ink: Ink::CodeText,
+            tints,
+            link: None,
+            clip: matches!(fit, Fit::CutCode(_)).then(|| rect(x, y, w, box_h)),
+        });
+        Ok((box_h, code_h))
+    }
+
+    /// The relay's process tree from `y` (design `2026-11-27-relay-process-tree-design.md` §3): a row per process, each
+    /// child indented under its parent with an elbow, its box (with the rest of the root's line under it) under its row,
+    /// the small line, and the frames around the rows they cover, in the gaps. Returns where it ends and the command's
+    /// height.
+    fn tree(&mut self, tree: &look::Tree, mut y: f32, fit: Fit) -> Result<(f32, f32)> {
+        /// A part of a row: a text, or a text in a pill (the root's kind, or its mark).
+        enum Piece {
+            Text(IDWriteTextLayout, f32, f32, Ink),
+            Pill(IDWriteTextLayout, f32, f32, bool),
+        }
+        let fonts = self.f;
+        let x0 = PAD_LEFT;
+        let right = self.right();
+        let name_fmt = |solid: bool| if solid { &fonts.f10b } else { &fonts.f10 };
+        let mut name_w = Vec::with_capacity(tree.frames.len());
+        for f in &tree.frames {
+            name_w.push(fonts.text(name_fmt(f.solid), &f.label, NO_WRAP)?.1);
+        }
+        let mut code_h = 0.0;
+        let (mut tops, mut mids, mut ends) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, row) in tree.rows.iter().enumerate() {
+            let rx = x0 + TREE_INDENT * row.depth as f32;
+            let tx = rx + TREE_TEXT;
+            // the parts flow onto more lines rather than run under the end, or under a frame's name on its first row
+            let room = tree
+                .frames
+                .iter()
+                .zip(&name_w)
+                .filter(|(f, _)| f.first == i)
+                .map(|(_, w)| w + 12.0)
+                .fold(0.0, f32::max);
+            let avail = (right - TREE_INSET - room - tx).max(60.0);
+            let (name_f, name_ink) = match row.tone {
+                RowTone::Strong => (&fonts.f12b, Ink::Text),
+                RowTone::Plain => (&fonts.f12, Ink::Secondary),
+                RowTone::Faint => (&fonts.f12, Ink::Tertiary),
+            };
+            let mut pieces = Vec::new();
+            let (l, w, h) = fonts.text(name_f, &row.name, avail)?;
+            pieces.push(Piece::Text(l, w, h, name_ink));
+            if !row.detail.is_empty() {
+                let (l, w, h) = fonts.text(&fonts.f11, &row.detail, avail)?;
+                pieces.push(Piece::Text(l, w, h, Ink::Tertiary));
+            }
+            if let Some(p) = &row.pill {
+                let (l, w, h) = fonts.text(&fonts.f11, p, avail - 14.0)?;
+                pieces.push(Piece::Pill(l, w, h, false));
+            }
+            if let Some(m) = &row.mark {
+                let (l, w, h) = fonts.text(&fonts.f11b, m, avail - 12.0)?;
+                pieces.push(Piece::Pill(l, w, h, true));
+            }
+            let widths: Vec<f32> = pieces
+                .iter()
+                .map(|p| match p {
+                    Piece::Text(_, w, _, _) => *w,
+                    Piece::Pill(_, w, _, mark) => w + if *mark { 12.0 } else { 14.0 },
+                })
+                .collect();
+            let heights: Vec<f32> = pieces
+                .iter()
+                .map(|p| match p {
+                    Piece::Text(_, _, h, _) => *h,
+                    Piece::Pill(_, _, h, _) => h.max(TREE_PILL_H),
+                })
+                .collect();
+            let at = look::flow(&widths, avail, TREE_GAP);
+            let lines = at.last().map_or(1, |a| a.0 + 1);
+            let mut line_h = vec![TREE_LINE; lines];
+            for (k, (r, _)) in at.iter().enumerate() {
+                line_h[*r] = line_h[*r].max(heights[k]);
+            }
+            let top = y;
+            let mut line_y = Vec::with_capacity(lines);
+            let mut yy = top + 2.0;
+            for h in &line_h {
+                line_y.push(yy);
+                yy += h;
+            }
+            let mid = top + 2.0 + line_h[0] / 2.0;
+            // the elbow from the parent: down from below its dot or name, then right to this row
+            if row.depth > 0
+                && let Some(p) = (0..i).rev().find(|&k| tree.rows[k].depth + 1 == row.depth)
+            {
+                let px = x0 + TREE_INDENT * tree.rows[p].depth as f32 + 5.0;
+                self.line((px, mids[p] + 6.0), (px, mid), Ink::Tree, 1.5);
+                self.line((px, mid), (tx - 4.0, mid), Ink::Tree, 1.5);
+            }
+            if let Some(kind) = row.dot {
+                let ink = match kind {
+                    ChipKind::Claude => Ink::Claude,
+                    ChipKind::Person => Ink::Success,
+                    _ => Ink::Secondary,
+                };
+                self.parts.push(Part::Dot {
+                    cx: rx + 5.0,
+                    cy: mid,
+                    r: 5.0,
+                    fill: Some(ink),
+                    stroke: None,
+                });
+            }
+            for (k, (piece, (r, px))) in pieces.into_iter().zip(at).enumerate() {
+                let (x, ly, lh) = (tx + px, line_y[r], line_h[r]);
+                match piece {
+                    Piece::Text(layout, _, h, ink) => self.labels.push(Label {
+                        layout,
+                        x,
+                        y: ly + (lh - h) / 2.0,
+                        h,
+                        ink,
+                        tints: Vec::new(),
+                        link: None,
+                        clip: None,
+                    }),
+                    Piece::Pill(layout, _, h, mark) => {
+                        let (pad, fill, stroke, ink) = if mark {
+                            (6.0, None, Some((Ink::Caution, 1.0)), Ink::Caution)
+                        } else {
+                            (
+                                7.0,
+                                Some((Ink::Surface, 1.0)),
+                                Some((Ink::Line, 1.0)),
+                                Ink::Claude,
+                            )
+                        };
+                        let ph = heights[k];
+                        let py = ly + (lh - ph) / 2.0;
+                        self.rect(rect(x, py, widths[k], ph), ph / 2.0, fill, stroke);
+                        self.labels.push(Label {
+                            layout,
+                            x: x + pad,
+                            y: py + (ph - h) / 2.0,
+                            h,
+                            ink,
+                            tints: Vec::new(),
+                            link: None,
+                            clip: None,
+                        });
+                    }
+                }
+            }
+            y = yy + 2.0;
+            let inner = right - TREE_INSET - tx;
+            if i == tree.boxed {
+                y += 2.0;
+                let (box_h, h) = self.code_box(&tree.code, (tx, y), inner, fit)?;
+                code_h = h;
+                y += box_h;
+                if let Some(note) = &tree.note {
+                    y += 3.0;
+                    let (_, _, h) = self.label(&fonts.m10, note, (tx, y), inner, Ink::Tertiary)?;
+                    y += h;
+                }
+                y += 4.0;
+            }
+            if let Some((_, line)) = tree.small.as_ref().filter(|(k, _)| *k == i) {
+                let (_, _, h) = self.label(&fonts.m10, line, (tx, y), inner, Ink::Tertiary)?;
+                y += h + 4.0;
+            }
+            tops.push(top);
+            mids.push(mid);
+            ends.push(y);
+        }
+        // the frames, the outer one first: each inner one ends 8 DIPs inside the one around it
+        let n = tree.frames.len();
+        for (k, f) in tree.frames.iter().enumerate() {
+            let (Some(&top), Some(&end), Some(first)) =
+                (tops.get(f.first), ends.get(f.last), tree.rows.get(f.first))
+            else {
+                continue;
+            };
+            let left = x0 + TREE_INDENT * first.depth as f32 - 5.0;
+            let fr = right - 8.0 * k as f32;
+            self.parts.push(Part::Box {
+                r: Rect {
+                    left,
+                    top: top - 1.0,
+                    right: fr,
+                    bottom: end + 1.0 + 3.0 * (n - 1 - k) as f32,
+                },
+                radius: 6.0,
+                fill: None,
+                stroke: Some((Ink::Accent, if f.solid { 1.5 } else { 1.0 })),
+                dashed: !f.solid,
+            });
+            let (i, w, _) = self.label(
+                name_fmt(f.solid),
+                &f.label,
+                (0.0, top + 3.0),
+                NO_WRAP,
+                Ink::Accent,
+            )?;
+            self.labels[i].x = fr - 6.0 - w;
+        }
+        Ok((y, code_h))
     }
 
     /// The header's tile: a lock on the accent color, or a key on the caution color.
@@ -953,7 +1235,7 @@ fn lay_out(
     max_h: f32,
 ) -> Result<Layout> {
     let mut layout = build(fonts, text, lang, width, others, Fit::Full)?;
-    for fit in [Fit::SmallReason, Fit::NoBand] {
+    for fit in [Fit::SmallReason, Fit::NoBand, Fit::FoldTree, Fit::NoTree] {
         if layout.height <= max_h {
             return Ok(layout);
         }
@@ -1109,56 +1391,31 @@ fn build(
         y = yy - CHIP_GAP + SECTION_GAP;
     }
 
-    // the command, in its box with colored words
-    let (_, _, h) = b.label(&fonts.f10, &v.code_label, (x0, y), width, Ink::Secondary)?;
-    y += h + 4.0;
-    let inner_w = width - 2.0 * CODE_PAD_X;
-    let (code, _, code_h) = match fit {
-        Fit::CutCode(keep) => fonts.cut_text(&fonts.m12, &v.code, inner_w, keep)?,
-        _ => fonts.text(&fonts.m12, &v.code, inner_w)?,
+    // the relay's process tree with the box under its row (on a short screen, the processes between in one row; on a
+    // shorter one, none), or the command in its box with colored words
+    let tree = if fit.no_tree() {
+        None
+    } else if fit.fold_tree() {
+        v.tree_short.as_ref().or(v.tree.as_ref())
+    } else {
+        v.tree.as_ref()
     };
-    let mut tints = Vec::new();
-    for (start, len, word) in look::color_words(&v.code) {
-        match word {
-            Word::Program => {
-                // SAFETY: a valid layout; the range is inside its text.
-                unsafe {
-                    code.SetFontWeight(
-                        DWRITE_FONT_WEIGHT_BOLD,
-                        DWRITE_TEXT_RANGE {
-                            startPosition: start,
-                            length: len,
-                        },
-                    )?;
-                }
-                tints.push((start, len, Ink::Accent));
-            }
-            Word::Path => tints.push((start, len, Ink::CodePath)),
-            Word::Plain => {}
+    let label = tree.map_or(&v.code_label, |t| &t.label);
+    let (_, _, h) = b.label(&fonts.f10, label, (x0, y), width, Ink::Secondary)?;
+    let code_h;
+    if let Some(tree) = tree {
+        y += h + 6.0;
+        (y, code_h) = b.tree(tree, y, fit)?;
+    } else {
+        y += h + 4.0;
+        let (box_h, h) = b.code_box(&v.code, (x0, y), width, fit)?;
+        code_h = h;
+        y += box_h;
+        if let Some(note) = &v.code_note {
+            y += 4.0;
+            let (_, _, h) = b.label(&fonts.m10, note, (x0, y), width, Ink::Tertiary)?;
+            y += h;
         }
-    }
-    let box_h = code_h + 2.0 * CODE_PAD_Y;
-    b.rect(
-        rect(x0, y, width, box_h),
-        CODE_RADIUS,
-        Some((Ink::CodeBg, 1.0)),
-        Some((Ink::CodeBorder, 1.0)),
-    );
-    b.labels.push(Label {
-        layout: code,
-        x: x0 + CODE_PAD_X,
-        y: y + CODE_PAD_Y,
-        h: code_h,
-        ink: Ink::CodeText,
-        tints,
-        link: None,
-        clip: matches!(fit, Fit::CutCode(_)).then(|| rect(x0, y, width, box_h)),
-    });
-    y += box_h;
-    if let Some(note) = &v.code_note {
-        y += 4.0;
-        let (_, _, h) = b.label(&fonts.m10, note, (x0, y), width, Ink::Tertiary)?;
-        y += h;
     }
 
     // the references of an op call: a small square before each, the links underlined
@@ -1230,6 +1487,8 @@ fn build(
                     let (_, _, h) = b.label(&fonts.f10, &fact.text, at, w, Ink::Tertiary)?;
                     y += h + 2.0;
                 }
+                // the tree shows the ssh command under the client's row
+                FactKind::Mono if tree.is_some() => {}
                 FactKind::Mono => {
                     let (_, _, h) = b.label(&fonts.m10, &fact.text, at, w, Ink::Tertiary)?;
                     y += h + 2.0;
@@ -1365,12 +1624,9 @@ fn build(
     if !t.buttons.is_empty() {
         y += BUTTON_TOP_GAP;
         let mut x = x0;
-        for (button, label) in &t.buttons {
-            let fmt = if *button == Button::Allow {
-                &fonts.f12b
-            } else {
-                &fonts.f12
-            };
+        for (n, (button, label)) in t.buttons.iter().enumerate() {
+            let filled = n == 0 && *button != Button::Deny;
+            let fmt = if filled { &fonts.f12b } else { &fonts.f12 };
             let (layout, w, h) = fonts.text(fmt, label, NO_WRAP)?;
             let bw = (w + 2.0 * BUTTON_PAD_X).max(BUTTON_MIN_W);
             let left = if *button == Button::Deny {
@@ -1378,13 +1634,16 @@ fn build(
             } else {
                 x
             };
-            let ink = match button {
-                Button::Allow => Ink::OnAccent,
-                Button::AllowTerminal => Ink::Accent,
-                Button::Deny => Ink::Critical,
+            let ink = if filled {
+                Ink::OnAccent
+            } else if *button == Button::Deny {
+                Ink::Critical
+            } else {
+                Ink::Accent
             };
             buttons.push(ButtonAt {
                 button: *button,
+                filled,
                 rect: rect(left, y, bw, BUTTON_H),
                 label: Label {
                     layout,
@@ -1816,10 +2075,12 @@ impl State {
             }
             for (i, b) in self.layout.buttons.iter().enumerate() {
                 let rr = rounded(b.rect, BUTTON_RADIUS);
-                let (fill, border) = match b.button {
-                    Button::Allow => (Ink::Accent, None),
-                    Button::AllowTerminal => (Ink::Surface, Some(Ink::Accent)),
-                    Button::Deny => (Ink::Surface, Some(Ink::Critical)),
+                let (fill, border) = if b.filled {
+                    (Ink::Accent, None)
+                } else if b.button == Button::Deny {
+                    (Ink::Surface, Some(Ink::Critical))
+                } else {
+                    (Ink::Surface, Some(Ink::Accent))
                 };
                 t.FillRoundedRectangle(&rr, brush(fill));
                 // a pressed button: a wider border, in its label's color (the fill and the label stay)

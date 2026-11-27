@@ -39,6 +39,7 @@ struct Labels {
     human: &'static str,
     program: &'static str,
     terminal: &'static str,
+    ssh: &'static str,
     forwarded: &'static str,
     running: &'static str,
     refused: &'static str,
@@ -62,6 +63,7 @@ fn labels(lang: Lang) -> Labels {
             human: "Human",
             program: "Program",
             terminal: " (terminal)",
+            ssh: " (this ssh)",
             forwarded: " (forwarded)",
             running: "running or interrupted",
             refused: "refused",
@@ -82,6 +84,7 @@ fn labels(lang: Lang) -> Labels {
             human: "人",
             program: "プログラム",
             terminal: " (ターミナル)",
+            ssh: " (この ssh)",
             forwarded: " (転送)",
             running: "実行中か中断",
             refused: "断った",
@@ -350,8 +353,11 @@ fn ssh_row(
         .and_then(|id| decisions.get(id))
         .unwrap_or(rec);
     let mut result = ssh_result_label(lang, &text(&rec["result"]));
-    if rec["answer"] == "allow-terminal" {
-        result.push_str(l.terminal);
+    // the click, or the earlier answer that covered it (design 2026-11-27-relay-process-tree-design.md §4.5)
+    match rec["answer"].as_str().or_else(|| rec["by"].as_str()) {
+        Some("allow-terminal") => result.push_str(l.terminal),
+        Some("allow-ssh") => result.push_str(l.ssh),
+        _ => {}
     }
     if rec["forwarded"] == true {
         result.push_str(l.forwarded);
@@ -741,6 +747,31 @@ mod tests {
         let mut none = rec(file, 2);
         none.as_object_mut().unwrap().remove("refs");
         assert!(!row(Lang::Ja, &none, "", &HashMap::new())[5].contains("参照"));
+    }
+
+    #[test]
+    fn an_ssh_row_names_the_answer_that_let_it_through() {
+        let sign = |extra: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"v":1,"id":"s9","event":"ssh-sign","time":"t","epoch":1,"mode":"per-call",{extra},"seconds":0.1,"client":{{"pid":1,"exe":"C:\\ssh.exe","cmd":"ssh.exe -T git@github.com"}},"key":{{"fp":"SHA256:x"}},"purpose":{{"kind":"userauth","user":"git"}},"forwarded":false}}"#
+            ))
+            .unwrap()
+        };
+        let result =
+            |lang: Lang, rec: &Value| ssh_row(lang, rec, String::new(), &HashMap::new())[1].clone();
+        let clicked = sign(r#""result":"allowed","answer":"allow-ssh""#);
+        assert_eq!(result(Lang::En, &clicked), "SSH allowed (this ssh)");
+        assert_eq!(result(Lang::Ja, &clicked), "SSH 許可 (この ssh)");
+        let passed = sign(r#""result":"passed","decision":"s8","by":"allow-ssh""#);
+        assert_eq!(result(Lang::En, &passed), "SSH passed (this ssh)");
+        let terminal = sign(r#""result":"passed","decision":"s8","by":"allow-terminal""#);
+        assert_eq!(result(Lang::En, &terminal), "SSH passed (terminal)");
+        let call = sign(r#""result":"passed","decision":"s8","by":"allow""#);
+        assert_eq!(
+            result(Lang::En, &call),
+            "SSH passed",
+            "the call's answer says nothing more"
+        );
     }
 
     /// A state directory with the records of both logs: the SSH relay's in two files, an `op` call in the middle.

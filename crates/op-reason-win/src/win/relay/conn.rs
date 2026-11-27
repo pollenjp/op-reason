@@ -19,7 +19,7 @@ use op_reason_core::log::{self, Caller as LogCaller};
 use op_reason_core::place;
 use op_reason_core::ssh::call::{self, REASON_MAX};
 use op_reason_core::ssh::cmdline;
-use op_reason_core::ssh::decide::{Answer, Mark, Origin, ProcId};
+use op_reason_core::ssh::decide::{Answer, Decision, Mark, Origin, ProcId};
 use op_reason_core::ssh::record::{
     CallRec, ClientRec, HostRec, KeyRec, ProcRec, PromptRec, PurposeRec, Sign,
 };
@@ -31,7 +31,7 @@ use super::ask::{self, Outcome, Shown, Ticket};
 use super::{Shared, peer, pipe};
 use crate::look;
 use crate::relay_opts::Mode;
-use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Root, Unknown};
+use crate::relay_ui::{self, Caller, Facts, Forwarded, Request, Root, Tree, TreeProc, Unknown};
 use crate::win::{procs, toast, window};
 
 /// How long 1Password may take before the window without buttons comes (§5.5).
@@ -147,6 +147,11 @@ struct Who {
     destination: Option<String>,
     /// The client is Windows OpenSSH's `ssh.exe` (it binds every connection it uses for a host, from OpenSSH 8.9 on).
     is_ssh: bool,
+    /// The client's process, when its start time could be read: what "allow this ssh" covers (design
+    /// `2026-11-27-relay-process-tree-design.md` §4.2).
+    client_id: Option<ProcId>,
+    /// The processes of the call besides its root, for the window's tree (with a root).
+    tree: Option<Tree>,
 }
 
 struct Conn<'a> {
@@ -398,6 +403,8 @@ impl<'a> Conn<'a> {
             waiting: 0,
             terminal: false,
             single,
+            tree: if is_forwarded { None } else { who.tree.clone() },
+            per_ssh: false,
         }
     }
 
@@ -439,6 +446,11 @@ impl<'a> Conn<'a> {
             who.shell.clone()
         };
         facts.terminal = shell.is_some();
+        // a call of Claude Code's PowerShell tool that can be tied to its call: the window asks for this ssh (design
+        // `2026-11-27-relay-process-tree-design.md` §4.1)
+        facts.per_ssh = matches!(origin, Origin::Root(_))
+            && matches!(facts.caller, Caller::Claude { .. })
+            && facts.root.as_ref().is_some_and(|r| r.claude_powershell);
         let mark = Mark {
             origin,
             key: fp,
@@ -448,6 +460,7 @@ impl<'a> Conn<'a> {
         match ask::per_call(
             shared,
             &mark,
+            who.client_id.as_ref(),
             shell.as_ref(),
             &self.client,
             facts.clone(),
@@ -463,10 +476,10 @@ impl<'a> Conn<'a> {
                 {
                     toasts.pass(mark.clone(), &d.id, toast);
                 }
-                self.finish(&who, &id, &req, ex.reply, "passed", None, Some(&d.id), t0)
+                self.finish(&who, &id, &req, ex.reply, "passed", None, Some(&d), t0)
             }
             Outcome::Refused(d) => {
-                self.record(&who, &id, Some(&req), "denied", None, Some(&d.id), t0);
+                self.record(&who, &id, Some(&req), "denied", None, Some(&d), t0);
                 Some(wire::failure())
             }
             Outcome::Asked(answer, mut shown) => {
@@ -530,7 +543,7 @@ impl<'a> Conn<'a> {
         reply: Reply,
         ok: &'static str,
         answer: Option<Answer>,
-        decision: Option<&str>,
+        decision: Option<&Decision>,
         t0: Instant,
     ) -> Option<Vec<u8>> {
         let (result, out) = match reply {
@@ -602,7 +615,8 @@ impl<'a> Conn<'a> {
         (result != "gone").then(wire::failure)
     }
 
-    /// Writes the `ssh-sign` record of a request. One that an earlier answer covered refers to that answer's record.
+    /// Writes the `ssh-sign` record of a request. One that an earlier answer covered refers to that answer's record, and
+    /// names the answer (`by`).
     #[allow(clippy::too_many_arguments)]
     fn record(
         &self,
@@ -611,7 +625,7 @@ impl<'a> Conn<'a> {
         req: Option<&SignRequest>,
         result: &str,
         answer: Option<Answer>,
-        decision: Option<&str>,
+        decision: Option<&Decision>,
         t0: Instant,
     ) {
         let now = time::now();
@@ -680,7 +694,8 @@ impl<'a> Conn<'a> {
             result: result.to_owned(),
             seconds: (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0,
             answer: answer.map(|a| a.as_str().to_owned()),
-            decision: decision.map(str::to_owned),
+            decision: decision.map(|d| d.id.clone()),
+            by: decision.map(|d| d.answer.as_str().to_owned()),
             call: full.then(|| CallRec {
                 rule: rule.to_owned(),
                 root: if forwarded {
@@ -748,6 +763,8 @@ fn unknown(why: Unknown) -> Who {
         command: String::new(),
         destination: None,
         is_ssh: false,
+        client_id: None,
+        tree: None,
     }
 }
 
@@ -834,11 +851,20 @@ fn identify(pid: Option<u32>) -> Who {
         command,
         destination,
         is_ssh: first.name.eq_ignore_ascii_case("ssh.exe"),
+        client_id: (first.start != 0).then(|| ProcId {
+            scope: String::new(),
+            pid,
+            start: first.start,
+        }),
         ..unknown(Unknown::Unreadable)
+    };
+    let tree_proc = |l: &peer::Link| TreeProc {
+        name: l.name.clone(),
+        pid: Some(l.pid),
     };
     if found.rule == Rule::Wsl {
         return match inside.var(call::ENV_CALL).and_then(call::decode) {
-            Some(c) => from_wsl(base, c),
+            Some(c) => from_wsl(base, c, tree_proc(first)),
             None => Who {
                 caller: Caller::Unknown(Unknown::WslDirect),
                 ..base
@@ -879,6 +905,23 @@ fn identify(pid: Option<u32>) -> Who {
         && look::claude_powershell(&nodes[found.root].args)
         && procs::image_path(root.pid)
             .is_some_and(|p| p.to_ascii_lowercase().ends_with("\\system32\\cmd.exe"));
+    // the window's tree (design `2026-11-27-relay-process-tree-design.md` §3.1): the caller above the root (Claude
+    // Code's process, the person's shell; a program is the root itself), the processes between, the client
+    let head = match found.rule {
+        Rule::Claude => chain.get(found.root + 1),
+        Rule::Shell => found.shell.and_then(|i| chain.get(i)),
+        _ => None,
+    };
+    let tree = Tree {
+        head: head.map(tree_proc),
+        between: (1..found.root)
+            .rev()
+            .filter_map(|i| chain.get(i))
+            .map(tree_proc)
+            .collect(),
+        unseen: false,
+        client: (found.root > 0).then(|| tree_proc(first)),
+    };
     let (kind, caller) = match found.rule {
         Rule::Claude => ("claude", Caller::Claude { pid: claude_pid }),
         Rule::Shell => (
@@ -943,12 +986,14 @@ fn identify(pid: Option<u32>) -> Who {
             cwd: shown_cwd,
         }),
         reason: reason_of(inside.var(call::ENV_REASON).unwrap_or("")),
+        tree: Some(tree),
         ..base
     }
 }
 
-/// The facts of a WSL call that `op-reason-ssh` collected (taken on trust, design §10).
-fn from_wsl(base: Who, c: call::WslCall) -> Who {
+/// The facts of a WSL call that `op-reason-ssh` collected (taken on trust, design §10); `client` is the Windows
+/// process that asks (`ssh.exe`).
+fn from_wsl(base: Who, c: call::WslCall, client: TreeProc) -> Who {
     let scope = format!("wsl:{}", c.distro);
     let id_of = |p: &call::Proc| ProcId {
         scope: scope.clone(),
@@ -977,6 +1022,20 @@ fn from_wsl(base: Who, c: call::WslCall) -> Who {
         "shell" => "shell",
         _ => "parent",
     };
+    // the tree shows what the call carries: the caller (Claude Code's PID only, the person's shell), the root, then the
+    // processes on Linux that the relay cannot see, then the client (design `2026-11-27-relay-process-tree-design.md`
+    // §3.1)
+    let head = match rule {
+        "claude" => Some(TreeProc {
+            name: String::new(),
+            pid: c.caller.claude_pid,
+        }),
+        "shell" => c.shell.as_ref().map(|s| TreeProc {
+            name: s.name.clone(),
+            pid: Some(s.pid),
+        }),
+        _ => None,
+    };
     Who {
         root: Some(id_of(&c.root)),
         shell: (rule == "shell" && roots::terminal_command(Os::Linux, &c.root.name))
@@ -1003,6 +1062,12 @@ fn from_wsl(base: Who, c: call::WslCall) -> Who {
             cwd: c.caller.cwd.clone(),
         }),
         reason: reason_of(&c.reason),
+        tree: Some(Tree {
+            head,
+            between: Vec::new(),
+            unseen: true,
+            client: Some(client),
+        }),
         ..base
     }
 }

@@ -80,12 +80,15 @@ pub struct Sign {
     pub result: String,
     /// From the request to its answer, to a tenth of a second.
     pub seconds: f64,
-    /// The click: `allow`, `allow-terminal`, `deny`.
+    /// The click: `allow` (this call), `allow-ssh` (this ssh: Claude Code's PowerShell tool), `allow-terminal`, `deny`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     /// The record whose answer covered this request (its facts are there).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
+    /// The answer of that record (with `decision`): the words of `answer`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<CallRec>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,6 +288,24 @@ mod tests {
                 .ends_with(r#""forwarded":false,"prompt":{"front":true,"seen":null,"hint":2.0}}"#),
             "{}",
             log::line(&with_prompt)
+        );
+        // a request that an earlier answer covered: that record, and its answer
+        let passed = Sign {
+            result: "passed".into(),
+            answer: None,
+            decision: Some("s0".into()),
+            by: Some("allow-ssh".into()),
+            call: None,
+            caller: None,
+            reason: None,
+            ..r.clone()
+        };
+        assert!(
+            log::line(&passed).contains(
+                r#""result":"passed","seconds":2.5,"decision":"s0","by":"allow-ssh","client":"#
+            ),
+            "{}",
+            log::line(&passed)
         );
         let relay = Relay {
             v: 1,

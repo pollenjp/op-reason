@@ -3,7 +3,9 @@
 //!
 //! A request belongs to a call, identified by its mark: the root process (PID and start time), the key and the reason.
 //! An answer covers the whole call until the root ends, the time limit passes or the relay exits. A person's command may
-//! instead be covered by the terminal it was typed in (the interactive shell and the key).
+//! instead be covered by the terminal it was typed in (the interactive shell and the key). For a call of Claude Code's
+//! PowerShell tool, an answer may cover one ssh only: the requests of the call from one client process, until it ends
+//! (design `2026-11-27-relay-process-tree-design.md` §4).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -37,7 +39,11 @@ pub struct Mark {
 /// A click in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
+    /// The call.
     Allow,
+    /// One ssh of the call: the requests from its client process.
+    AllowSsh,
+    /// The terminal (a person's commands with the key).
     AllowTerminal,
     Deny,
 }
@@ -47,6 +53,7 @@ impl Answer {
     pub fn as_str(self) -> &'static str {
         match self {
             Answer::Allow => "allow",
+            Answer::AllowSsh => "allow-ssh",
             Answer::AllowTerminal => "allow-terminal",
             Answer::Deny => "deny",
         }
@@ -70,6 +77,8 @@ pub struct Decision {
 #[derive(Debug)]
 pub struct Book {
     calls: HashMap<Mark, Decision>,
+    /// One ssh of a call: the call's mark and the client process.
+    ssh: HashMap<(Mark, ProcId), Decision>,
     terminals: HashMap<(ProcId, String), Decision>,
     limit: i64,
 }
@@ -79,6 +88,7 @@ impl Book {
     pub fn new(limit_secs: i64) -> Book {
         Book {
             calls: HashMap::new(),
+            ssh: HashMap::new(),
             terminals: HashMap::new(),
             limit: limit_secs,
         }
@@ -88,12 +98,13 @@ impl Book {
         now - d.at < self.limit
     }
 
-    /// The answer that covers a request: its call's, else (for a person's command: `shell` is the interactive shell it
-    /// was typed in) its terminal's. What has run out is forgotten first: past the time limit, or a root or shell that
-    /// `alive` says has ended.
+    /// The answer that covers a request: its call's, else the answer for its ssh (`client` is the process that asks),
+    /// else (for a person's command: `shell` is the interactive shell it was typed in) its terminal's. What has run out
+    /// is forgotten first: past the time limit, or a root, client or shell that `alive` says has ended.
     pub fn lookup(
         &mut self,
         mark: &Mark,
+        client: Option<&ProcId>,
         shell: Option<&ProcId>,
         now: i64,
         alive: &dyn Fn(&ProcId) -> bool,
@@ -108,6 +119,15 @@ impl Book {
             }
             self.calls.remove(mark);
         }
+        if let Some(client) = client {
+            let key = (mark.clone(), client.clone());
+            if let Some(d) = self.ssh.get(&key) {
+                if self.current(d, now) && alive(client) {
+                    return Some(d.clone());
+                }
+                self.ssh.remove(&key);
+            }
+        }
         let shell = shell?;
         let key = (shell.clone(), mark.key.clone());
         let d = self.terminals.get(&key)?;
@@ -118,11 +138,12 @@ impl Book {
         None
     }
 
-    /// Remembers an answer for the call (never for an [`Origin::Alone`] request); `AllowTerminal` also for the terminal
-    /// (`shell` and the key).
+    /// Remembers an answer for the call (never for an [`Origin::Alone`] request); `AllowSsh` for the client process
+    /// only (nothing without one); `AllowTerminal` also for the terminal (`shell` and the key).
     pub fn remember(
         &mut self,
         mark: &Mark,
+        client: Option<&ProcId>,
         shell: Option<&ProcId>,
         answer: Answer,
         id: &str,
@@ -136,6 +157,12 @@ impl Book {
             answer,
             at: now,
         };
+        if answer == Answer::AllowSsh {
+            if let Some(client) = client {
+                self.ssh.insert((mark.clone(), client.clone()), d);
+            }
+            return;
+        }
         if answer == Answer::AllowTerminal
             && let Some(shell) = shell
         {
@@ -145,7 +172,7 @@ impl Book {
         self.calls.insert(mark.clone(), d);
     }
 
-    /// Forgets every answer past the time limit or whose root (or shell) has ended.
+    /// Forgets every answer past the time limit or whose root (or client, or shell) has ended.
     pub fn sweep(&mut self, now: i64, alive: &dyn Fn(&ProcId) -> bool) {
         let limit = self.limit;
         self.calls.retain(|m, d| {
@@ -155,13 +182,15 @@ impl Book {
                     Origin::Alone(_) => true,
                 }
         });
+        self.ssh
+            .retain(|(_, client), d| now - d.at < limit && alive(client));
         self.terminals
             .retain(|(shell, _), d| now - d.at < limit && alive(shell));
     }
 
     /// How many answers are remembered.
     pub fn len(&self) -> usize {
-        self.calls.len() + self.terminals.len()
+        self.calls.len() + self.ssh.len() + self.terminals.len()
     }
 
     /// Whether nothing is remembered.
@@ -279,19 +308,22 @@ mod tests {
     fn an_answer_covers_its_call_and_nothing_else() {
         let mut b = Book::new(HOUR);
         let m = mark(10, "K", "deploy");
-        assert_eq!(b.lookup(&m, None, 0, &everyone), None);
-        b.remember(&m, None, Answer::Allow, "r1", 0);
-        let d = b.lookup(&m, None, 5, &everyone).unwrap();
+        assert_eq!(b.lookup(&m, None, None, 0, &everyone), None);
+        b.remember(&m, None, None, Answer::Allow, "r1", 0);
+        let d = b.lookup(&m, None, None, 5, &everyone).unwrap();
         assert_eq!((d.id.as_str(), d.answer), ("r1", Answer::Allow));
         assert_eq!(
-            b.lookup(&mark(10, "K", "other reason"), None, 5, &everyone),
+            b.lookup(&mark(10, "K", "other reason"), None, None, 5, &everyone),
             None
         );
         assert_eq!(
-            b.lookup(&mark(10, "K2", "deploy"), None, 5, &everyone),
+            b.lookup(&mark(10, "K2", "deploy"), None, None, 5, &everyone),
             None
         );
-        assert_eq!(b.lookup(&mark(11, "K", "deploy"), None, 5, &everyone), None);
+        assert_eq!(
+            b.lookup(&mark(11, "K", "deploy"), None, None, 5, &everyone),
+            None
+        );
         let reused = Mark {
             origin: Origin::Root(ProcId {
                 start: 9,
@@ -299,10 +331,14 @@ mod tests {
             }),
             ..m.clone()
         };
-        assert_eq!(b.lookup(&reused, None, 5, &everyone), None, "a reused PID");
-        b.remember(&mark(12, "K", ""), None, Answer::Deny, "r2", 7);
         assert_eq!(
-            b.lookup(&mark(12, "K", ""), None, 8, &everyone)
+            b.lookup(&reused, None, None, 5, &everyone),
+            None,
+            "a reused PID"
+        );
+        b.remember(&mark(12, "K", ""), None, None, Answer::Deny, "r2", 7);
+        assert_eq!(
+            b.lookup(&mark(12, "K", ""), None, None, 8, &everyone)
                 .map(|d| d.answer),
             Some(Answer::Deny),
             "a denial covers the call too"
@@ -314,13 +350,16 @@ mod tests {
     fn forgotten_at_the_time_limit_or_when_the_root_ends() {
         let mut b = Book::new(HOUR);
         let m = mark(10, "K", "r");
-        b.remember(&m, None, Answer::Allow, "r1", 100);
-        assert!(b.lookup(&m, None, 100 + HOUR - 1, &everyone).is_some());
-        assert!(b.lookup(&m, None, 100 + HOUR, &everyone).is_none());
+        b.remember(&m, None, None, Answer::Allow, "r1", 100);
+        assert!(
+            b.lookup(&m, None, None, 100 + HOUR - 1, &everyone)
+                .is_some()
+        );
+        assert!(b.lookup(&m, None, None, 100 + HOUR, &everyone).is_none());
         assert!(b.is_empty(), "forgotten, not only hidden");
-        b.remember(&m, None, Answer::Allow, "r2", 200);
+        b.remember(&m, None, None, Answer::Allow, "r2", 200);
         let ended = |p: &ProcId| p.pid != 10;
-        assert!(b.lookup(&m, None, 201, &ended).is_none());
+        assert!(b.lookup(&m, None, None, 201, &ended).is_none());
         assert!(b.is_empty());
     }
 
@@ -332,9 +371,9 @@ mod tests {
             key: "K".into(),
             reason: String::new(),
         };
-        b.remember(&m, None, Answer::Allow, "r1", 0);
+        b.remember(&m, None, None, Answer::Allow, "r1", 0);
         assert!(b.is_empty());
-        assert_eq!(b.lookup(&m, None, 1, &everyone), None);
+        assert_eq!(b.lookup(&m, None, None, 1, &everyone), None);
     }
 
     #[test]
@@ -343,47 +382,56 @@ mod tests {
         let shell = proc(50);
         b.remember(
             &mark(60, "K", "pull"),
+            None,
             Some(&shell),
             Answer::AllowTerminal,
             "r1",
             0,
         );
         let later = mark(61, "K", "");
-        let d = b.lookup(&later, Some(&shell), 10, &everyone).unwrap();
+        let d = b.lookup(&later, None, Some(&shell), 10, &everyone).unwrap();
         assert_eq!((d.id.as_str(), d.answer), ("r1", Answer::AllowTerminal));
         assert_eq!(
-            b.lookup(&later, Some(&proc(51)), 10, &everyone),
+            b.lookup(&later, None, Some(&proc(51)), 10, &everyone),
             None,
             "another terminal"
         );
         assert_eq!(
-            b.lookup(&mark(61, "K2", ""), Some(&shell), 10, &everyone),
+            b.lookup(&mark(61, "K2", ""), None, Some(&shell), 10, &everyone),
             None,
             "another key"
         );
         assert_eq!(
-            b.lookup(&later, None, 10, &everyone),
+            b.lookup(&later, None, None, 10, &everyone),
             None,
             "not a person's command"
         );
-        b.remember(&mark(70, "K", ""), Some(&shell), Answer::Allow, "r2", 20);
+        b.remember(
+            &mark(70, "K", ""),
+            None,
+            Some(&shell),
+            Answer::Allow,
+            "r2",
+            20,
+        );
         assert_eq!(
-            b.lookup(&mark(71, "K", ""), Some(&shell), 21, &everyone)
+            b.lookup(&mark(71, "K", ""), None, Some(&shell), 21, &everyone)
                 .map(|d| d.id),
             Some("r1".to_owned()),
             "a plain Allow covers its call only"
         );
         let shell_gone = |p: &ProcId| p.pid != 50;
-        assert_eq!(b.lookup(&later, Some(&shell), 30, &shell_gone), None);
+        assert_eq!(b.lookup(&later, None, Some(&shell), 30, &shell_gone), None);
     }
 
     #[test]
     fn a_sweep_forgets_what_ran_out() {
         let mut b = Book::new(HOUR);
-        b.remember(&mark(1, "K", ""), None, Answer::Allow, "a", 0);
-        b.remember(&mark(2, "K", ""), None, Answer::Allow, "b", HOUR / 2);
+        b.remember(&mark(1, "K", ""), None, None, Answer::Allow, "a", 0);
+        b.remember(&mark(2, "K", ""), None, None, Answer::Allow, "b", HOUR / 2);
         b.remember(
             &mark(3, "K", ""),
+            None,
             Some(&proc(9)),
             Answer::AllowTerminal,
             "c",
@@ -394,6 +442,122 @@ mod tests {
         assert_eq!(b.len(), 2, "1 timed out, 2 ended; 3 and its terminal stay");
         b.sweep(HOUR, &|p| p.pid != 9);
         assert_eq!(b.len(), 1, "the terminal's shell ended");
+    }
+
+    #[test]
+    fn an_answer_for_an_ssh_covers_that_process_only() {
+        let mut b = Book::new(HOUR);
+        let m = mark(10, "K", "check");
+        let ssh = proc(20);
+        b.remember(&m, Some(&ssh), None, Answer::AllowSsh, "r1", 0);
+        let d = b.lookup(&m, Some(&ssh), None, 5, &everyone).unwrap();
+        assert_eq!((d.id.as_str(), d.answer), ("r1", Answer::AllowSsh));
+        assert_eq!(
+            b.lookup(&m, Some(&proc(21)), None, 5, &everyone),
+            None,
+            "another ssh of the call"
+        );
+        assert_eq!(
+            b.lookup(&m, None, None, 5, &everyone),
+            None,
+            "a request whose client is not known"
+        );
+        let reused = ProcId {
+            start: 9,
+            ..proc(20)
+        };
+        assert_eq!(
+            b.lookup(&m, Some(&reused), None, 5, &everyone),
+            None,
+            "a reused PID"
+        );
+        assert_eq!(
+            b.lookup(&mark(10, "K2", "check"), Some(&ssh), None, 5, &everyone),
+            None,
+            "another key"
+        );
+        assert_eq!(
+            b.lookup(&mark(10, "K", "other"), Some(&ssh), None, 5, &everyone),
+            None,
+            "another reason"
+        );
+        assert_eq!(b.len(), 1, "remembered for the ssh only, not for the call");
+    }
+
+    #[test]
+    fn an_answer_for_an_ssh_ends_with_it_or_at_the_time_limit() {
+        let mut b = Book::new(HOUR);
+        let m = mark(10, "K", "");
+        let ssh = proc(20);
+        b.remember(&m, Some(&ssh), None, Answer::AllowSsh, "r1", 100);
+        assert!(
+            b.lookup(&m, Some(&ssh), None, 100 + HOUR - 1, &everyone)
+                .is_some()
+        );
+        assert!(
+            b.lookup(&m, Some(&ssh), None, 100 + HOUR, &everyone)
+                .is_none()
+        );
+        assert!(b.is_empty(), "forgotten, not only hidden");
+        b.remember(&m, Some(&ssh), None, Answer::AllowSsh, "r2", 200);
+        let ssh_ended = |p: &ProcId| p.pid != 20;
+        assert!(b.lookup(&m, Some(&ssh), None, 201, &ssh_ended).is_none());
+        assert!(b.is_empty());
+        b.remember(&m, Some(&ssh), None, Answer::AllowSsh, "r3", 300);
+        b.sweep(301, &ssh_ended);
+        assert!(
+            b.is_empty(),
+            "the sweep forgets it when its process has ended"
+        );
+        b.remember(&m, Some(&ssh), None, Answer::AllowSsh, "r4", 400);
+        b.sweep(400 + HOUR, &everyone);
+        assert!(b.is_empty(), "and at the time limit");
+    }
+
+    #[test]
+    fn allowing_an_ssh_is_remembered_only_for_a_known_process_of_a_call() {
+        let mut b = Book::new(HOUR);
+        b.remember(&mark(10, "K", ""), None, None, Answer::AllowSsh, "r1", 0);
+        assert!(b.is_empty(), "no client: this request only");
+        let alone = Mark {
+            origin: Origin::Alone(7),
+            key: "K".into(),
+            reason: String::new(),
+        };
+        b.remember(&alone, Some(&proc(20)), None, Answer::AllowSsh, "r2", 0);
+        assert!(b.is_empty(), "a request that cannot be tied to a call");
+    }
+
+    #[test]
+    fn the_answers_for_the_call_still_cover_every_ssh() {
+        let mut b = Book::new(HOUR);
+        let m = mark(10, "K", "");
+        b.remember(&m, Some(&proc(20)), None, Answer::Allow, "r1", 0);
+        assert_eq!(
+            b.lookup(&m, Some(&proc(21)), None, 1, &everyone)
+                .map(|d| d.id),
+            Some("r1".to_owned()),
+            "allow this call"
+        );
+        let n = mark(11, "K", "");
+        b.remember(&n, Some(&proc(30)), None, Answer::Deny, "r2", 0);
+        assert_eq!(
+            b.lookup(&n, Some(&proc(31)), None, 1, &everyone)
+                .map(|d| d.answer),
+            Some(Answer::Deny),
+            "a denial covers the call"
+        );
+        // this ssh, then (in the window of another ssh of the call) this call: the call's answer first
+        let o = mark(12, "K", "");
+        b.remember(&o, Some(&proc(40)), None, Answer::AllowSsh, "r3", 0);
+        b.remember(&o, Some(&proc(41)), None, Answer::Allow, "r4", 1);
+        assert_eq!(
+            b.lookup(&o, Some(&proc(40)), None, 2, &everyone)
+                .map(|d| d.id),
+            Some("r4".to_owned())
+        );
+        assert_eq!(Answer::AllowSsh.as_str(), "allow-ssh");
+        assert!(Answer::AllowSsh.allows());
     }
 
     #[test]

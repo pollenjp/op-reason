@@ -109,6 +109,8 @@ pub struct Palette {
     /// `2026-11-26-prompt-guide-design.md` §6): its background; its title is in the caution color, its line in the text
     /// color.
     pub alert_bg: Rgb,
+    /// The elbows of the relay's process tree (design `2026-11-27-relay-process-tree-design.md` §3.5): not text.
+    pub tree: Rgb,
 }
 
 /// The dark look: the approved drafts, close to Windows 11's dark colors.
@@ -144,6 +146,7 @@ pub const DARK: Palette = Palette {
     pic_window: Rgb::hex(0x3c3c3c),
     switch_shown: Rgb::hex(0x454545),
     alert_bg: Rgb::hex(0x332b00),
+    tree: Rgb::hex(0x5d5d5d),
 };
 
 /// The light look: the same roles in Windows 11's light colors.
@@ -179,6 +182,7 @@ pub const LIGHT: Palette = Palette {
     pic_window: Rgb::hex(0xd0d0d0),
     switch_shown: Rgb::hex(0xe6e6e6),
     alert_bg: Rgb::hex(0xfff4ce),
+    tree: Rgb::hex(0xb4b4b4),
 };
 
 /// The palette of a look.
@@ -236,6 +240,7 @@ pub const TEXT_PAIRS: &[(&str, Pair)] = &[
     ("the alert band's line", |p| (p.text, p.alert_bg)),
     ("the pointer's line", |p| (p.secondary, p.surface)),
     ("the pointer's seconds", |p| (p.caution, p.surface)),
+    ("the pill of the tree's root", |p| (p.claude, p.surface)),
 ];
 
 #[cfg(test)]
