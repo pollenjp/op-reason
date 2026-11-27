@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "op-reason-core"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "op-reason-win"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "embed-manifest",
  "op-reason-core",

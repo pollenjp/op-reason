@@ -32,7 +32,7 @@
 # Windows PowerShell 5.1 syntax (no ??, ?., ternary, pipeline chains, $IsWindows); also runs on PowerShell 7.
 # UTF-8 with a byte order mark: without one, Windows PowerShell 5.1 reads the file in the ANSI code page.
 $ProgressPreference = 'SilentlyContinue'
-$script:Version = '0.8.1'
+$script:Version = '0.9.0'
 
 # --- Language and texts
 

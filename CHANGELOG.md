@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-27
 
 - **The SSH relay's window shows the call's processes as a tree**, parent above child, from the caller (Claude Code,
   the person's shell, or the program) down to the ssh process, each with its PID. The command's box sits on the row of
